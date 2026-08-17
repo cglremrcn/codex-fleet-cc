@@ -75,6 +75,23 @@ test("normal return restores prior raw mode and removes lifecycle listeners", as
   }
 });
 
+test("suspended editor receives a normal terminal and Fleet resumes afterward", async () => {
+  const io = fakeTerminal();
+
+  await withTerminalSession(io, async ({ suspend }) => {
+    assert.equal(io.stdin.isRaw, true);
+    await suspend(async () => {
+      assert.equal(io.stdin.isRaw, false);
+    });
+    assert.equal(io.stdin.isRaw, true);
+  });
+
+  assert.deepEqual(io.rawChanges, [true, false, true, false]);
+  assert.deepEqual(io.counts(), { resumed: 2, paused: 2 });
+  assert.equal((io.output().match(/\u001b\[\?1049h/g) ?? []).length, 2);
+  assert.equal((io.output().match(/\u001b\[\?1049l/g) ?? []).length, 2);
+});
+
 test("signal restoration is immediate and idempotent", async () => {
   const io = fakeTerminal();
   let release;

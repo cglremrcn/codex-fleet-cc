@@ -33,36 +33,67 @@ export async function withTerminalSession(io, run) {
   const previousRawMode = io.stdin.isRaw === true;
   const abortController = new AbortController();
   const handlers = new Map();
-  let modesEntered = false;
-  let rawModeChanged = false;
-  let inputResumed = false;
-  let restored = false;
+  let active = false;
+  let resumedForActive = false;
+  let closed = false;
 
-  function restore() {
-    if (restored) return;
-    restored = true;
-    for (const [event, handler] of handlers) removeListener(lifecycle, event, handler);
-    handlers.clear();
-    if (modesEntered) {
-      try {
-        io.stdout.write(`${DISABLE_MOUSE}${SHOW_CURSOR}${LEAVE_ALT_SCREEN}`);
-      } catch {
-        // A closed output cannot be repaired; raw input restoration still must run.
-      }
+  function leave() {
+    if (!active) return;
+    active = false;
+    try {
+      io.stdout.write(`${DISABLE_MOUSE}${SHOW_CURSOR}${LEAVE_ALT_SCREEN}`);
+    } catch {
+      // A closed output cannot be repaired; raw input restoration still must run.
     }
-    if (rawModeChanged) {
-      try {
-        io.stdin.setRawMode(previousRawMode);
-      } catch {
-        // The stream may already be closed during process teardown.
-      }
+    try {
+      io.stdin.setRawMode(previousRawMode);
+    } catch {
+      // The stream may already be closed during process teardown.
     }
-    if (inputResumed && typeof io.stdin.pause === "function") {
+    if (resumedForActive && typeof io.stdin.pause === "function") {
       try {
         io.stdin.pause();
       } catch {
         // Ignore teardown races after the terminal has already detached.
       }
+    }
+    resumedForActive = false;
+  }
+
+  function enter() {
+    if (closed || active) return;
+    active = true;
+    try {
+      io.stdout.write(`${ENTER_ALT_SCREEN}${HIDE_CURSOR}${ENABLE_MOUSE}`);
+      io.stdin.setRawMode(true);
+      if (typeof io.stdin.resume === "function") {
+        io.stdin.resume();
+        resumedForActive = true;
+      }
+    } catch (error) {
+      leave();
+      throw error;
+    }
+  }
+
+  function restore() {
+    if (closed) return;
+    closed = true;
+    for (const [event, handler] of handlers) removeListener(lifecycle, event, handler);
+    handlers.clear();
+    leave();
+  }
+
+  async function suspend(operation) {
+    if (typeof operation !== "function") {
+      throw new TypeError("Suspended terminal operation must be a function");
+    }
+    if (closed) throw new Error("Terminal session is already closed");
+    leave();
+    try {
+      return await operation();
+    } finally {
+      if (!closed) enter();
     }
   }
 
@@ -83,15 +114,8 @@ export async function withTerminalSession(io, run) {
   register("exit", restore);
 
   try {
-    modesEntered = true;
-    io.stdout.write(`${ENTER_ALT_SCREEN}${HIDE_CURSOR}${ENABLE_MOUSE}`);
-    io.stdin.setRawMode(true);
-    rawModeChanged = true;
-    if (typeof io.stdin.resume === "function") {
-      io.stdin.resume();
-      inputResumed = true;
-    }
-    return await run(Object.freeze({ signal: abortController.signal, restore }));
+    enter();
+    return await run(Object.freeze({ signal: abortController.signal, restore, suspend }));
   } finally {
     restore();
   }

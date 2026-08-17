@@ -63,6 +63,7 @@ export function createInputDecoder(options = {}) {
     DEFAULT_MAX_PENDING_BYTES
   );
   let pending = Buffer.alloc(0);
+  let textMode = false;
 
   function rejectOversizedEscape(events) {
     if (pending.length <= maxPendingBytes || pending[0] !== 0x1b) return false;
@@ -83,6 +84,16 @@ export function createInputDecoder(options = {}) {
         const character = value[0];
         const byteLength = Buffer.byteLength(character);
         pending = pending.subarray(byteLength);
+        if (textMode) {
+          if (character === "\r" || character === "\n") {
+            events.push({ type: "applyFilter" });
+          } else if (character === "\b" || character === "\u007f") {
+            events.push({ type: "backspace" });
+          } else if (character.codePointAt(0) >= 0x20) {
+            events.push({ type: "text", value: character });
+          }
+          continue;
+        }
         const event = KEY_EVENTS[character.toLowerCase()] ?? KEY_EVENTS[character];
         if (event) events.push({ ...event });
         continue;
@@ -117,7 +128,7 @@ export function createInputDecoder(options = {}) {
   function flush() {
     if (pending.length === 0) return [];
     const events = pending.equals(Buffer.from(ESCAPE))
-      ? [{ type: "quit" }]
+      ? [{ type: textMode ? "clearFilter" : "quit" }]
       : [{ type: "invalidInput", reason: "incomplete-escape-sequence" }];
     pending = Buffer.alloc(0);
     return events;
@@ -126,6 +137,9 @@ export function createInputDecoder(options = {}) {
   return Object.freeze({
     push,
     flush,
+    setTextMode(value) {
+      textMode = value === true;
+    },
     get pendingBytes() {
       return pending.length;
     }

@@ -68,6 +68,21 @@ test("standalone Escape is emitted only when the decoder is flushed", () => {
   assert.deepEqual(decoder.flush(), [{ type: "quit" }]);
 });
 
+test("filter text mode captures navigation letters without triggering controls", () => {
+  const decoder = createInputDecoder();
+  decoder.setTextMode(true);
+
+  assert.deepEqual(decoder.push(Buffer.from("jak\u007f\r")), [
+    { type: "text", value: "j" },
+    { type: "text", value: "a" },
+    { type: "text", value: "k" },
+    { type: "backspace" },
+    { type: "applyFilter" }
+  ]);
+  assert.deepEqual(decoder.push(Buffer.from("\u001b")), []);
+  assert.deepEqual(decoder.flush(), [{ type: "clearFilter" }]);
+});
+
 test("input reducer changes only local console state", () => {
   const initial = {
     laneCount: 3,
