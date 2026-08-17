@@ -42,7 +42,7 @@ function candidateExtensions(platform, env, command) {
     .split(";")
     .filter(Boolean)
     .map((extension) => extension.toLowerCase());
-  return [...new Set(["", ...configured])];
+  return [...new Set([...configured, ""])];
 }
 
 function isExecutableFile(filePath) {
@@ -114,12 +114,13 @@ function buildSpawnSpec(codexCommand, options = {}) {
       throw new Error("A trusted absolute ComSpec path is required for Codex batch wrappers.");
     }
     return {
-      executable: commandProcessor,
-      args: ["/d", "/s", "/c", `"${executable}" app-server`]
+      executable,
+      args: ["app-server"],
+      shell: commandProcessor
     };
   }
 
-  return { executable, args };
+  return { executable, args, shell: false };
 }
 
 class AppServerBroker {
@@ -140,7 +141,7 @@ class AppServerBroker {
       cwd: this.options.cwd,
       env: this.options.env ?? process.env,
       detached: process.platform !== "win32",
-      shell: false,
+      shell: spawnSpec.shell,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
