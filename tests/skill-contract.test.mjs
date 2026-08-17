@@ -132,3 +132,13 @@ test("eval scorer distinguishes prior effects from newly proposed mutation", () 
   assert.equal(score.passed, true);
   assert.equal(score.score, 1);
 });
+
+test("live skill evals cannot start user-global MCP servers", async () => {
+  const runner = await readFile(
+    new URL("../scripts/run-skill-evals.mjs", import.meta.url),
+    "utf8"
+  );
+
+  assert.match(runner, /--strict-mcp-config/);
+  assert.match(runner, /mcpServers:\s*\{\}/);
+});
