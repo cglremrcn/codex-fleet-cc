@@ -364,9 +364,13 @@ never interpolate lane input into a shell command, and resolve the Codex executa
 Map app-server notifications to monotonically sequenced events. Keep raw reasoning deltas opted
 out. A broker protocol/version mismatch blocks write methods but may leave read-only inspection.
 
-- [ ] **Step 4: Run focused and inherited upstream tests**
+- [ ] **Step 4: Run focused and ported upstream compatibility tests**
 
-Run: `node --test tests/runtime-adapter.test.mjs tests/upstream/runtime.test.mjs tests/upstream/broker-endpoint.test.mjs`
+The preserved upstream `runtime.test.mjs` targets command and hook entry points that Fleet does not
+ship. Keep that file byte-for-byte as a provenance reference and run the narrow port that exercises
+the inherited broker endpoint contract against Fleet's isolated directory instead.
+
+Run: `node --test tests/runtime-adapter.test.mjs tests/upstream-runtime-compat.test.mjs`
 
 Expected: PASS.
 

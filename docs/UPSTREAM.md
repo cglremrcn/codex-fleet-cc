@@ -46,9 +46,15 @@ The matching upstream test sources were preserved under `tests/upstream`:
 - `runtime.test.mjs`
 - `state.test.mjs`
 
-Those test sources remain reference copies until the runtime-adapter task ports their paths to the
-isolated directory. Ported tests and runtime files will be marked as derived in this document and
-will retain the OpenAI copyright and Apache-2.0 notice.
+Those files remain byte-for-byte reference copies. The full upstream `runtime.test.mjs` exercises
+the official plugin's command, hook, and directory layout, so running it unchanged inside Fleet
+would test paths and entry points Fleet deliberately does not ship. Runtime Task 5 therefore
+ported its broker endpoint contract into `tests/upstream-runtime-compat.test.mjs` and added Fleet's
+adapter integration suite in `tests/runtime-adapter.test.mjs`. The port revealed that the upstream
+helper uses the host path separator even when asked to create an endpoint for another platform.
+Fleet's derived `plugins/fleet/scripts/lib/broker-endpoint.mjs` uses the target platform instead.
+The ported files are marked as modified at their source; the originals remain available for
+future upstream diffs.
 
 ## Update procedure
 
