@@ -13,7 +13,16 @@ const FORBIDDEN_KEYS = new Set([
   "commandoutput",
   "fulloutput",
   "stdout",
-  "stderr"
+  "stderr",
+  "authorization",
+  "token",
+  "accesstoken",
+  "refreshtoken",
+  "apikey",
+  "sessioncookie",
+  "credential",
+  "credentials",
+  "privatekey"
 ]);
 
 const REDACTIONS = Object.freeze([

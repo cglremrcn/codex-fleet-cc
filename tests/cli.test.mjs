@@ -155,7 +155,44 @@ test("doctor reports runtime unavailable with its dedicated exit code", (t) => {
 
   assert.equal(run.code, 4);
   const payload = JSON.parse(run.stdout);
-  assert.equal(payload.runtime.available, false);
+  assert.equal(payload.overall, "blocked");
+  assert.equal(payload.checks.find((check) => check.id === "codex").state, "unknown");
+  assert.equal(payload.checks.find((check) => check.id === "browser").state, "unknown");
+});
+
+test("export previews without writing and accepts only its exact confirmation token", (t) => {
+  const scope = fixture(t);
+  const output = path.join(scope.root, "support.json");
+  const previewRun = runFleet(
+    ["export", "--json", "--workspace", scope.workspace, "--output", output],
+    { env: fixtureEnv(scope) }
+  );
+
+  assert.equal(previewRun.code, 0, previewRun.stderr);
+  const preview = JSON.parse(previewRun.stdout);
+  assert.equal(preview.writesPerformed, false);
+  assert.equal(fs.existsSync(output), false);
+
+  const denied = runFleet(
+    [
+      "export", "--json", "--workspace", scope.workspace, "--output", output,
+      "--confirm-token", "wrong-token"
+    ],
+    { env: fixtureEnv(scope) }
+  );
+  assert.equal(denied.code, 3);
+  assert.equal(fs.existsSync(output), false);
+
+  const written = runFleet(
+    [
+      "export", "--json", "--workspace", scope.workspace, "--output", output,
+      "--confirm-token", preview.confirmationToken
+    ],
+    { env: fixtureEnv(scope) }
+  );
+  assert.equal(written.code, 0, written.stderr);
+  assert.equal(JSON.parse(written.stdout).written, true);
+  assert.equal(fs.existsSync(output), true);
 });
 
 test("authority-bearing commands require an explicit confirmation reference", (t) => {

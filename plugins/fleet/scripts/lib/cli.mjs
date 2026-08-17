@@ -3,12 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { resolveExecutable } from "../app-server-broker.mjs";
 import { normalizeAuthority } from "./authority.mjs";
+import { runDoctor } from "./doctor.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
+import { renderPlainStatus } from "./plain-status.mjs";
 import { createRuntime } from "./runtime-adapter.mjs";
 import { readWorkspaceState, writeWorkspaceState } from "./safe-state.mjs";
 import { createScheduler } from "./scheduler.mjs";
+import { previewSupportBundle, writeSupportBundle } from "./support-bundle.mjs";
 
 export const EXIT_CODES = Object.freeze({
   success: 0,
@@ -31,7 +33,13 @@ const COMMANDS = new Set([
   "uninstall"
 ]);
 const BOOLEAN_FLAGS = new Set(["--json", "--stdin", "--confirm"]);
-const VALUE_FLAGS = new Set(["--contract", "--workspace", "--lane", "--output"]);
+const VALUE_FLAGS = new Set([
+  "--contract",
+  "--workspace",
+  "--lane",
+  "--output",
+  "--confirm-token"
+]);
 const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
 const COMMAND_FLAGS = Object.freeze({
   doctor: new Set(["--json", "--workspace"]),
@@ -40,9 +48,9 @@ const COMMAND_FLAGS = Object.freeze({
   result: new Set(["--json", "--workspace", "--lane"]),
   "follow-up": new Set(["--json", "--stdin", "--contract"]),
   cancel: new Set(["--json", "--stdin", "--contract", "--confirm"]),
-  export: new Set(["--json", "--workspace", "--output"]),
-  setup: new Set(["--json", "--workspace"]),
-  uninstall: new Set(["--json", "--workspace"])
+  export: new Set(["--json", "--workspace", "--output", "--confirm-token"]),
+  setup: new Set(["--json", "--workspace", "--confirm-token"]),
+  uninstall: new Set(["--json", "--workspace", "--confirm-token"])
 });
 const ROOT_START_PROPERTIES = new Set([
   "schemaVersion",
@@ -375,6 +383,110 @@ async function readStateWithoutCreating(root) {
   return readWorkspaceState(root);
 }
 
+async function inspectDirectory(directory, label) {
+  try {
+    const metadata = await fs.lstat(directory);
+    if (metadata.isSymbolicLink()) {
+      return { denied: true, detail: `${label} is a symbolic link` };
+    }
+    if (!metadata.isDirectory()) {
+      return { denied: true, detail: `${label} is not a directory` };
+    }
+    return { configured: true, detail: `${label} exists` };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { unknown: true, detail: `${label} has not been created` };
+    }
+    return { unknown: true, detail: error.message };
+  }
+}
+
+async function inspectEditor(io) {
+  const settingsPath = io.env.CLAUDE_SETTINGS_PATH
+    ? path.resolve(io.env.CLAUDE_SETTINGS_PATH)
+    : path.join(io.home, ".claude", "settings.json");
+  try {
+    const serialized = await fs.readFile(settingsPath, "utf8");
+    const settings = JSON.parse(serialized);
+    const editor = settings?.env?.VISUAL ?? settings?.env?.EDITOR;
+    if (typeof editor === "string" && /fleet-editor\.(?:cmd|sh)/iu.test(editor)) {
+      return { configured: true, detail: "Fleet external editor is configured", shortcut: "Ctrl+G" };
+    }
+    return { unknown: true, detail: "Fleet external editor is not configured" };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { unknown: true, detail: "Claude settings file was not found" };
+    }
+    return { unknown: true, detail: error.message };
+  }
+}
+
+async function doctorReport(context, io, dependencies, generatedAt) {
+  const runtimeFactory = dependencies.createRuntime ?? createRuntime;
+  return runDoctor({
+    cwd: context.workspace,
+    env: io.env,
+    generatedAt,
+    brokerProbe: async () => {
+      let runtime;
+      try {
+        runtime = await runtimeFactory({ cwd: context.workspace, env: io.env });
+        return { smokePassed: true, protocol: "compatible" };
+      } finally {
+        await runtime?.close();
+      }
+    },
+    stateProbe: () => inspectDirectory(context.root, "Fleet workspace state"),
+    editorProbe: () => inspectEditor(io),
+    terminalProbe: async () => io.isTTY
+      ? {
+          smokePassed: true,
+          unicode: io.env.TERM !== "dumb",
+          color: io.env.NO_COLOR === undefined
+        }
+      : { configured: true, detail: "Output is currently non-interactive" }
+  });
+}
+
+async function runExport(parsed, context, state, io, dependencies) {
+  const outputFlag = parsed.flags.get("--output");
+  if (!outputFlag) {
+    throw new InvalidInputError("export requires --output <absolute-or-relative-path>.");
+  }
+  const outputPath = path.resolve(io.cwd, outputFlag);
+  const generatedAt = state.updatedAt ?? "1970-01-01T00:00:00.000Z";
+  const doctor = await doctorReport(context, io, dependencies, generatedAt);
+  const preview = await previewSupportBundle({
+    outputPath,
+    workspaceKey: context.key,
+    doctor,
+    state,
+    events: [],
+    generatedAt
+  });
+  const confirmation = parsed.flags.get("--confirm-token");
+  if (!confirmation) {
+    return {
+      exitCode: EXIT_CODES.success,
+      payload: { ...preview, destination: outputPath }
+    };
+  }
+  if (confirmation !== preview.confirmationToken) {
+    throw new AuthorityDeniedError("Export requires the exact preview confirmation token.");
+  }
+  const result = await writeSupportBundle(preview, confirmation);
+  return {
+    exitCode: EXIT_CODES.success,
+    payload: {
+      schemaVersion: 1,
+      written: result.written,
+      bytes: result.bytes,
+      destination: outputPath,
+      manifest: preview.manifest
+    }
+  };
+}
+
 function serializedStateStore(root) {
   let writes = Promise.resolve();
   return {
@@ -433,27 +545,22 @@ async function runStart(contract, io, dependencies) {
 
 async function execute(parsed, io, dependencies) {
   if (parsed.command === "doctor") {
-    let executable = null;
-    let available = false;
-    let detail = null;
-    try {
-      executable = resolveExecutable("codex", { env: io.env, platform: io.platform });
-      available = true;
-    } catch (error) {
-      detail = error.message;
-    }
+    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+    const report = await doctorReport(context, io, dependencies);
     return {
-      exitCode: available ? EXIT_CODES.success : EXIT_CODES.runtimeUnavailable,
-      payload: {
-        schemaVersion: 1,
-        runtime: { available, executable, detail }
-      }
+      exitCode: report.overall === "blocked"
+        ? EXIT_CODES.runtimeUnavailable
+        : EXIT_CODES.success,
+      payload: report
     };
   }
 
   if (parsed.command === "status" || parsed.command === "result" || parsed.command === "export") {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
     const state = await readStateWithoutCreating(context.root);
+    if (parsed.command === "export") {
+      return runExport(parsed, context, state, io, dependencies);
+    }
     let lanes = state.lanes;
     if (parsed.command === "result") {
       const laneId = parsed.flags.get("--lane");
@@ -471,6 +578,8 @@ async function execute(parsed, io, dependencies) {
       payload: {
         schemaVersion: 1,
         workspaceKey: context.key,
+        workspace: { name: path.basename(context.workspace), branch: "unknown" },
+        runtime: { health: "unknown", protocol: "unknown" },
         updatedAt: state.updatedAt,
         lanes
       }
@@ -501,12 +610,15 @@ async function execute(parsed, io, dependencies) {
 
 function humanSummary(command, payload) {
   if (command === "doctor") {
-    return payload.runtime.available
-      ? `Codex runtime ready: ${payload.runtime.executable}`
-      : `Codex runtime unavailable: ${payload.runtime.detail}`;
+    return `Fleet doctor: ${payload.overall}.`;
   }
   if (command === "status") {
-    return `${payload.lanes.length} Fleet lane(s).`;
+    return renderPlainStatus(payload).trimEnd();
+  }
+  if (command === "export") {
+    return payload.written
+      ? `Support bundle written to ${payload.destination}.`
+      : `Support bundle preview ready for ${payload.destination}.`;
   }
   return JSON.stringify(payload);
 }
@@ -519,7 +631,8 @@ export async function runCli(argv, options = {}) {
     home: options.home ?? os.homedir(),
     readStdin: options.readStdin,
     stdout: options.stdout ?? ((text) => process.stdout.write(text)),
-    stderr: options.stderr ?? ((text) => process.stderr.write(text))
+    stderr: options.stderr ?? ((text) => process.stderr.write(text)),
+    isTTY: options.isTTY ?? process.stdout.isTTY === true
   };
   if (typeof io.readStdin !== "function") {
     io.readStdin = async () => Buffer.alloc(0);
