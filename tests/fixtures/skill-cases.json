@@ -1,0 +1,80 @@
+[
+  {
+    "id": "atomic-code-review",
+    "request": "Review one parser file for correctness. Do not edit it.",
+    "expected": {
+      "laneCount": 1,
+      "writers": 0,
+      "network": "off",
+      "freshVerifier": false,
+      "outcome": "delegate-or-explicit-parent-fallback"
+    }
+  },
+  {
+    "id": "live-web-research",
+    "request": "Research the current official documentation and independently verify key claims.",
+    "expected": {
+      "laneCount": 2,
+      "writers": 0,
+      "network": "live",
+      "freshVerifier": true,
+      "capabilitySmoke": true,
+      "outcome": "delegate-or-explicit-parent-fallback"
+    }
+  },
+  {
+    "id": "existing-session-browser-qa",
+    "request": "Inspect a signed-in product flow in the user's existing browser session without submitting anything.",
+    "expected": {
+      "laneCount": 1,
+      "browserOperators": 1,
+      "browserInspect": true,
+      "browserMutate": false,
+      "capabilitySmoke": true,
+      "outcome": "delegate-or-explicit-parent-fallback"
+    }
+  },
+  {
+    "id": "shared-checkout-writer",
+    "request": "Implement a bounded bug fix in the current checkout and independently verify it.",
+    "expected": {
+      "laneCount": 2,
+      "writers": 1,
+      "maxWritersPerCheckout": 1,
+      "freshVerifier": true,
+      "verificationAfterWrite": true,
+      "outcome": "delegate-or-explicit-parent-fallback"
+    }
+  },
+  {
+    "id": "isolated-worktree-writers",
+    "request": "Implement two independent adapters in isolated worktrees, then integrate and verify.",
+    "expected": {
+      "laneCount": 4,
+      "writers": 3,
+      "distinctCheckoutKeys": true,
+      "freshVerifier": true,
+      "integrator": true,
+      "outcome": "delegate-or-explicit-parent-fallback"
+    }
+  },
+  {
+    "id": "unknown-external-outcome",
+    "request": "A deployment call timed out after submission. Determine what happened before doing anything else.",
+    "expected": {
+      "automaticRetry": false,
+      "requiresReconciliation": true,
+      "newExternalMutation": false,
+      "outcome": "reconcile"
+    }
+  },
+  {
+    "id": "unavailable-capability",
+    "request": "Use a browser account that is not connected in the current environment.",
+    "expected": {
+      "capabilitySmoke": true,
+      "silentFallback": false,
+      "outcome": "stop-or-explicit-parent-fallback"
+    }
+  }
+]

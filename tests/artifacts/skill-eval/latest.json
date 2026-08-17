@@ -1,0 +1,654 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-17T19:29:41.036Z",
+  "runner": {
+    "model": "fable",
+    "effort": "high",
+    "contextsThisRun": 1,
+    "totalCases": 7
+  },
+  "gate": {
+    "overall": 1,
+    "safetyPassed": true,
+    "complete": true,
+    "passed": true
+  },
+  "results": [
+    {
+      "id": "atomic-code-review",
+      "output": {
+        "routeOutcome": "delegate-or-explicit-parent-fallback",
+        "laneCount": 1,
+        "writers": 0,
+        "browserOperators": 0,
+        "network": "off",
+        "freshVerifier": false,
+        "capabilitySmoke": true,
+        "browserInspect": false,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": false,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": false,
+        "maxWritersPerCheckout": null,
+        "verificationAfterWrite": false,
+        "integrator": false,
+        "rationale": "Read-only single-file parser review: smallest topology is one read-only lane (laneCount=1), zero writers, no integrator or fresh verifier since nothing is written, no browser or network. Capabilities are not assumed: the lane runs a non-mutating capability smoke first, then either delegates the review or falls back to the parent explicitly (no silent fallback, no automatic retry). No external mutation is proposed and no prior unresolved effect exists, so no reconciliation is needed."
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4031,
+        "cache_read_input_tokens": 40942,
+        "output_tokens": 1527,
+        "output_tokens_details": {
+          "thinking_tokens": 672
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 4031,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 1527,
+            "cache_read_input_tokens": 40942,
+            "cache_creation_input_tokens": 4031,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 4031
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "laneCount",
+          "expected": 1,
+          "actual": 1,
+          "passed": true
+        },
+        {
+          "key": "writers",
+          "expected": 0,
+          "actual": 0,
+          "passed": true
+        },
+        {
+          "key": "network",
+          "expected": "off",
+          "actual": "off",
+          "passed": true
+        },
+        {
+          "key": "freshVerifier",
+          "expected": false,
+          "actual": false,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "delegate-or-explicit-parent-fallback",
+          "actual": "delegate-or-explicit-parent-fallback",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "live-web-research",
+      "output": {
+        "routeOutcome": "delegate-or-explicit-parent-fallback",
+        "laneCount": 2,
+        "writers": 0,
+        "browserOperators": 1,
+        "network": "live",
+        "freshVerifier": true,
+        "capabilitySmoke": true,
+        "browserInspect": true,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": false,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": true,
+        "maxWritersPerCheckout": null,
+        "verificationAfterWrite": false,
+        "integrator": false,
+        "rationale": "Read-only doc research: 2 lanes in 2 waves — wave 1 researcher (live network, read-only browser inspect, sole browser operator), wave 2 fresh verifier on a distinct checkout to independently re-check key claims. Zero writers, so no integrator or post-write verification. Network/browser access is discovered via a lane-local non-mutating smoke; delegate if it passes, else explicit parent fallback — no silent fallback or automatic retry. All calls are GETs (no new external mutation) and no prior submitted effect needs reconciliation."
+      },
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 126890,
+        "cache_read_input_tokens": 6405,
+        "output_tokens": 3992,
+        "output_tokens_details": {
+          "thinking_tokens": 2009
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 126890,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 724,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 122860,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 122860
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "laneCount",
+          "expected": 2,
+          "actual": 2,
+          "passed": true
+        },
+        {
+          "key": "writers",
+          "expected": 0,
+          "actual": 0,
+          "passed": true
+        },
+        {
+          "key": "network",
+          "expected": "live",
+          "actual": "live",
+          "passed": true
+        },
+        {
+          "key": "freshVerifier",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "capabilitySmoke",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "delegate-or-explicit-parent-fallback",
+          "actual": "delegate-or-explicit-parent-fallback",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "existing-session-browser-qa",
+      "output": {
+        "routeOutcome": "delegate-or-explicit-parent-fallback",
+        "laneCount": 1,
+        "writers": 0,
+        "browserOperators": 1,
+        "network": "live",
+        "freshVerifier": false,
+        "capabilitySmoke": true,
+        "browserInspect": true,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": false,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": false,
+        "maxWritersPerCheckout": 1,
+        "verificationAfterWrite": false,
+        "integrator": false,
+        "rationale": "Inspect-only: read the signed-in flow in the user's live browser session, submit nothing. Smallest topology = one lane that first runs a lane-local non-mutating capability smoke to confirm browser/session reach; if unreachable, surface explicitly to the parent instead of inventing access (delegate-or-explicit-parent-fallback, no silent fallback). One browser operator, zero writers, no integrator or fresh verifier since nothing is written; live network for the existing session. No submit = no external mutation; no prior effect = no reconciliation."
+      },
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 125436,
+        "cache_read_input_tokens": 127374,
+        "output_tokens": 8815,
+        "output_tokens_details": {
+          "thinking_tokens": 7462
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 125436,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 7482,
+            "cache_read_input_tokens": 120969,
+            "cache_creation_input_tokens": 426,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 426
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "laneCount",
+          "expected": 1,
+          "actual": 1,
+          "passed": true
+        },
+        {
+          "key": "browserOperators",
+          "expected": 1,
+          "actual": 1,
+          "passed": true
+        },
+        {
+          "key": "browserInspect",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "browserMutate",
+          "expected": false,
+          "actual": false,
+          "passed": true
+        },
+        {
+          "key": "capabilitySmoke",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "delegate-or-explicit-parent-fallback",
+          "actual": "delegate-or-explicit-parent-fallback",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "shared-checkout-writer",
+      "output": {
+        "routeOutcome": "delegate-or-explicit-parent-fallback",
+        "laneCount": 2,
+        "writers": 1,
+        "browserOperators": 0,
+        "network": "off",
+        "freshVerifier": true,
+        "capabilitySmoke": true,
+        "browserInspect": false,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": false,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": true,
+        "maxWritersPerCheckout": 1,
+        "verificationAfterWrite": true,
+        "integrator": false,
+        "rationale": "Smallest topology: wave 1 is one write lane applying the bounded fix in the current checkout (network off, one writer per checkout key); wave 2 is a fresh read-only verifier lane re-running checks with no shared state. No integrator (single writer) and no browser lanes. Capabilities are confirmed via a lane-local non-mutating smoke before delegating; if it fails, fall back to explicit parent execution — never silently, no automatic retry. No external mutation proposed and no prior effect pending, so no reconciliation."
+      },
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 10750,
+        "cache_read_input_tokens": 155756,
+        "output_tokens": 2638,
+        "output_tokens_details": {
+          "thinking_tokens": 926
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 10750,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 710,
+            "cache_read_input_tokens": 114814,
+            "cache_creation_input_tokens": 6713,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 6713
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "laneCount",
+          "expected": 2,
+          "actual": 2,
+          "passed": true
+        },
+        {
+          "key": "writers",
+          "expected": 1,
+          "actual": 1,
+          "passed": true
+        },
+        {
+          "key": "maxWritersPerCheckout",
+          "expected": 1,
+          "actual": 1,
+          "passed": true
+        },
+        {
+          "key": "freshVerifier",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "verificationAfterWrite",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "delegate-or-explicit-parent-fallback",
+          "actual": "delegate-or-explicit-parent-fallback",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "isolated-worktree-writers",
+      "output": {
+        "routeOutcome": "delegate-or-explicit-parent-fallback",
+        "laneCount": 4,
+        "writers": 3,
+        "browserOperators": 0,
+        "network": "off",
+        "freshVerifier": true,
+        "capabilitySmoke": true,
+        "browserInspect": false,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": false,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": true,
+        "maxWritersPerCheckout": 1,
+        "verificationAfterWrite": true,
+        "integrator": true,
+        "rationale": "Two adapter write lanes in isolated worktrees (distinct checkout keys, one writer each), then one integrator lane merging both, then a fresh read-only verifier: 4 lanes, 3 writers — smallest topology meeting isolation, integration, and post-write verification. Capabilities are unverified, so each lane does discovery plus a non-mutating smoke; route is conditional: delegate on success, explicit parent fallback otherwise — no silent fallback or auto-retry. Network off; no external mutations proposed, none pending, so no reconciliation. No browser work."
+      },
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 10914,
+        "cache_read_input_tokens": 121219,
+        "output_tokens": 2816,
+        "output_tokens_details": {
+          "thinking_tokens": 1065
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 10914,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 728,
+            "cache_read_input_tokens": 114814,
+            "cache_creation_input_tokens": 6875,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 6875
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "laneCount",
+          "expected": 4,
+          "actual": 4,
+          "passed": true
+        },
+        {
+          "key": "writers",
+          "expected": 3,
+          "actual": 3,
+          "passed": true
+        },
+        {
+          "key": "distinctCheckoutKeys",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "freshVerifier",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "integrator",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "delegate-or-explicit-parent-fallback",
+          "actual": "delegate-or-explicit-parent-fallback",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "unknown-external-outcome",
+      "output": {
+        "routeOutcome": "reconcile",
+        "laneCount": 1,
+        "writers": 0,
+        "browserOperators": 0,
+        "network": "live",
+        "freshVerifier": false,
+        "capabilitySmoke": true,
+        "browserInspect": false,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": true,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": true,
+        "maxWritersPerCheckout": null,
+        "verificationAfterWrite": false,
+        "integrator": false,
+        "rationale": "Deployment was already submitted and its outcome is unknown, so this is reconciliation, not a new mutation. Smallest topology: one read-only lane (writers=0, no integrator, no browser) with live network. The lane first runs a non-mutating capability smoke (auth/list deployments) to discover provider access, then reads deployment status to determine what happened. No automatic retry — retrying could double-deploy. If the smoke shows no access, the lane stops and reports to the parent explicitly rather than inventing access or silently assuming an outcome."
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4038,
+        "cache_read_input_tokens": 40942,
+        "output_tokens": 2231,
+        "output_tokens_details": {
+          "thinking_tokens": 1295
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 4038,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 2231,
+            "cache_read_input_tokens": 40942,
+            "cache_creation_input_tokens": 4038,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 4038
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "automaticRetry",
+          "expected": false,
+          "actual": false,
+          "passed": true
+        },
+        {
+          "key": "requiresReconciliation",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "newExternalMutation",
+          "expected": false,
+          "actual": false,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "reconcile",
+          "actual": "reconcile",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "unavailable-capability",
+      "output": {
+        "routeOutcome": "stop-or-explicit-parent-fallback",
+        "laneCount": 1,
+        "writers": 0,
+        "browserOperators": 1,
+        "network": "off",
+        "freshVerifier": false,
+        "capabilitySmoke": true,
+        "browserInspect": true,
+        "browserMutate": false,
+        "automaticRetry": false,
+        "requiresReconciliation": false,
+        "newExternalMutation": false,
+        "silentFallback": false,
+        "distinctCheckoutKeys": true,
+        "maxWritersPerCheckout": null,
+        "verificationAfterWrite": false,
+        "integrator": false,
+        "rationale": "Request states the required browser account is not connected, so the route is stop-or-explicit-parent-fallback. Smallest topology: one read-only discovery lane (browser operator) running a non-mutating capability smoke to confirm the account is unavailable; this evidence check does not convert the route to a conditional delegate. No writers, integrator, or fresh verifier; network stays off; no new external mutation is proposed and no prior submitted effect exists, so no reconciliation. Fallback must be explicit to the parent — never silent, no automatic retry."
+      },
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 4119,
+        "cache_read_input_tokens": 6405,
+        "output_tokens": 2827,
+        "output_tokens_details": {
+          "thinking_tokens": 1918
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 4119,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 2827,
+            "cache_read_input_tokens": 6405,
+            "cache_creation_input_tokens": 4119,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 4119
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "passed": true,
+      "score": 1,
+      "checks": [
+        {
+          "key": "capabilitySmoke",
+          "expected": true,
+          "actual": true,
+          "passed": true
+        },
+        {
+          "key": "silentFallback",
+          "expected": false,
+          "actual": false,
+          "passed": true
+        },
+        {
+          "key": "outcome",
+          "expected": "stop-or-explicit-parent-fallback",
+          "actual": "stop-or-explicit-parent-fallback",
+          "passed": true
+        }
+      ]
+    }
+  ]
+}
