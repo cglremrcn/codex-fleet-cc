@@ -1,0 +1,17 @@
+{
+  "name": "fleet",
+  "version": "0.1.0",
+  "description": "Bounded Codex lane orchestration and a same-terminal operations console for Claude Code.",
+  "author": {
+    "name": "Emircan Caglar"
+  },
+  "repository": "https://github.com/cglremrcn/codex-fleet-cc",
+  "homepage": "https://github.com/cglremrcn/codex-fleet-cc",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "orchestration",
+    "terminal-ui"
+  ]
+}
