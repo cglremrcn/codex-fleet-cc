@@ -353,42 +353,54 @@ function summary(view) {
   return parts.join("  ");
 }
 
-const FORMATION_FRAMES = Object.freeze([
-  Object.freeze(["◆       ◆", "  ╲  ◇  ╱", "◆   ╲▼╱   ◆"]),
-  Object.freeze(["  ◆   ◆", "   ╲◇╱", "    ▼ ◆"]),
-  Object.freeze(["    ◆", "  ◆─◇─◆", "    ▼"]),
-  Object.freeze(["◆   ◆", " ╲ ◇ ╱", "◆   ▼   ◆"])
+const KITE_WIDTH = 21;
+const KITE_ORBITS = Object.freeze([
+  Object.freeze(["◆                 ◆", " ╲               ╱"]),
+  Object.freeze(["  ◆             ◆", "   ╲╲         ╱╱"]),
+  Object.freeze(["     ◆       ◆", "      ╲     ╱"]),
+  Object.freeze(["  ◆             ◆", "   ╱╱         ╲╲"])
+]);
+const KITE_ASCII_ORBITS = Object.freeze([
+  Object.freeze(["*                 *", " \\               /"]),
+  Object.freeze(["  *             *", "   \\\\         //"]),
+  Object.freeze(["     *       *", "      \\     /"]),
+  Object.freeze(["  *             *", "   //         \\\\"])
 ]);
 
-const FORMATION_ASCII_FRAMES = Object.freeze([
-  Object.freeze(["o       o", "  \\  o  /", "o   \\v/   o"]),
-  Object.freeze(["  o   o", "   \\o/", "    v o"]),
-  Object.freeze(["    o", "  o-o-o", "    v"]),
-  Object.freeze(["o   o", " \\ o /", "o   v   o"])
-]);
+function center(value, width) {
+  const clipped = truncate(value, width);
+  const remaining = Math.max(0, width - displayWidth(clipped));
+  const left = Math.floor(remaining / 2);
+  return `${" ".repeat(left)}${clipped}${" ".repeat(remaining - left)}`;
+}
 
-const COMPACT_FORMATION_FRAMES = Object.freeze([
-  "◆ · ◇ · ◆",
-  "  ◆╲◇╱◆",
-  "   ◆◇◆",
-  "◆╱◇╲◆"
-]);
-
-const COMPACT_ASCII_FRAMES = Object.freeze([
-  "o . o . o",
-  "  o\\o/o",
-  "   ooo",
-  "o/o\\o"
-]);
-
-function formationCore(view, useUnicode) {
-  const selectedStatus = view?.selectedLane?.status;
-  if (selectedStatus === "verified") return useUnicode ? "✓" : "V";
-  if (selectedStatus === "failed" || selectedStatus === "outcome_unknown") {
-    return useUnicode ? "×" : "X";
+function kiteFeatures(status, frame, useUnicode) {
+  if (!useUnicode) {
+    const movingEyes = [["o", "o"], [".", "o"], ["-", "-"], ["o", "."]];
+    const states = {
+      queued: [".", ".", "v", "Q"],
+      running: [...movingEyes[frame], "v", "R"],
+      complete: ["o", "o", "-", "C"],
+      verified: ["^", "^", "u", "V"],
+      blocked: ["-", "-", "!", "!"],
+      failed: ["x", "x", "-", "X"],
+      cancelled: [".", ".", "-", "-"],
+      outcome_unknown: ["?", "?", ".", "?"]
+    };
+    return states[status] ?? states.blocked;
   }
-  if (selectedStatus === "blocked") return "!";
-  return useUnicode ? "◇" : "o";
+  const movingEyes = [["●", "●"], ["•", "●"], ["─", "─"], ["●", "•"]];
+  const states = {
+    queued: ["·", "·", "⌄", "○"],
+    running: [...movingEyes[frame], "▿", "◆"],
+    complete: ["●", "●", "─", "◇"],
+    verified: ["⌒", "⌒", "⌣", "✓"],
+    blocked: ["─", "─", "!", "!"],
+    failed: ["×", "×", "─", "×"],
+    cancelled: ["·", "·", "─", "–"],
+    outcome_unknown: ["?", "?", "·", "?"]
+  };
+  return states[status] ?? states.blocked;
 }
 
 function formationFrame(preferences, length) {
@@ -399,20 +411,35 @@ function formationFrame(preferences, length) {
 
 export function renderFleetMark(view, preferences = {}) {
   const useUnicode = preferences.unicode !== false;
-  const frames = useUnicode ? FORMATION_FRAMES : FORMATION_ASCII_FRAMES;
-  const frame = formationFrame(preferences, frames.length);
-  const core = formationCore(view, useUnicode);
-  return frames[frame].map((line, index) => {
-    const withStatus = index === 1 ? line.replace(/[◇o]/u, core) : line;
-    return pad(withStatus, 11);
-  });
+  const orbits = useUnicode ? KITE_ORBITS : KITE_ASCII_ORBITS;
+  const frame = formationFrame(preferences, orbits.length);
+  const status = view?.selectedLane?.status ?? "queued";
+  const [leftEye, rightEye, mouth, core] = kiteFeatures(status, frame, useUnicode);
+  const body = useUnicode
+    ? [
+      `╭━━━╾▰  ${leftEye} ${rightEye}  ▰╼━━━╮`,
+      `╰━╮     ${mouth}     ╭━╯`,
+      `╰━━━╲  ${core}  ╱━━━╯`
+    ]
+    : [
+      `[====  ${leftEye} ${rightEye}  ====]`,
+      `\\        ${mouth}        /`,
+      `\\===    ${core}    ===/`
+    ];
+  const posture = (status === "blocked" || status === "failed" || status === "outcome_unknown")
+    ? [orbits[0][0], center("╲             ╱", KITE_WIDTH), ...body]
+    : [...orbits[frame], ...body];
+  return posture.map((line) => center(line, KITE_WIDTH));
 }
 
 function renderCompactMark(view, preferences = {}) {
   const useUnicode = preferences.unicode !== false;
-  const frames = useUnicode ? COMPACT_FORMATION_FRAMES : COMPACT_ASCII_FRAMES;
-  const frame = formationFrame(preferences, frames.length);
-  return frames[frame].replace(/[◇o]/u, formationCore(view, useUnicode));
+  const frame = formationFrame(preferences, 4);
+  const status = view?.selectedLane?.status ?? "queued";
+  const [leftEye, rightEye, , core] = kiteFeatures(status, frame, useUnicode);
+  return useUnicode
+    ? `╭▰ ${leftEye} ${rightEye} ▰╮${core}`
+    : `[= ${leftEye} ${rightEye} =]${core}`;
 }
 
 function placeRight(left, right, columns) {
@@ -428,6 +455,10 @@ function placeRight(left, right, columns) {
 function wideMasthead(view, columns, preferences) {
   const mark = renderFleetMark(view, preferences);
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
+  const selected = view.selectedLane;
+  const motion = preferences.motion === false || preferences.reducedMotion === true
+    ? "STILL"
+    : "LIVE";
   return [
     placeRight(
       `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
@@ -441,8 +472,20 @@ function wideMasthead(view, columns, preferences) {
       columns
     ),
     placeRight(
-      `KITE//FORMATION  LANES ${view.lanes.length}  ACTIVE LIMIT ${limit}`,
+      `NAV//KITE  WATCH ${String(view.selectedIndex + 1).padStart(2, "0")}/${String(
+        view.lanes.length
+      ).padStart(2, "0")}  ${selected?.id ?? "NO-LANE"}`,
       mark[2],
+      columns
+    ),
+    placeRight(
+      `POSTURE ${(selected?.status ?? "queued").toUpperCase()}  MOTION ${motion}`,
+      mark[3],
+      columns
+    ),
+    placeRight(
+      `FLEET LANES ${view.lanes.length}  ACTIVE LIMIT ${limit}`,
+      mark[4],
       columns
     )
   ];
@@ -477,7 +520,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
   const authorityWidth = Math.max(30, Math.floor(available * 0.23));
   const detailWidth = available - laneWidth - authorityWidth;
   const widths = [laneWidth, detailWidth, authorityWidth];
-  const bodyHeight = Math.max(4, terminal.rows - 8);
+  const bodyHeight = Math.max(4, terminal.rows - 10);
   return [
     ...wideMasthead(view, terminal.columns, preferences),
     signalLine(view, terminal.columns, border, useUnicode),
@@ -569,7 +612,7 @@ function colorizeLine(line, index, view, theme) {
       styled = theme.paint("accent", stripAnsi(styled));
     }
   }
-  styled = styled.replace(/[◆◇╲╱▼]/gu, (glyph) => theme.paint("accent", glyph));
+  styled = styled.replace(/[◆◇╲╱▼●•▿╾╼✓⌒⌣▰]/gu, (glyph) => theme.paint("accent", glyph));
   if (index === 0) styled = `${theme.bold}${theme.paint("ink", stripAnsi(styled))}`;
   else if (styled.includes("SIGNAL")) styled = theme.paint("accent", stripAnsi(styled));
   else if (/^[─━=\-]+$/.test(stripAnsi(styled))) styled = theme.paint("dim", stripAnsi(styled));

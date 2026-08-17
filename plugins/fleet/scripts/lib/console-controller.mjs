@@ -226,7 +226,7 @@ export function createConsoleController(options = {}) {
   }
 
   function selectMouseRow(event) {
-    const firstLaneRow = terminal.columns >= 120 ? 7 : terminal.columns >= 80 ? 6 : 5;
+    const firstLaneRow = terminal.columns >= 120 ? 9 : terminal.columns >= 80 ? 6 : 5;
     const index = Math.floor((event.row - firstLaneRow) / 2);
     if (event.row >= firstLaneRow && index >= 0 && index < ui.laneCount) {
       ui.selectedIndex = index;

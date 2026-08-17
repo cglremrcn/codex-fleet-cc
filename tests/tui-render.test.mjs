@@ -162,8 +162,26 @@ test("Fleet Formation moves only when motion is enabled", () => {
 
   assert.notDeepEqual(movingA, movingB);
   assert.deepEqual(reducedA, reducedB);
-  assert.equal(movingA.length, 3);
-  assert.ok(movingA.every((line) => displayWidth(line) === 11));
+  assert.equal(movingA.length, 5);
+  assert.ok(movingA.every((line) => displayWidth(line) === 21));
+});
+
+test("KITE has a recognizable face and truthful state posture", () => {
+  const running = renderFleetMark(viewFixture(), { frame: 0, unicode: true });
+  const verified = renderFleetMark(viewFixture({
+    selection: "release-proof"
+  }), { frame: 0, unicode: true });
+  const blocked = renderFleetMark(viewFixture({
+    selection: "qa-browser"
+  }), { frame: 0, unicode: true });
+
+  assert.match(running.join("\n"), /●.*●/u);
+  assert.match(verified.join("\n"), /⌒.*⌒/u);
+  assert.match(verified.join("\n"), /✓/u);
+  assert.match(blocked.join("\n"), /─.*─/u);
+  assert.match(blocked.join("\n"), /!/u);
+  assert.notDeepEqual(running, verified);
+  assert.notDeepEqual(verified, blocked);
 });
 
 test("compact masthead keeps complete health counters", () => {
@@ -189,7 +207,7 @@ test("screen-reader mode is linear and excludes decorative formation output", ()
   );
 
   assert.doesNotMatch(output, /\u001b\[/);
-  assert.doesNotMatch(output, /KITE|◆|◇|╲|╱|▼/u);
+  assert.doesNotMatch(output, /KITE|◆|◇|╲|╱|▼|●|╾|╼/u);
   assert.match(output, /Lane 2 of 4: console-build, running/);
 });
 

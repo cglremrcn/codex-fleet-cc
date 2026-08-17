@@ -1,6 +1,8 @@
-FLEET//OPS  codex-fleet-cc@main  01 LIVE  01 VERIFIED  01 ATTENTION                                                                                  ◆       ◆
-RUNTIME READY  PROTOCOL COMPATIBLE                                                                                                                     ╲  ◇  ╱
-KITE//FORMATION  LANES 4  ACTIVE LIMIT 3                                                                                                             ◆   ╲▼╱   ◆
+FLEET//OPS  codex-fleet-cc@main  01 LIVE  01 VERIFIED  01 ATTENTION                                                                         ◆                 ◆
+RUNTIME READY  PROTOCOL COMPATIBLE                                                                                                           ╲               ╱
+NAV//KITE  WATCH 02/04  console-build                                                                                                       ╭━━━╾▰  ● ●  ▰╼━━━╮
+POSTURE RUNNING  MOTION LIVE                                                                                                                 ╰━╮     ▿     ╭━╯
+FLEET LANES 4  ACTIVE LIMIT 3                                                                                                                 ╰━━━╲  ◆  ╱━━━╯
 ▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANES  4                                        │ SELECTED / console-build                                                 │ AUTHORITY
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -19,8 +21,6 @@ LANES  4                                        │ SELECTED / console-build    
                                                 │                                                                          │ Roles do not grant authority.
                                                 │ SAFE EVENTS                                                              │
                                                 │ No safe events recorded                                                  │
-                                                │                                                                          │
-                                                │                                                                          │
                                                 │                                                                          │
                                                 │                                                                          │
                                                 │                                                                          │
