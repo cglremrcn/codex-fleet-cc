@@ -1,0 +1,621 @@
+import { STATUS_PRESENTATION, createTheme } from "./theme.mjs";
+
+const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
+const PANELS = new Set(["lanes", "detail", "evidence", "authority", "controls"]);
+const segmenter = typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter("en", { granularity: "grapheme" })
+  : null;
+
+const BORDERS = Object.freeze({
+  unicode: { vertical: "│", horizontal: "─", signal: "━", selected: "▌", arrow: "▶" },
+  ascii: { vertical: "|", horizontal: "-", signal: "=", selected: ">", arrow: ">" }
+});
+
+const STATUS_EXPLANATIONS = Object.freeze({
+  queued: "Waiting for a scheduler slot.",
+  running: "Work is in progress.",
+  complete: "Worker claim; independent verification has not passed.",
+  verified: "Independent evidence has passed verification.",
+  blocked: "Progress needs an input or capability that is not available.",
+  failed: "The lane stopped without a usable result.",
+  cancelled: "The owned lane turn was cancelled.",
+  outcome_unknown: "An external effect is unresolved; blind retry is blocked."
+});
+
+export function stripAnsi(value) {
+  return String(value ?? "").replace(ANSI_PATTERN, "");
+}
+
+function isWideCodePoint(codePoint) {
+  return codePoint >= 0x1100 && (
+    codePoint <= 0x115f
+    || codePoint === 0x2329
+    || codePoint === 0x232a
+    || (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f)
+    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
+    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+    || (codePoint >= 0xff00 && codePoint <= 0xff60)
+    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    || (codePoint >= 0x1f300 && codePoint <= 0x1faff)
+    || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  );
+}
+
+function graphemes(value) {
+  const plain = stripAnsi(value);
+  if (!segmenter) return Array.from(plain);
+  return Array.from(segmenter.segment(plain), ({ segment }) => segment);
+}
+
+function graphemeWidth(grapheme) {
+  if (!grapheme) return 0;
+  if (/\p{Extended_Pictographic}/u.test(grapheme)) return 2;
+  for (const character of grapheme) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint === 0x200d || codePoint === 0xfe0f || /\p{Mark}/u.test(character)) continue;
+    if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint < 0xa0)) continue;
+    return isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return 0;
+}
+
+export function displayWidth(value) {
+  return graphemes(value).reduce((total, item) => total + graphemeWidth(item), 0);
+}
+
+function truncate(value, width, ellipsis = "…") {
+  const target = Math.max(0, width);
+  if (displayWidth(value) <= target) return String(value);
+  if (target === 0) return "";
+  const marker = displayWidth(ellipsis) <= target ? ellipsis : "";
+  const limit = target - displayWidth(marker);
+  let output = "";
+  let used = 0;
+  for (const item of graphemes(value)) {
+    const itemWidth = graphemeWidth(item);
+    if (used + itemWidth > limit) break;
+    output += item;
+    used += itemWidth;
+  }
+  return `${output}${marker}`;
+}
+
+function pad(value, width) {
+  const clipped = truncate(String(value ?? ""), width);
+  return `${clipped}${" ".repeat(Math.max(0, width - displayWidth(clipped)))}`;
+}
+
+function wrap(value, width) {
+  const target = Math.max(1, width);
+  const words = String(value ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [""];
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    if (displayWidth(word) > target) {
+      if (current) lines.push(current);
+      lines.push(truncate(word, target));
+      current = "";
+      continue;
+    }
+    const candidate = current ? `${current} ${word}` : word;
+    if (displayWidth(candidate) <= target) current = candidate;
+    else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function boundedText(value, fallback, maximum = 160) {
+  if (typeof value !== "string" || value.length === 0) return fallback;
+  return value.slice(0, maximum).replace(/[\u0000-\u001f\u007f]/g, " ");
+}
+
+function normalizeUsage(value) {
+  if (!value || typeof value !== "object") return null;
+  const fields = ["input", "output", "total"];
+  const usage = {};
+  for (const field of fields) {
+    if (Number.isFinite(value[field]) && value[field] >= 0) usage[field] = value[field];
+  }
+  return Object.keys(usage).length > 0 ? Object.freeze(usage) : null;
+}
+
+function normalizeAuthority(value = {}) {
+  const browser = value.browser ?? {};
+  const processAuthority = value.process ?? {};
+  const database = value.database ?? {};
+  const external = value.externalEffects ?? {};
+  return Object.freeze({
+    sandbox: value.sandbox === "workspace-write" ? "workspace-write" : "read-only",
+    network: value.network === "live" ? "live" : "off",
+    browser: Object.freeze({ inspect: browser.inspect === true, mutate: browser.mutate === true }),
+    process: Object.freeze({
+      start: processAuthority.start === true,
+      stopOwned: processAuthority.stopOwned === true
+    }),
+    database: Object.freeze({ read: database.read === true, write: database.write === true }),
+    externalEffects: Object.freeze({
+      send: external.send === true,
+      payment: external.payment === true,
+      deploy: external.deploy === true,
+      delete: external.delete === true
+    }),
+    retry: value.retry === true
+  });
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const item of Object.values(value)) deepFreeze(item);
+  return Object.freeze(value);
+}
+
+function normalizeLane(value, index) {
+  const status = STATUS_PRESENTATION[value?.status] ? value.status : "blocked";
+  return {
+    id: boundedText(value?.id, `lane-${index + 1}`, 64),
+    role: boundedText(value?.role, "unreported-role", 64),
+    label: boundedText(value?.label, "Untitled lane", 120),
+    model: boundedText(value?.model, "Model not reported", 80),
+    effort: boundedText(value?.effort, "Effort not reported", 32),
+    status,
+    phase: boundedText(value?.phase, status, 80),
+    authority: normalizeAuthority(value?.authority),
+    updatedAt: typeof value?.updatedAt === "string" ? value.updatedAt : null,
+    resultRef: typeof value?.resultRef === "string" ? value.resultRef : null,
+    verifierLaneId: typeof value?.verifierLaneId === "string" ? value.verifierLaneId : null,
+    evidenceRefs: Array.isArray(value?.evidenceRefs)
+      ? value.evidenceRefs.filter((item) => typeof item === "string").slice(0, 32)
+      : [],
+    events: Array.isArray(value?.events)
+      ? value.events.filter((item) => typeof item === "string").slice(-8)
+      : [],
+    tokenUsage: normalizeUsage(value?.tokenUsage)
+  };
+}
+
+export function buildViewModel(snapshot, selection, panel = "lanes") {
+  const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const lanes = Array.isArray(source.lanes) ? source.lanes.map(normalizeLane) : [];
+  const selectedIndex = typeof selection === "number"
+    ? Math.max(0, Math.min(lanes.length - 1, selection))
+    : Math.max(0, lanes.findIndex((lane) => lane.id === selection));
+  const selectedLane = lanes[selectedIndex] ?? null;
+  const totals = Object.fromEntries(Object.keys(STATUS_PRESENTATION).map((status) => [
+    status,
+    lanes.filter((lane) => lane.status === status).length
+  ]));
+  totals.active = totals.queued + totals.running;
+  totals.attention = totals.blocked + totals.failed + totals.outcome_unknown;
+
+  return deepFreeze({
+    workspace: {
+      name: boundedText(source.workspace?.name, "local-workspace", 80),
+      branch: boundedText(source.workspace?.branch, "branch-not-reported", 80)
+    },
+    runtime: {
+      health: boundedText(source.runtime?.health, "unknown", 32),
+      protocol: boundedText(source.runtime?.protocol, "unknown", 32),
+      activeLimit: Number.isInteger(source.runtime?.activeLimit)
+        ? source.runtime.activeLimit
+        : null
+    },
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : null,
+    lanes,
+    selectedIndex,
+    selectedLane,
+    totals,
+    panel: PANELS.has(panel) ? panel : "lanes"
+  });
+}
+
+function statusText(status, useUnicode) {
+  const presentation = STATUS_PRESENTATION[status] ?? STATUS_PRESENTATION.blocked;
+  const mark = useUnicode ? presentation.unicode : presentation.ascii;
+  return `${mark} ${presentation.label}`;
+}
+
+function formatNumber(value) {
+  return String(Math.trunc(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function usageText(usage) {
+  if (!usage) return "Token usage not reported";
+  const parts = [];
+  if (Number.isFinite(usage.input)) parts.push(`${formatNumber(usage.input)} in`);
+  if (Number.isFinite(usage.output)) parts.push(`${formatNumber(usage.output)} out`);
+  const total = Number.isFinite(usage.total)
+    ? usage.total
+    : (usage.input ?? 0) + (usage.output ?? 0);
+  const prefix = parts.length > 0 ? `${formatNumber(total)} tokens · ` : "";
+  return `${prefix}${parts.join(" / ") || `${formatNumber(total)} tokens`}`;
+}
+
+function laneLines(view, width, useUnicode) {
+  if (view.lanes.length === 0) return ["No lanes yet", "Start a bounded lane from Claude Code."];
+  const lines = [];
+  view.lanes.forEach((lane, index) => {
+    const selected = index === view.selectedIndex;
+    const marker = selected ? BORDERS[useUnicode ? "unicode" : "ascii"].selected : " ";
+    const number = String(index + 1).padStart(2, "0");
+    const status = pad(statusText(lane.status, useUnicode), 17);
+    lines.push(truncate(`${marker} ${number} ${status} ${lane.id}`, width));
+    const metadata = `${lane.role} · ${lane.model}/${lane.effort}`;
+    lines.push(truncate(`     ${metadata}`, width));
+  });
+  return lines;
+}
+
+function detailLines(lane, width) {
+  if (!lane) return ["No lane selected"];
+  const lines = [
+    ...wrap(lane.label, width),
+    "",
+    `ROLE     ${lane.role}`,
+    `PHASE    ${lane.phase}`,
+    `MODEL    ${lane.model}`,
+    `EFFORT   ${lane.effort}`,
+    "",
+    ...wrap(STATUS_EXPLANATIONS[lane.status], width),
+    usageText(lane.tokenUsage),
+    "",
+    "RESULT",
+    lane.resultRef ?? "No result reference recorded",
+    "",
+    "SAFE EVENTS",
+    ...(lane.events.length > 0 ? lane.events : ["No safe events recorded"])
+  ];
+  return lines.flatMap((line) => wrap(line, width));
+}
+
+function evidenceLines(lane, width) {
+  if (!lane) return ["No lane selected"];
+  const lines = [
+    `STATUS   ${STATUS_PRESENTATION[lane.status].label}`,
+    `RESULT   ${lane.resultRef ?? "not recorded"}`,
+    `VERIFIER ${lane.verifierLaneId ?? "not recorded"}`,
+    "",
+    "EVIDENCE"
+  ];
+  if (lane.evidenceRefs.length === 0) lines.push("No evidence references recorded");
+  else lane.evidenceRefs.forEach((reference, index) => lines.push(`${index + 1}. ${reference}`));
+  return lines.flatMap((line) => wrap(line, width));
+}
+
+function grant(value) {
+  return value ? "YES" : "--";
+}
+
+function authorityLines(lane, width) {
+  if (!lane) return ["No lane selected"];
+  const value = lane.authority;
+  const lines = [
+    `SANDBOX   ${value.sandbox.toUpperCase()}`,
+    `NETWORK   ${value.network.toUpperCase()}`,
+    "",
+    `BROWSER   inspect ${grant(value.browser.inspect)}  mutate ${grant(value.browser.mutate)}`,
+    `PROCESS   start ${grant(value.process.start)}  stop-owned ${grant(value.process.stopOwned)}`,
+    `DATABASE  read ${grant(value.database.read)}  write ${grant(value.database.write)}`,
+    `SEND      ${grant(value.externalEffects.send)}`,
+    `PAYMENT   ${grant(value.externalEffects.payment)}`,
+    `DEPLOY    ${grant(value.externalEffects.deploy)}`,
+    `DELETE    ${grant(value.externalEffects.delete)}`,
+    `RETRY     ${grant(value.retry)}`,
+    "",
+    "Roles do not grant authority."
+  ];
+  return lines.flatMap((line) => wrap(line, width));
+}
+
+function controlsLines(width) {
+  const controls = [
+    "↑/↓ or J/K   Select lane",
+    "Enter        Open lane detail",
+    "Tab          Cycle panels",
+    "/            Filter lanes",
+    "M            Bounded follow-up",
+    "X            Confirmed cancellation",
+    "E            Open preserved editor",
+    "P            Pause formation motion",
+    "?            Contextual help",
+    "Q or Esc     Return to Claude Code"
+  ];
+  return controls.flatMap((line) => wrap(line, width));
+}
+
+function fitPanel(lines, height, width) {
+  const result = lines.slice(0, height).map((line) => pad(line, width));
+  while (result.length < height) result.push(" ".repeat(width));
+  return result;
+}
+
+function joinPanels(panelGroups, widths, height, border) {
+  const fitted = panelGroups.map((lines, index) => fitPanel(lines, height, widths[index]));
+  return Array.from({ length: height }, (_, row) => (
+    fitted.map((panel) => panel[row]).join(` ${border.vertical} `).trimEnd()
+  ));
+}
+
+function summary(view) {
+  const parts = [`${String(view.totals.active).padStart(2, "0")} LIVE`];
+  if (view.totals.verified > 0) {
+    parts.push(`${String(view.totals.verified).padStart(2, "0")} VERIFIED`);
+  }
+  if (view.totals.attention > 0) {
+    parts.push(`${String(view.totals.attention).padStart(2, "0")} ATTENTION`);
+  }
+  return parts.join("  ");
+}
+
+const FORMATION_FRAMES = Object.freeze([
+  Object.freeze(["◆       ◆", "  ╲  ◇  ╱", "◆   ╲▼╱   ◆"]),
+  Object.freeze(["  ◆   ◆", "   ╲◇╱", "    ▼ ◆"]),
+  Object.freeze(["    ◆", "  ◆─◇─◆", "    ▼"]),
+  Object.freeze(["◆   ◆", " ╲ ◇ ╱", "◆   ▼   ◆"])
+]);
+
+const FORMATION_ASCII_FRAMES = Object.freeze([
+  Object.freeze(["o       o", "  \\  o  /", "o   \\v/   o"]),
+  Object.freeze(["  o   o", "   \\o/", "    v o"]),
+  Object.freeze(["    o", "  o-o-o", "    v"]),
+  Object.freeze(["o   o", " \\ o /", "o   v   o"])
+]);
+
+const COMPACT_FORMATION_FRAMES = Object.freeze([
+  "◆ · ◇ · ◆",
+  "  ◆╲◇╱◆",
+  "   ◆◇◆",
+  "◆╱◇╲◆"
+]);
+
+const COMPACT_ASCII_FRAMES = Object.freeze([
+  "o . o . o",
+  "  o\\o/o",
+  "   ooo",
+  "o/o\\o"
+]);
+
+function formationCore(view, useUnicode) {
+  const selectedStatus = view?.selectedLane?.status;
+  if (selectedStatus === "verified") return useUnicode ? "✓" : "V";
+  if (selectedStatus === "failed" || selectedStatus === "outcome_unknown") {
+    return useUnicode ? "×" : "X";
+  }
+  if (selectedStatus === "blocked") return "!";
+  return useUnicode ? "◇" : "o";
+}
+
+function formationFrame(preferences, length) {
+  const moving = preferences.motion !== false && preferences.reducedMotion !== true;
+  const requestedFrame = Number.isInteger(preferences.frame) ? preferences.frame : 0;
+  return moving ? Math.abs(requestedFrame) % length : 2;
+}
+
+export function renderFleetMark(view, preferences = {}) {
+  const useUnicode = preferences.unicode !== false;
+  const frames = useUnicode ? FORMATION_FRAMES : FORMATION_ASCII_FRAMES;
+  const frame = formationFrame(preferences, frames.length);
+  const core = formationCore(view, useUnicode);
+  return frames[frame].map((line, index) => {
+    const withStatus = index === 1 ? line.replace(/[◇o]/u, core) : line;
+    return pad(withStatus, 11);
+  });
+}
+
+function renderCompactMark(view, preferences = {}) {
+  const useUnicode = preferences.unicode !== false;
+  const frames = useUnicode ? COMPACT_FORMATION_FRAMES : COMPACT_ASCII_FRAMES;
+  const frame = formationFrame(preferences, frames.length);
+  return frames[frame].replace(/[◇o]/u, formationCore(view, useUnicode));
+}
+
+function placeRight(left, right, columns) {
+  const rightBlock = truncate(right, columns);
+  const visibleRight = rightBlock.trimEnd();
+  const rightWidth = displayWidth(rightBlock);
+  const leftLimit = Math.max(0, columns - rightWidth - 2);
+  const clippedLeft = truncate(left, leftLimit);
+  const gap = Math.max(0, columns - displayWidth(clippedLeft) - rightWidth);
+  return `${clippedLeft}${" ".repeat(gap)}${visibleRight}`;
+}
+
+function wideMasthead(view, columns, preferences) {
+  const mark = renderFleetMark(view, preferences);
+  const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
+  return [
+    placeRight(
+      `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
+      mark[0],
+      columns
+    ),
+    placeRight(
+      `RUNTIME ${view.runtime.health.toUpperCase()}  `
+        + `PROTOCOL ${view.runtime.protocol.toUpperCase()}`,
+      mark[1],
+      columns
+    ),
+    placeRight(
+      `KITE//FORMATION  LANES ${view.lanes.length}  ACTIVE LIMIT ${limit}`,
+      mark[2],
+      columns
+    )
+  ];
+}
+
+function signalLine(view, columns, border, useUnicode) {
+  const lane = view.selectedLane;
+  const signal = lane
+    ? `${border.arrow} SIGNAL ${String(view.selectedIndex + 1).padStart(2, "0")}/${String(
+      view.lanes.length
+    ).padStart(2, "0")}  ${lane.id} · ${STATUS_PRESENTATION[lane.status].label} · ${lane.phase} `
+    : `${border.arrow} SIGNAL  NO LANES `;
+  const remaining = Math.max(0, columns - displayWidth(signal));
+  return truncate(`${signal}${border.signal.repeat(remaining)}`, columns, useUnicode ? "…" : ".");
+}
+
+function sectionHeader(labels, widths, border) {
+  return labels.map((label, index) => pad(label, widths[index]))
+    .join(` ${border.vertical} `)
+    .trimEnd();
+}
+
+function divider(widths, border) {
+  return widths.map((width) => border.horizontal.repeat(width))
+    .join(`${border.horizontal}${border.horizontal}${border.horizontal}`);
+}
+
+function renderWide(view, terminal, border, useUnicode, preferences) {
+  const separators = 6;
+  const available = terminal.columns - separators;
+  const laneWidth = Math.max(34, Math.floor(available * 0.31));
+  const authorityWidth = Math.max(30, Math.floor(available * 0.23));
+  const detailWidth = available - laneWidth - authorityWidth;
+  const widths = [laneWidth, detailWidth, authorityWidth];
+  const bodyHeight = Math.max(4, terminal.rows - 8);
+  return [
+    ...wideMasthead(view, terminal.columns, preferences),
+    signalLine(view, terminal.columns, border, useUnicode),
+    sectionHeader([
+      `LANES  ${view.lanes.length}`,
+      `SELECTED / ${view.selectedLane?.id ?? "NONE"}`,
+      "AUTHORITY"
+    ], widths, border),
+    divider(widths, border),
+    ...joinPanels([
+      laneLines(view, laneWidth, useUnicode),
+      detailLines(view.selectedLane, detailWidth),
+      authorityLines(view.selectedLane, authorityWidth)
+    ], widths, bodyHeight, border),
+    border.horizontal.repeat(terminal.columns),
+    truncate(
+      "↑↓/JK SELECT   ENTER DETAIL   TAB PANEL   / FILTER   P MOTION   ? HELP   Q RETURN",
+      terminal.columns
+    )
+  ];
+}
+
+function renderCompact(view, terminal, border, useUnicode, preferences) {
+  const separatorWidth = 3;
+  const laneWidth = Math.max(32, Math.floor((terminal.columns - separatorWidth) * 0.39));
+  const detailWidth = terminal.columns - separatorWidth - laneWidth;
+  const widths = [laneWidth, detailWidth];
+  const bodyHeight = Math.max(4, terminal.rows - 7);
+  const rightTitle = view.panel === "authority" ? "AUTHORITY" : "LANE DETAIL";
+  const rightLines = view.panel === "authority"
+    ? authorityLines(view.selectedLane, detailWidth)
+    : detailLines(view.selectedLane, detailWidth);
+  const mark = renderCompactMark(view, preferences);
+  const runtime = `RUNTIME ${view.runtime.health.toUpperCase()}`;
+  return [
+    placeRight(
+      `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}`,
+      mark,
+      terminal.columns
+    ),
+    `${summary(view)}  ${runtime}`,
+    signalLine(view, terminal.columns, border, useUnicode),
+    sectionHeader([`LANES  ${view.lanes.length}`, rightTitle], widths, border),
+    divider(widths, border),
+    ...joinPanels([
+      laneLines(view, laneWidth, useUnicode),
+      rightLines
+    ], widths, bodyHeight, border),
+    border.horizontal.repeat(terminal.columns),
+    truncate("↑↓/JK SELECT   TAB PANEL   P MOTION   ? HELP   Q RETURN", terminal.columns)
+  ];
+}
+
+function panelLines(view, width, useUnicode) {
+  switch (view.panel) {
+    case "detail": return detailLines(view.selectedLane, width);
+    case "evidence": return evidenceLines(view.selectedLane, width);
+    case "authority": return authorityLines(view.selectedLane, width);
+    case "controls": return controlsLines(width);
+    default: return laneLines(view, width, useUnicode);
+  }
+}
+
+function renderNarrow(view, terminal, border, useUnicode, preferences) {
+  const panels = ["lanes", "detail", "evidence", "authority", "controls"];
+  const panelIndex = panels.indexOf(view.panel);
+  const title = `${String(panelIndex + 1).padStart(2, "0")}/05 ${view.panel.toUpperCase()}`;
+  const bodyHeight = Math.max(3, terminal.rows - 7);
+  const mark = renderCompactMark(view, preferences);
+  return [
+    placeRight(`FLEET//OPS  ${view.workspace.name}`, mark, terminal.columns),
+    signalLine(view, terminal.columns, border, useUnicode),
+    title,
+    border.horizontal.repeat(terminal.columns),
+    ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
+      .map((line) => line.trimEnd()),
+    border.horizontal.repeat(terminal.columns),
+    truncate("TAB PANEL   ↑↓ SELECT   P MOTION   Q RETURN", terminal.columns)
+  ];
+}
+
+function colorizeLine(line, index, view, theme) {
+  if (!theme.enabled) return line;
+  let styled = line;
+  for (const [status, presentation] of Object.entries(STATUS_PRESENTATION)) {
+    const label = presentation.label;
+    styled = styled.replaceAll(label, theme.paint(presentation.tone, label));
+    if (view.selectedLane?.status === status && styled.includes("SIGNAL")) {
+      styled = theme.paint("accent", stripAnsi(styled));
+    }
+  }
+  styled = styled.replace(/[◆◇╲╱▼]/gu, (glyph) => theme.paint("accent", glyph));
+  if (index === 0) styled = `${theme.bold}${theme.paint("ink", stripAnsi(styled))}`;
+  else if (styled.includes("SIGNAL")) styled = theme.paint("accent", stripAnsi(styled));
+  else if (/^[─━=\-]+$/.test(stripAnsi(styled))) styled = theme.paint("dim", stripAnsi(styled));
+  return `${theme.ground}${theme.eraseLine}${styled}${theme.reset}`;
+}
+
+function normalizedTerminal(terminal = {}) {
+  const columns = Number.isInteger(terminal.columns) ? Math.max(1, terminal.columns) : 80;
+  const rows = Number.isInteger(terminal.rows) ? Math.max(1, terminal.rows) : 24;
+  return { columns, rows };
+}
+
+export function renderScreen(viewModel, terminalInput, preferences = {}) {
+  const terminal = normalizedTerminal(terminalInput);
+  const view = viewModel && typeof viewModel === "object"
+    ? viewModel
+    : buildViewModel({}, null, "lanes");
+  const useUnicode = preferences.unicode !== false;
+  const border = BORDERS[useUnicode ? "unicode" : "ascii"];
+  const theme = createTheme(preferences);
+  if (preferences.screenReader === true) {
+    const linear = [
+      `Fleet workspace ${view.workspace.name}, branch ${view.workspace.branch}.`,
+      `${view.lanes.length} lanes; ${view.totals.active} active; ${view.totals.verified} verified.`,
+      ...view.lanes.map((lane, index) => (
+        `Lane ${index + 1} of ${view.lanes.length}: ${lane.id}, ${lane.status}, ${lane.label}.`
+      ))
+    ];
+    return linear
+      .map((line) => truncate(line, terminal.columns))
+      .slice(0, terminal.rows)
+      .join("\n");
+  }
+  if (terminal.columns < 32 || terminal.rows < 8) {
+    return [
+      truncate("FLEET//OPS", terminal.columns),
+      truncate("Terminal too small", terminal.columns),
+      truncate("Resize to at least 32x8", terminal.columns)
+    ].slice(0, terminal.rows).join("\n");
+  }
+  const lines = terminal.columns >= 120
+    ? renderWide(view, terminal, border, useUnicode, preferences)
+    : terminal.columns >= 80
+      ? renderCompact(view, terminal, border, useUnicode, preferences)
+      : renderNarrow(view, terminal, border, useUnicode, preferences);
+  return lines.slice(0, terminal.rows)
+    .map((line, index) => colorizeLine(truncate(line, terminal.columns), index, view, theme))
+    .join("\n");
+}

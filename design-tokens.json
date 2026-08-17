@@ -1,0 +1,23 @@
+{
+  "concept": "Fleet Console behaves like a night-shift flight-progress strip board.",
+  "colors": {
+    "ground": "#080B0F",
+    "accent": "#5ED7F2",
+    "ink": "#E7EDF2"
+  },
+  "type": {
+    "display": "Host terminal monospace / medium",
+    "body": "Host terminal monospace / regular",
+    "mono": "Host terminal monospace / tabular"
+  },
+  "easing": {
+    "enter": "cubic-bezier(0.22, 0.61, 0.36, 1)",
+    "state": "cubic-bezier(0.4, 0, 0.2, 1)"
+  },
+  "durations": {
+    "micro": [120, 250],
+    "transition": [300, 800],
+    "scene": [800, 2000]
+  },
+  "signature": "Kite, a lane-driven flight formation, assembles above the selected lane's cyan signal rail."
+}

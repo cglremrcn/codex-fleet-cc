@@ -1,0 +1,27 @@
+FLEET//OPS  codex-fleet-cc                                     ◆ · ◇ · ◆
+▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━
+01/05 LANES
+────────────────────────────────────────────────────────────────────────
+  01 ◇ COMPLETE        runtime-audit
+     investigator · gpt-5.6-sol/high
+▌ 02 ◆ RUNNING         console-build
+     implementer · gpt-5.6-sol/high
+  03 ! BLOCKED         qa-browser
+     browser-qa-operator · gpt-5.6-sol/high
+  04 ✓ VERIFIED        release-proof
+     independent-verifier · gpt-5.6-sol/high
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────
+TAB PANEL   ↑↓ SELECT   P MOTION   Q RETURN

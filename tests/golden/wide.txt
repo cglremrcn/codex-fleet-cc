@@ -1,0 +1,28 @@
+FLEET//OPS  codex-fleet-cc@main  01 LIVE  01 VERIFIED  01 ATTENTION                                                                                  ◆       ◆
+RUNTIME READY  PROTOCOL COMPATIBLE                                                                                                                     ╲  ◇  ╱
+KITE//FORMATION  LANES 4  ACTIVE LIMIT 3                                                                                                             ◆   ╲▼╱   ◆
+▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LANES  4                                        │ SELECTED / console-build                                                 │ AUTHORITY
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  01 ◇ COMPLETE        runtime-audit            │ Build the responsive operator console                                    │ SANDBOX WORKSPACE-WRITE
+     investigator · gpt-5.6-sol/high            │                                                                          │ NETWORK OFF
+▌ 02 ◆ RUNNING         console-build            │ ROLE implementer                                                         │
+     implementer · gpt-5.6-sol/high             │ PHASE renderer                                                           │ BROWSER inspect -- mutate --
+  03 ! BLOCKED         qa-browser               │ MODEL gpt-5.6-sol                                                        │ PROCESS start -- stop-owned --
+     browser-qa-operator · gpt-5.6-sol/high     │ EFFORT high                                                              │ DATABASE read -- write --
+  04 ✓ VERIFIED        release-proof            │                                                                          │ SEND --
+     independent-verifier · gpt-5.6-sol/high    │ Work is in progress.                                                     │ PAYMENT --
+                                                │ 2,454 tokens · 1,842 in / 612 out                                        │ DEPLOY --
+                                                │                                                                          │ DELETE --
+                                                │ RESULT                                                                   │ RETRY --
+                                                │ No result reference recorded                                             │
+                                                │                                                                          │ Roles do not grant authority.
+                                                │ SAFE EVENTS                                                              │
+                                                │ No safe events recorded                                                  │
+                                                │                                                                          │
+                                                │                                                                          │
+                                                │                                                                          │
+                                                │                                                                          │
+                                                │                                                                          │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓/JK SELECT   ENTER DETAIL   TAB PANEL   / FILTER   P MOTION   ? HELP   Q RETURN
