@@ -1,6 +1,6 @@
 # Codex Fleet for Claude Code — Design Specification
 
-**Status:** Proposed for user review
+**Status:** Approved for implementation
 
 **Date:** 2026-08-17
 
