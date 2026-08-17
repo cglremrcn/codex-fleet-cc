@@ -162,10 +162,18 @@ The interface is data-dense but not noisy:
 - restrained amber for attention and active work;
 - green only for verified completion;
 - red only for failed or denied states;
-- monospaced type, hard alignment, thin separators, no gradients, no decorative animation;
+- monospaced type, hard alignment, thin separators, and no gradients;
 - short verbs and evidence-first labels instead of chatty AI copy.
 
 The visual identity must feel like an operator console, not a generic AI dashboard.
+
+KITE is the sole living signature. It is a small terminal-native fleet formation whose center is
+the selected lane and whose posture is derived from truthful runtime state. Queued/running lanes
+may animate at no more than four frames per second. Verified lanes lock into formation; blocked,
+failed, and unknown-outcome lanes use distinct non-celebratory postures. `p` pauses motion, reduced
+motion freezes it, and screen-reader mode omits it. Motion never hides evidence, starts a process,
+or creates a model turn. This decision supersedes the earlier blanket no-animation direction; the
+ban remains in force for unrelated ambient or decorative effects.
 
 ### Responsive layouts
 
@@ -204,6 +212,7 @@ scrolling is required for essential information.
 | `x` | Request cancellation with confirmation |
 | `r` | Retry only when outcome reconciliation permits it |
 | `c` | Copy safe lane/thread identifier |
+| `p` | Pause or resume KITE motion |
 | `q` / `Esc` | Return to Claude Code |
 
 Mouse support is optional enhancement. Every action must be available from the keyboard.
@@ -306,7 +315,7 @@ Accessibility and compatibility:
 - `NO_COLOR` and monochrome modes;
 - ASCII border fallback when Unicode width is unreliable;
 - keyboard-only operation;
-- reduced-motion behavior by default;
+- user-controlled motion with a static reduced-motion mode;
 - terminal resize and small-window recovery;
 - screen-reader mode that emits a linear status report instead of the alternate-screen dashboard.
 

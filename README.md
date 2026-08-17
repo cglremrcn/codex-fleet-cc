@@ -62,9 +62,12 @@ The console starts on demand and exits completely when you return.
 
 The interface is intentionally closer to an operator terminal than an AI chat dashboard:
 near-black surfaces, dense alignment, restrained cyan and amber, green reserved for verified work,
-and no decorative animation. Wide terminals show lanes, selected evidence, and authority together.
-Compact and narrow layouts progressively collapse to focused panels without hiding essential
-controls.
+and no ambient decorative motion. Its one living signature is KITE: a small terminal-native fleet
+formation driven by the selected lane's real status. Active work assembles and releases the
+formation at a capped four frames per second; verified work locks it; blocked and failed work use
+distinct static postures. Wide terminals show lanes, selected evidence, and authority together.
+Compact and narrow layouts progressively collapse KITE into a small signal sigil without hiding
+essential controls.
 
 The real wide and compact screenshots will be added here after the production console passes its
 PTY and end-to-end tests. This README will not use a mockup that suggests unfinished behavior is
@@ -82,6 +85,7 @@ Core navigation is designed around:
 | `m` | Send a bounded follow-up |
 | `x` | Request confirmed cancellation |
 | `e` | Open the editor Fleet preserved during setup |
+| `p` | Pause or resume KITE motion |
 | `q` / `Esc` | Return to Claude Code |
 
 Mouse input is an optional convenience. Every essential operation remains available from the
@@ -130,7 +134,7 @@ matrix.
 | Windows runtime unit/integration fixtures | Passing during development |
 | macOS | Implementation target; macOS CI and PTY smoke are release gates |
 | Linux | Implementation target; Linux CI and PTY smoke are release gates |
-| Fleet Console | In development; screenshots intentionally withheld |
+| Fleet Console | Renderer and controller implemented; live Claude PTY E2E still required |
 | Marketplace install | Not yet published |
 | Reversible settings setup | Implemented and under full-suite verification |
 | Live cross-process follow-up/cancel | Not yet integrated |
