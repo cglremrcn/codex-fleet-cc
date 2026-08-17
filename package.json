@@ -1,0 +1,17 @@
+{
+  "name": "codex-fleet-cc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local Codex fleet console and orchestration plugin for Claude Code.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:unit": "node --test tests/*.test.mjs",
+    "typecheck": "node --check tests/provenance.test.mjs",
+    "verify": "npm run typecheck && npm test"
+  }
+}
