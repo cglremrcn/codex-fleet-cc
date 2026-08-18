@@ -70,13 +70,20 @@ function performanceSnapshot() {
   };
 }
 
-async function measureIdleCpu(durationMs = 750) {
+async function sampleIdleCpu(durationMs = 500) {
   const cpuStart = process.cpuUsage();
   const wallStart = performance.now();
   await new Promise((resolve) => setTimeout(resolve, durationMs));
   const elapsedMs = performance.now() - wallStart;
   const cpu = process.cpuUsage(cpuStart);
   return ((cpu.user + cpu.system) / 1_000 / elapsedMs) * 100;
+}
+
+async function measureIdleCpu() {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const samples = [];
+  for (let index = 0; index < 5; index += 1) samples.push(await sampleIdleCpu());
+  return [...samples].sort((left, right) => left - right)[Math.floor(samples.length / 2)];
 }
 
 export async function measurePerformance() {
