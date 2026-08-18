@@ -6,7 +6,7 @@ import { withTerminalSession } from "./tui-session.mjs";
 const PANELS = Object.freeze(["lanes", "detail", "evidence", "authority", "controls"]);
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const MAX_FILTER_LENGTH = 64;
-const TICK_MS = 250;
+export const CONSOLE_TICK_MS = 250;
 const ESCAPE_FLUSH_MS = 35;
 
 function defaultSnapshot(cwd) {
@@ -420,7 +420,7 @@ export async function runConsole(options = {}) {
       io.stdin.on("data", onData);
       io.stdout.on?.("resize", onResize);
       signal?.addEventListener?.("abort", onAbort, { once: true });
-      interval = clock.setInterval(() => enqueue([{ type: "tick" }]), TICK_MS);
+      interval = clock.setInterval(() => enqueue([{ type: "tick" }]), CONSOLE_TICK_MS);
       controller.render().catch(finish);
     });
   });
