@@ -42,6 +42,7 @@ function isProcessAlive(pid) {
 async function verifyInstalledLauncher(launcherPath) {
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/sh", [
+      "-x",
       launcherPath,
       "--benchmark-startup",
       "--plain"
@@ -75,7 +76,10 @@ async function verifyInstalledLauncher(launcherPath) {
         const result = JSON.parse(stdout.trim());
         resolve(result.schemaVersion === 1 && result.backgroundProcesses === 0);
       } catch (error) {
-        reject(new Error(`Installed launcher returned invalid benchmark JSON: ${error.message}`));
+        reject(new Error(
+          `Installed launcher returned invalid benchmark JSON: ${error.message}. `
+          + `Shell trace: ${stderr.trim()}`
+        ));
       }
     });
   });
