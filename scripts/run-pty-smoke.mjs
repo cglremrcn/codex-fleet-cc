@@ -41,7 +41,11 @@ function isProcessAlive(pid) {
 
 async function verifyInstalledLauncher(launcherPath) {
   return new Promise((resolve, reject) => {
-    const child = spawn(launcherPath, ["--benchmark-startup", "--plain"], {
+    const child = spawn("/bin/sh", [
+      launcherPath,
+      "--benchmark-startup",
+      "--plain"
+    ], {
       cwd: ROOT,
       env: process.env,
       shell: false,
