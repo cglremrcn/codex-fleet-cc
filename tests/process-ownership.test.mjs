@@ -6,6 +6,7 @@ import {
   captureOwnedProcess,
   observeProcessStart
 } from "../plugins/fleet/scripts/lib/process-ownership.mjs";
+import { stopOwnedProcessTree } from "../plugins/fleet/scripts/app-server-broker.mjs";
 
 test("cancel refuses a reused PID whose process-start identity differs", async () => {
   const killed = [];
@@ -64,4 +65,30 @@ test("Windows observer captures the current process without shell interpolation"
   const identity = await observeProcessStart(process.pid);
 
   assert.match(identity, /^win32:\d+$/u);
+});
+
+test("broker tree cleanup verifies process identity before terminating", async () => {
+  const terminated = [];
+  const options = {
+    observeStart: async () => "start-a",
+    terminateProcessTree: (pid) => {
+      terminated.push(pid);
+      return { attempted: true, delivered: true, method: "test" };
+    }
+  };
+
+  assert.deepEqual(
+    await stopOwnedProcessTree({ pid: 4242, recordedStart: "start-a" }, options),
+    { cancelled: true, reason: "owned-process-stopped" }
+  );
+  assert.deepEqual(terminated, [4242]);
+
+  assert.deepEqual(
+    await stopOwnedProcessTree(
+      { pid: 4242, recordedStart: "start-b" },
+      options
+    ),
+    { cancelled: false, reason: "ownership-mismatch" }
+  );
+  assert.deepEqual(terminated, [4242]);
 });

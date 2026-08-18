@@ -379,7 +379,9 @@ export async function createRuntime(options = {}) {
     codexCommand: options.codexCommand ?? "codex",
     cwd: options.cwd ?? process.cwd(),
     env: options.env,
-    requestTimeoutMs: options.requestTimeoutMs
+    requestTimeoutMs: options.requestTimeoutMs,
+    captureOwnedProcess: options.captureOwnedProcess,
+    stopOwnedProcessTree: options.stopOwnedProcessTree
   });
   return new FleetRuntime(broker, options);
 }

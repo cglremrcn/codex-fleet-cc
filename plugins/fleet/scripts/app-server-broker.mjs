@@ -8,6 +8,10 @@ import process from "node:process";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 
+import {
+  cancelOwnedProcess,
+  captureOwnedProcess
+} from "./lib/process-ownership.mjs";
 import { terminateProcessTree } from "./lib/upstream/process.mjs";
 
 export const BROKER_PROTOCOL_VERSION = 1;
@@ -33,6 +37,27 @@ const CAPABILITIES = Object.freeze({
     "item/reasoning/textDelta"
   ]
 });
+
+export async function stopOwnedProcessTree(record, options = {}) {
+  const stopTree = options.terminateProcessTree ?? terminateProcessTree;
+  return cancelOwnedProcess(record, {
+    observeStart: options.observeStart,
+    platform: options.platform,
+    env: options.env,
+    kill: (pid) => {
+      const result = stopTree(pid, {
+        platform: options.platform,
+        env: options.env,
+        cwd: options.cwd
+      });
+      if (!result?.delivered) {
+        const error = new Error("Owned process is no longer running.");
+        error.code = "ESRCH";
+        throw error;
+      }
+    }
+  });
+}
 
 function candidateExtensions(platform, env, command) {
   if (platform !== "win32" || path.extname(command)) {
@@ -133,6 +158,8 @@ class AppServerBroker {
     this.eventHandler = null;
     this.exitError = null;
     this.protocolVersion = BROKER_PROTOCOL_VERSION;
+    this.captureOwnedProcess = options.captureOwnedProcess ?? captureOwnedProcess;
+    this.stopOwnedProcessTree = options.stopOwnedProcessTree ?? stopOwnedProcessTree;
   }
 
   async start() {
@@ -166,6 +193,19 @@ class AppServerBroker {
 
     this.lines = readline.createInterface({ input: this.child.stdout });
     this.lines.on("line", (line) => this.handleLine(line));
+
+    try {
+      this.ownedProcess = await this.captureOwnedProcess(this.child.pid, {
+        env: this.options.env ?? process.env
+      });
+    } catch (error) {
+      this.closed = true;
+      this.child.kill("SIGTERM");
+      await this.exitPromise;
+      throw new Error("Could not establish ownership of the Codex app-server process.", {
+        cause: error
+      });
+    }
 
     await this.request("initialize", {
       clientInfo: CLIENT_INFO,
@@ -288,10 +328,14 @@ class AppServerBroker {
       new Promise((resolve) => setTimeout(() => resolve(false), 500))
     ]);
     if (!exited && Number.isFinite(this.child?.pid)) {
-      terminateProcessTree(this.child.pid, {
+      const outcome = await this.stopOwnedProcessTree(this.ownedProcess, {
         env: this.options.env,
-        cwd: this.options.cwd
+        cwd: this.options.cwd,
+        platform: process.platform
       });
+      if (!outcome.cancelled && outcome.reason !== "not-running") {
+        throw new Error(`Refused to stop an unverified app-server process: ${outcome.reason}.`);
+      }
       await this.exitPromise;
     }
   }
