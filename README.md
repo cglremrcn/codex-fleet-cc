@@ -14,9 +14,10 @@ Press `Ctrl+G` to temporarily hand the same terminal to Fleet Console. Press `q`
 to the same Claude Code session, with the draft prompt left intact. Opening or viewing the console
 does not create a Claude or Codex model turn.
 
-> **Development preview:** the runtime foundation is under active construction. It is not yet
-> published as an installable Claude Code marketplace plugin. The Windows terminal handoff is
-> proven; the complete console, packaging flow, and macOS/Linux release gates are still in progress.
+> **Development preview:** the runtime, console and Windows PTY handoff are implemented and covered
+> by the local release gate. The project is not yet published as a Claude Code marketplace plugin.
+> Cross-platform CI, deterministic packaging and the disposable-profile live Claude smoke remain
+> release gates.
 
 ## Why this exists
 
@@ -69,9 +70,11 @@ distinct static postures. Wide terminals show lanes, selected evidence, and auth
 Compact and narrow layouts progressively collapse KITE into a small signal sigil without hiding
 essential controls.
 
-The real wide and compact screenshots will be added here after the production console passes its
-PTY and end-to-end tests. This README will not use a mockup that suggests unfinished behavior is
-already shipping.
+![Fleet Console running four sanitized fixture lanes with KITE motion](docs/assets/fleet-console-kite-v3.gif)
+
+This recording comes from the real renderer with sanitized fixture lanes. The PTY E2E opens the
+preserved editor, returns to the fake Claude host, compares the draft byte-for-byte and confirms
+that no owned child remains. It is not a product mockup or a claim about a live external account.
 
 Core navigation is designed around:
 
@@ -89,7 +92,8 @@ Core navigation is designed around:
 | `q` / `Esc` | Return to Claude Code |
 
 Mouse input is an optional convenience. Every essential operation remains available from the
-keyboard, and a linear plain-text mode is planned for screen readers and non-interactive output.
+keyboard. Linear plain-text status, monochrome output, reduced motion and narrow layouts are
+implemented for screen readers and constrained terminals.
 
 ## Authority is part of the contract
 
@@ -123,6 +127,11 @@ The dashboard has no idle background UI process. The runtime shares one Codex ap
 defaults to at most three active lanes and one writer per checkout, bounds retained history, and
 redraws only when its view changes or a capped refresh tick fires.
 
+The latest local Windows gate measured a 6.1 ms startup p95, 0% sampled idle CPU, a 4 Hz maximum
+refresh tick, 1.5 MiB retained heap growth for the 256-lane fixture, a 50,841-byte state snapshot
+and zero owned PTY children after exit. These are development-machine measurements, not universal
+benchmarks; CI records platform-specific evidence on every run.
+
 ## Current status
 
 This table describes evidence available in the repository today, not the intended final support
@@ -130,13 +139,13 @@ matrix.
 
 | Surface | Status |
 | --- | --- |
-| Windows 10/11 terminal handoff | **Proven** on Claude Code v2.1.233 in a Windows PTY |
-| Windows runtime unit/integration fixtures | Passing during development |
-| macOS | Implementation target; macOS CI and PTY smoke are release gates |
-| Linux | Implementation target; Linux CI and PTY smoke are release gates |
-| Fleet Console | Renderer and controller implemented; live Claude PTY E2E still required |
+| Windows live terminal handoff | **Proven** on Claude Code v2.1.233; clean-profile release smoke remains |
+| Windows runtime and PTY fixture | Passing: exact draft preserved, terminal restored, zero owned child |
+| macOS Intel and Apple Silicon | CI and PTY gates configured; a green run is required before release |
+| Linux x64 and ARM64 | CI and PTY gates configured; a green run is required before release |
+| Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Not yet published |
-| Reversible settings setup | Implemented and under full-suite verification |
+| Reversible settings setup | Core merge/backup/ownership layer tested; public CLI wiring remains |
 | Live cross-process follow-up/cancel | Not yet integrated |
 
 No release will be called cross-platform until Windows, macOS, and Linux CI plus PTY handoff tests
@@ -149,16 +158,17 @@ There is no thirty-second production install yet. For development and review:
 ```bash
 git clone https://github.com/cglremrcn/codex-fleet-cc.git
 cd codex-fleet-cc
-npm ci --ignore-scripts
+npm ci
 npm run verify
 ```
 
-The project requires Node.js 18.18 or newer. It currently has no production npm dependencies.
+The project keeps Node.js 18.18 as its compatibility floor and tests the current Node 24 LTS line;
+use an active LTS release for ordinary development. Fleet has no production npm dependencies.
+`node-pty` is development-only and is excluded from the plugin package.
 Do not point your main Claude profile at the development plugin yet; setup, rollback, packaging,
 and the live Claude smoke must all pass before that workflow is documented as supported.
 
-The eventual plugin flow will use Claude Code's marketplace/plugin directory mechanism and these
-public commands:
+The plugin contract uses Claude Code's marketplace/plugin directory mechanism and these commands:
 
 ```text
 /fleet:setup      preview and apply the reversible terminal handoff
@@ -171,8 +181,8 @@ public commands:
 /fleet:uninstall restore only settings owned by Fleet
 ```
 
-Those commands are the public contract, not a claim that every command is wired in the current
-development preview.
+Those commands are the public contract. Setup, uninstall and live supervisor controls are still
+blocked in the development preview until their final CLI wiring and disposable-profile smoke pass.
 
 ## Safety decisions that should not be “simplified”
 
@@ -198,6 +208,15 @@ The implementation plan and current release gates live in
 The approved product and threat-boundary design lives in
 [`docs/specs/2026-08-17-codex-fleet-cc-design.md`](docs/specs/2026-08-17-codex-fleet-cc-design.md).
 
+## Project guides
+
+- [Architecture](ARCHITECTURE.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Security policy](SECURITY.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+
 ## Upstream and license
 
 The Codex runtime layer is derived from OpenAI's
@@ -210,7 +229,7 @@ remain trademarks of their respective owners.
 
 ## Contributing
 
-The public contribution guide, security policy, threat model, issue templates, deterministic
-release packaging, and verified console visuals are part of the pre-release checklist. Until those
-land, open a narrowly scoped issue before submitting a large change. Never include credentials,
-private prompts, customer data, or unsanitized support output in an issue.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before a broad change. Bug and feature forms are available
+in GitHub. Report vulnerabilities through the private path described in [SECURITY.md](SECURITY.md),
+never in a public issue. Do not attach credentials, prompts, customer data or unsanitized support
+output.

@@ -1,0 +1,33 @@
+name: Feature proposal
+description: Propose one bounded capability or operator improvement.
+title: "feat: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operator problem
+      description: Describe the concrete workflow that is difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Smallest useful outcome
+      description: Explain what becomes possible without prescribing a large architecture.
+    validations:
+      required: true
+  - type: textarea
+    id: authority
+    attributes:
+      label: Authority and privacy impact
+      description: State whether this touches writes, network, browser accounts, external effects, persisted data or process control.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Acceptance evidence
+      description: What observable result would prove the feature works?
+    validations:
+      required: true
