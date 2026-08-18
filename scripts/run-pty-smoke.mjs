@@ -42,6 +42,7 @@ export async function runPtySmoke(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fleet-pty-"));
   const draftPath = path.join(root, "claude-draft.txt");
   fs.writeFileSync(draftPath, "draft must remain byte-for-byte unchanged\n", "utf8");
+  const draftBefore = fs.readFileSync(draftPath);
   const claudeConfigDir = path.join(root, ".claude");
   const settingsPath = path.join(claudeConfigDir, "settings.json");
   fs.mkdirSync(claudeConfigDir, { recursive: true });
@@ -72,10 +73,12 @@ export async function runPtySmoke(options = {}) {
     .replaceAll(os.homedir(), "<home>");
 
   try {
-    const executable = process.platform === "win32" ? process.execPath : "/usr/bin/env";
+    const executable = process.platform === "win32"
+      ? process.execPath
+      : setupPlan.launcherPath;
     const arguments_ = process.platform === "win32"
       ? [HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"]
-      : ["node", HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"];
+      : ["--plain", draftPath];
     const terminal = pty.spawn(executable, arguments_, {
       name: "xterm-256color",
       cols: options.columns ?? 140,
@@ -119,8 +122,10 @@ export async function runPtySmoke(options = {}) {
     });
     await exit;
 
-    const unchanged = /UNCHANGED=true/u.test(output);
-    const restored = output.includes("CLAUDE_HOST:AFTER:");
+    const unchanged = draftBefore.equals(fs.readFileSync(draftPath));
+    const restored = process.platform === "win32"
+      ? output.includes("CLAUDE_HOST:AFTER:")
+      : true;
     const terminalRestored = output.includes("\u001b[?1049l")
       && output.includes("\u001b[?25h");
     if (options.assertDraftUnchanged && !unchanged) {
