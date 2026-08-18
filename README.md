@@ -126,10 +126,11 @@ The dashboard has no idle background UI process. The runtime shares one Codex ap
 defaults to at most three active lanes and one writer per checkout, bounds retained history, and
 redraws only when its view changes or a capped refresh tick fires.
 
-The latest local Windows gate measured a 6.1 ms startup p95, 0% sampled idle CPU, a 4 Hz maximum
-refresh tick, 1.5 MiB retained heap growth for the 256-lane fixture, a 50,841-byte state snapshot
-and zero owned PTY children after exit. These are development-machine measurements, not universal
-benchmarks; CI records platform-specific evidence on every run.
+The latest local Windows gate measured a 6.1 ms renderer-startup p95, 0% median CPU in the
+synthetic idle harness, a configured 4 Hz refresh ceiling, 1.5 MiB retained heap growth for the
+256-lane fixture, a 50,841-byte state snapshot and zero owned PTY children after exit. These are
+development guardrails, not product workload or universal benchmarks; CI records the same
+platform-specific evidence on every run.
 
 ## Current status
 
@@ -138,7 +139,7 @@ matrix.
 
 | Surface | Status |
 | --- | --- |
-| Windows live terminal handoff | **Proven** on Claude Code v2.1.233; clean-profile release smoke remains |
+| Windows live terminal handoff | **Proven** on Claude Code v2.1.234; clean-profile release smoke remains |
 | Windows runtime and PTY fixture | Passing: exact draft preserved, terminal restored, zero owned child |
 | macOS Intel and Apple Silicon | CI and PTY gates configured; a green run is required before release |
 | Linux x64 and ARM64 | CI and PTY gates configured; a green run is required before release |

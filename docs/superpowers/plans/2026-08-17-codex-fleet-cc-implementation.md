@@ -12,9 +12,15 @@ foundation behind a narrow adapter. A zero-runtime-dependency Node.js core owns 
 authority, state, scheduling, and rendering. Claude uses a progressive-disclosure orchestration
 skill; the user opens the console through Claude's supported external-editor handoff.
 
-**Tech Stack:** Node.js 18.18+, ECMAScript modules with JSDoc type checking, Node's built-in test
+**Tech Stack:** Node.js 22.20+, ECMAScript modules with JSDoc type checking, Node's built-in test
 runner, Codex app-server JSON-RPC, Claude Code plugins and skills, ANSI/VT terminal rendering,
 GitHub Actions.
+
+> **Implementation amendment — 2026-08-18:** The runtime floor moved from Node 18.18 to Node
+> 22.20 because the validated Claude Code CLI requires Node 22 or newer and Node 18 is end-of-life.
+> The release matrix therefore covers exact Node 22.23.1 and 24.18.0 builds on Windows x64,
+> Linux x64/ARM64, and macOS Intel/Apple Silicon. This supersedes the older Task 1 and Task 16
+> version/runner wording below; the original task text remains as historical planning context.
 
 **Spec:** `docs/specs/2026-08-17-codex-fleet-cc-design.md`
 
