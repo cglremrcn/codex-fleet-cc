@@ -70,6 +70,7 @@ test("setup preview is non-mutating and preserves unrelated settings and prior e
   assert.deepEqual(settings.permissions.deny, ["Read(.env)"]);
   assert.equal(settings.env.CUSTOM_FLAG, "keep-me");
   assert.equal(ownership.originalEditor, "nvim");
+  assert.deepEqual(ownership.originalEditorCommand, ["nvim"]);
   assert.equal(settings.env.EDITOR, settings.env.VISUAL);
   assert.match(settings.env.EDITOR, /fleet-editor\.cmd/i);
   assert.equal(ownership.keybindingsModified, false);
@@ -152,7 +153,80 @@ for (const [platform, extension, invocation] of [
     assert.equal(path.extname(ownership.launcherPath), extension);
     assert.match(launcher, invocation);
     assert.match(launcher, /fleet-console\.mjs/);
+    assert.match(launcher, /FLEET_ORIGINAL_EDITOR_JSON/);
+    assert.match(launcher, /null/);
     assert.match(launcher, /"%\*"|"\$@"|%\*/);
     assert.equal(ownership.restartRequired, true);
   });
 }
+
+async function exists(filePath) {
+  try {
+    await fs.lstat(filePath);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+test("setup launcher carries the prior editor as bounded argv JSON", async (t) => {
+  const scope = await fixture(t, "win32");
+  await writeSettings(scope, { env: { VISUAL: '"C:\\Program Files\\Editor\\editor.exe" --wait' } });
+
+  const plan = await previewSetup(scope);
+  await applySetup({ ...plan, confirmation: plan.confirmationToken });
+  const ownership = await readOwnership(scope);
+  const launcher = await fs.readFile(ownership.launcherPath, "utf8");
+
+  assert.deepEqual(ownership.originalEditorCommand, [
+    "C:\\Program Files\\Editor\\editor.exe",
+    "--wait"
+  ]);
+  assert.ok(launcher.includes(JSON.stringify(ownership.originalEditorCommand)));
+});
+
+test("setup aborts without overwriting a late settings change", async (t) => {
+  const scope = await fixture(t);
+  await writeSettings(scope, { env: { EDITOR: "nvim" } });
+  const plan = await previewSetup(scope);
+
+  await assert.rejects(
+    applySetup(
+      { ...plan, confirmation: plan.confirmationToken },
+      { beforeSettingsCommit: () => writeSettings(scope, { env: { EDITOR: "code --wait" } }) }
+    ),
+    /changed while setup was being prepared/i
+  );
+
+  assert.equal((await readSettings(scope)).env.EDITOR, "code --wait");
+  assert.equal(await exists(plan.runtimeTargetDir), false);
+  assert.equal(await exists(plan.launcherPath), false);
+  assert.equal(await exists(path.join(scope.pluginDataDir, "ownership.json")), false);
+});
+
+test("setup rolls settings and owned files back when final manifest write fails", async (t) => {
+  const scope = await fixture(t);
+  await writeSettings(scope, { theme: "dark", env: { EDITOR: "nvim" } });
+  const plan = await previewSetup(scope);
+  let writes = 0;
+  const writeJson = async (filePath, value) => {
+    writes += 1;
+    if (writes === 3) throw new Error("simulated final manifest failure");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  };
+
+  await assert.rejects(
+    applySetup(
+      { ...plan, confirmation: plan.confirmationToken },
+      { atomicWriteJson: writeJson }
+    ),
+    /simulated final manifest failure/i
+  );
+
+  assert.deepEqual(await readSettings(scope), { theme: "dark", env: { EDITOR: "nvim" } });
+  assert.equal(await exists(plan.runtimeTargetDir), false);
+  assert.equal(await exists(plan.launcherPath), false);
+  assert.equal(await exists(path.join(scope.pluginDataDir, "ownership.json")), false);
+});

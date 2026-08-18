@@ -84,6 +84,7 @@ function parseEditorCommand(env) {
   } catch {
     throw new Error("FLEET_ORIGINAL_EDITOR_JSON must be valid JSON");
   }
+  if (command === null) return null;
   if (
     !Array.isArray(command)
     || command.length === 0

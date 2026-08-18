@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runEntry } from "../plugins/fleet/scripts/fleet-console.mjs";
+import { createOriginalEditor, runEntry } from "../plugins/fleet/scripts/fleet-console.mjs";
 
 test("plain startup benchmark exits cleanly with machine-readable timing", async () => {
   const writes = [];
@@ -29,4 +29,8 @@ test("entry rejects unknown flags without opening a terminal", async () => {
 
   assert.equal(exitCode, 2);
   assert.match(errors.join(""), /Unknown Fleet Console argument/);
+});
+
+test("a launcher without a prior editor disables editor handoff", () => {
+  assert.equal(createOriginalEditor({ FLEET_ORIGINAL_EDITOR_JSON: "null" }), undefined);
 });
