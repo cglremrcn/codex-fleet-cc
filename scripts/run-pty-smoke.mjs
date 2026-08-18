@@ -124,10 +124,10 @@ export async function runPtySmoke(options = {}) {
     const terminalRestored = output.includes("\u001b[?1049l")
       && output.includes("\u001b[?25h");
     if (options.assertDraftUnchanged && !unchanged) {
-      throw new Error("Claude draft changed during PTY handoff.");
+      throw new Error(`Claude draft changed during PTY handoff.\n${diagnosticTail()}`);
     }
     if (options.assertCleanTerminal && !terminalRestored) {
-      throw new Error("Fleet did not emit terminal restoration controls.");
+      throw new Error(`Fleet did not emit terminal restoration controls.\n${diagnosticTail()}`);
     }
     const uninstallPreview = await previewUninstallSetup({
       pluginDataDir: setupPlan.pluginDataDir
