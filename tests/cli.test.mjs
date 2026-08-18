@@ -277,3 +277,53 @@ test("start runs a JSON fleet contract through one fake Codex broker", (t) => {
   assert.equal(status.code, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).lanes[0].status, "complete");
 });
+
+test("setup previews before applying and uninstall requires its own exact token", (t) => {
+  const scope = fixture(t);
+  const claudeConfig = path.join(scope.root, ".claude-disposable");
+  const pluginData = path.join(scope.root, "plugin-data");
+  fs.mkdirSync(claudeConfig, { recursive: true });
+  fs.writeFileSync(
+    path.join(claudeConfig, "settings.json"),
+    `${JSON.stringify({ env: { EDITOR: "code --wait" }, keep: true })}\n`
+  );
+  const env = fixtureEnv(scope, {
+    CLAUDE_CONFIG_DIR: claudeConfig,
+    CLAUDE_PLUGIN_DATA: pluginData
+  });
+
+  const previewRun = runFleet(["setup", "--json"], { env });
+  assert.equal(previewRun.code, 0, previewRun.stderr);
+  const preview = JSON.parse(previewRun.stdout);
+  assert.equal(preview.writesPerformed, false);
+  assert.equal(fs.existsSync(path.join(pluginData, "ownership.json")), false);
+
+  const appliedRun = runFleet(
+    ["setup", "--json", "--confirm-token", preview.confirmationToken],
+    { env }
+  );
+  assert.equal(appliedRun.code, 0, appliedRun.stderr);
+  assert.equal(JSON.parse(appliedRun.stdout).applied, true);
+  assert.equal(fs.existsSync(path.join(pluginData, "ownership.json")), true);
+
+  const uninstallPreviewRun = runFleet(["uninstall", "--json"], { env });
+  assert.equal(uninstallPreviewRun.code, 0, uninstallPreviewRun.stderr);
+  const uninstallPreview = JSON.parse(uninstallPreviewRun.stdout);
+  assert.equal(uninstallPreview.writesPerformed, false);
+
+  const denied = runFleet(
+    ["uninstall", "--json", "--confirm-token", "wrong-token"],
+    { env }
+  );
+  assert.equal(denied.code, 3);
+
+  const removed = runFleet(
+    ["uninstall", "--json", "--confirm-token", uninstallPreview.confirmationToken],
+    { env }
+  );
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal(JSON.parse(removed.stdout).restored, true);
+  const settings = JSON.parse(fs.readFileSync(path.join(claudeConfig, "settings.json"), "utf8"));
+  assert.equal(settings.env.EDITOR, "code --wait");
+  assert.equal(settings.keep, true);
+});

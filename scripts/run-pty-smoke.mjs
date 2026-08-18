@@ -40,7 +40,11 @@ export async function runPtySmoke(options = {}) {
   let quitSent = false;
 
   try {
-    const terminal = pty.spawn(process.execPath, [HOST, draftPath, CONSOLE], {
+    const executable = process.platform === "win32" ? process.execPath : "/usr/bin/env";
+    const arguments_ = process.platform === "win32"
+      ? [HOST, draftPath, CONSOLE]
+      : ["node", HOST, draftPath, CONSOLE];
+    const terminal = pty.spawn(executable, arguments_, {
       name: "xterm-256color",
       cols: options.columns ?? 140,
       rows: options.rows ?? 34,

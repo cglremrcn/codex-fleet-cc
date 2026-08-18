@@ -59,7 +59,7 @@ async function observeWindowsStart(pid, env) {
     ], {
       encoding: "utf8",
       windowsHide: true,
-      timeout: 5_000,
+      timeout: 15_000,
       maxBuffer: 4_096
     });
     const ticks = stdout.trim();
@@ -79,7 +79,7 @@ async function observeDarwinStart(pid) {
       String(pid)
     ], {
       encoding: "utf8",
-      timeout: 5_000,
+      timeout: 15_000,
       maxBuffer: 4_096
     });
     const started = stdout.trim().replace(/\s+/gu, " ");

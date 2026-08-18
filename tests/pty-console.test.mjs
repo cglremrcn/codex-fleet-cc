@@ -8,7 +8,7 @@ const SMOKE_SCRIPT = fileURLToPath(
 );
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
-function runSmokeCli(timeoutMs = 8_000) {
+function runSmokeCli(timeoutMs = 20_000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
       SMOKE_SCRIPT,

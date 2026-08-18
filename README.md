@@ -16,8 +16,7 @@ does not create a Claude or Codex model turn.
 
 > **Development preview:** the runtime, console and Windows PTY handoff are implemented and covered
 > by the local release gate. The project is not yet published as a Claude Code marketplace plugin.
-> Cross-platform CI, deterministic packaging and the disposable-profile live Claude smoke remain
-> release gates.
+> Cross-platform CI and the disposable-profile install/handoff smoke remain release gates.
 
 ## Why this exists
 
@@ -145,7 +144,7 @@ matrix.
 | Linux x64 and ARM64 | CI and PTY gates configured; a green run is required before release |
 | Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Not yet published |
-| Reversible settings setup | Core merge/backup/ownership layer tested; public CLI wiring remains |
+| Reversible settings setup | Preview/apply/uninstall CLI tested with immutable confirmation tokens |
 | Live cross-process follow-up/cancel | Not yet integrated |
 
 No release will be called cross-platform until Windows, macOS, and Linux CI plus PTY handoff tests
@@ -162,8 +161,9 @@ npm ci
 npm run verify
 ```
 
-The project keeps Node.js 18.18 as its compatibility floor and tests the current Node 24 LTS line;
-use an active LTS release for ordinary development. Fleet has no production npm dependencies.
+The project keeps Node.js 22.20 as its compatibility floor, matching the Claude Code CLI runtime,
+and tests the maintained Node 22 and current Node 24 LTS lines. Fleet has no production npm
+dependencies.
 `node-pty` is development-only and is excluded from the plugin package.
 Do not point your main Claude profile at the development plugin yet; setup, rollback, packaging,
 and the live Claude smoke must all pass before that workflow is documented as supported.
@@ -181,8 +181,9 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 /fleet:uninstall restore only settings owned by Fleet
 ```
 
-Those commands are the public contract. Setup, uninstall and live supervisor controls are still
-blocked in the development preview until their final CLI wiring and disposable-profile smoke pass.
+Those commands are the public contract. Setup and uninstall use separate immutable previews and
+exact confirmation tokens. Live supervisor controls remain blocked in the development preview until
+their disposable-profile smoke passes.
 
 ## Safety decisions that should not be “simplified”
 

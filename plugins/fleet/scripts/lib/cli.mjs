@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { normalizeAuthority } from "./authority.mjs";
 import { runDoctor } from "./doctor.mjs";
@@ -10,6 +11,12 @@ import { renderPlainStatus } from "./plain-status.mjs";
 import { createRuntime } from "./runtime-adapter.mjs";
 import { readWorkspaceState, writeWorkspaceState } from "./safe-state.mjs";
 import { createScheduler } from "./scheduler.mjs";
+import {
+  applySetup,
+  previewSetup,
+  previewUninstallSetup,
+  uninstallSetup
+} from "./setup.mjs";
 import { previewSupportBundle, writeSupportBundle } from "./support-bundle.mjs";
 
 export const EXIT_CODES = Object.freeze({
@@ -543,6 +550,71 @@ async function runStart(contract, io, dependencies) {
   }
 }
 
+async function setupContext(io) {
+  const settingsRoot = io.env.CLAUDE_CONFIG_DIR
+    ? path.resolve(io.env.CLAUDE_CONFIG_DIR)
+    : path.join(io.home, ".claude");
+  const dataRoot = io.env.CLAUDE_PLUGIN_DATA
+    ? path.resolve(io.env.CLAUDE_PLUGIN_DATA)
+    : resolveOwnedPath(getFleetDataDir(io.env, io.platform, io.home), "integration");
+  const manifest = JSON.parse(
+    await fs.readFile(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")
+  );
+  return {
+    settingsPath: path.join(settingsRoot, "settings.json"),
+    pluginDataDir: dataRoot,
+    runtimeSourceDir: path.resolve(fileURLToPath(new URL("..", import.meta.url))),
+    nodeExecutable: process.execPath,
+    platform: io.platform,
+    version: manifest.version
+  };
+}
+
+async function runSetupCommand(parsed, io) {
+  const options = await setupContext(io);
+  const plan = await previewSetup(options);
+  const confirmation = parsed.flags.get("--confirm-token");
+  if (!confirmation) {
+    return {
+      exitCode: EXIT_CODES.success,
+      payload: {
+        schemaVersion: 1,
+        writesPerformed: false,
+        settingsPath: plan.settingsPath,
+        pluginDataDir: plan.pluginDataDir,
+        runtimeTargetDir: plan.runtimeTargetDir,
+        launcherPath: plan.launcherPath,
+        changes: plan.changes,
+        restartRequired: plan.restartRequired,
+        keybindingsModified: plan.keybindingsModified,
+        confirmationToken: plan.confirmationToken
+      }
+    };
+  }
+  if (confirmation !== plan.confirmationToken) {
+    throw new AuthorityDeniedError("Setup requires the exact current preview confirmation token.");
+  }
+  const result = await applySetup({ ...plan, confirmation });
+  return { exitCode: EXIT_CODES.success, payload: { schemaVersion: 1, ...result } };
+}
+
+async function runUninstallCommand(parsed, io) {
+  const options = await setupContext(io);
+  const preview = await previewUninstallSetup({ pluginDataDir: options.pluginDataDir });
+  const confirmation = parsed.flags.get("--confirm-token");
+  if (!confirmation) {
+    return { exitCode: EXIT_CODES.success, payload: preview };
+  }
+  if (confirmation !== preview.confirmationToken) {
+    throw new AuthorityDeniedError("Uninstall requires the exact current preview confirmation token.");
+  }
+  const result = await uninstallSetup({
+    pluginDataDir: options.pluginDataDir,
+    confirmationToken: confirmation
+  });
+  return { exitCode: EXIT_CODES.success, payload: { schemaVersion: 1, ...result } };
+}
+
 async function execute(parsed, io, dependencies) {
   if (parsed.command === "doctor") {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
@@ -599,11 +671,8 @@ async function execute(parsed, io, dependencies) {
     );
   }
 
-  if (parsed.command === "setup" || parsed.command === "uninstall") {
-    throw new RuntimeUnavailableError(
-      `${parsed.command} is provided by the reversible editor setup layer, which is not installed.`
-    );
-  }
+  if (parsed.command === "setup") return runSetupCommand(parsed, io);
+  if (parsed.command === "uninstall") return runUninstallCommand(parsed, io);
 
   throw new InvalidInputError(`Unsupported command: ${parsed.command}.`);
 }

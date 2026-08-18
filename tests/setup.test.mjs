@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applySetup,
   previewSetup,
+  previewUninstallSetup,
   uninstallSetup
 } from "../plugins/fleet/scripts/lib/setup.mjs";
 
@@ -103,7 +104,7 @@ test("uninstall refuses to overwrite an editor changed after setup", async (t) =
   settings.env.EDITOR = "code --wait";
   await writeSettings(scope, settings);
 
-  await assert.rejects(uninstallSetup(scope), /no longer owned/i);
+  await assert.rejects(previewUninstallSetup(scope), /no longer owned/i);
   assert.equal((await readSettings(scope)).env.EDITOR, "code --wait");
 });
 
@@ -120,7 +121,11 @@ test("uninstall restores only owned values and keeps later unrelated changes", a
   installed.env.CUSTOM_FLAG = "after";
   await writeSettings(scope, installed);
 
-  const result = await uninstallSetup(scope);
+  const uninstallPreview = await previewUninstallSetup(scope);
+  const result = await uninstallSetup({
+    ...scope,
+    confirmationToken: uninstallPreview.confirmationToken
+  });
   const restored = await readSettings(scope);
 
   assert.equal(restored.theme, "light");

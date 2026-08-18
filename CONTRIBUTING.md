@@ -12,7 +12,7 @@ npm ci
 npm run verify
 ```
 
-Node 18.18 remains the compatibility floor; use an active LTS release for development. Claude Code
+Node 22.20 remains the compatibility floor; use an active LTS release for development. Claude Code
 and Codex are required only for their live integration smokes. Unit tests use local fixtures.
 
 ## Change discipline

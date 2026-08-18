@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Install the validated Claude Code CLI
+        run: npm install --global @anthropic-ai/claude-code@2.1.234
+
+      - name: Run release gate
+        run: npm run verify
+
+      - name: Build deterministic release
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node scripts/release-check.mjs --version "$VERSION" --require-tag
+
+      - name: Upload immutable release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codex-fleet-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

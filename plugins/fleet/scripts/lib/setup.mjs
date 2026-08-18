@@ -380,6 +380,10 @@ function restoreOwnedValue(env, key, original) {
 
 export async function uninstallSetup(options = {}) {
   const pluginDataDir = requireAbsolute(options.pluginDataDir, "pluginDataDir");
+  const preview = await previewUninstallSetup({ pluginDataDir });
+  if (options.confirmationToken !== preview.confirmationToken) {
+    throw new Error("Uninstall requires the exact preview confirmation token.");
+  }
   const ownershipPath = resolveOwnedPath(pluginDataDir, OWNERSHIP_FILE);
   let ownership;
   try {
@@ -443,4 +447,47 @@ export async function uninstallSetup(options = {}) {
   await fs.unlink(ownershipPath);
 
   return { restored: true, retained, restartRequired: true };
+}
+
+export async function previewUninstallSetup(options = {}) {
+  const pluginDataDir = requireAbsolute(options.pluginDataDir, "pluginDataDir");
+  const ownershipPath = resolveOwnedPath(pluginDataDir, OWNERSHIP_FILE);
+  let ownership;
+  try {
+    ownership = JSON.parse(await fs.readFile(ownershipPath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error("Fleet setup ownership manifest was not found.");
+    }
+    throw error;
+  }
+  assertPlainObject(ownership, "Fleet ownership manifest");
+  if (ownership.schemaVersion !== 1 || ownership.status !== "applied") {
+    throw new Error("Fleet setup ownership manifest is incomplete or unsupported.");
+  }
+  const current = await readSettingsSource(ownership.settingsPath);
+  const settings = current.settings;
+  const env = settings.env && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : {};
+  for (const key of ["EDITOR", "VISUAL"]) {
+    if (hashValue(env[key]) !== ownership.writtenHashes[key]) {
+      throw new Error(`Claude env.${key} is no longer owned by Fleet; uninstall will not overwrite it.`);
+    }
+  }
+  const payload = stableObject({
+    schemaVersion: 1,
+    pluginDataDir,
+    ownershipPath,
+    settingsPath: ownership.settingsPath,
+    settingsSourceHash: current.hash,
+    restore: ownership.originalValues,
+    remove: [ownership.launcherPath, ownership.runtimeTargetDir],
+    restartRequired: true
+  });
+  return Object.freeze({
+    ...payload,
+    writesPerformed: false,
+    confirmationToken: hashBytes(JSON.stringify(payload))
+  });
 }
