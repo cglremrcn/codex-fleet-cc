@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 import * as pty from "node-pty";
 import {
@@ -38,6 +39,44 @@ function isProcessAlive(pid) {
   }
 }
 
+async function verifyInstalledLauncher(launcherPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(launcherPath, ["--benchmark-startup", "--plain"], {
+      cwd: ROOT,
+      env: process.env,
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("Installed launcher benchmark timed out."));
+    }, 10_000);
+    child.stdout.on("data", (chunk) => {
+      stdout = `${stdout}${chunk}`.slice(-16 * 1024);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-16 * 1024);
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`Installed launcher benchmark failed: ${stderr.trim()}`));
+        return;
+      }
+      try {
+        const result = JSON.parse(stdout.trim());
+        resolve(result.schemaVersion === 1 && result.backgroundProcesses === 0);
+      } catch (error) {
+        reject(new Error(`Installed launcher returned invalid benchmark JSON: ${error.message}`));
+      }
+    });
+  });
+}
+
 export async function runPtySmoke(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fleet-pty-"));
   const draftPath = path.join(root, "claude-draft.txt");
@@ -64,6 +103,9 @@ export async function runPtySmoke(options = {}) {
     ...setupPlan,
     confirmation: setupPlan.confirmationToken
   });
+  const installedLauncherChecked = process.platform === "win32"
+    ? true
+    : await verifyInstalledLauncher(setupPlan.launcherPath);
   let output = "";
   let editorSent = false;
   let quitSent = false;
@@ -73,12 +115,10 @@ export async function runPtySmoke(options = {}) {
     .replaceAll(os.homedir(), "<home>");
 
   try {
-    const executable = process.platform === "win32"
-      ? process.execPath
-      : setupPlan.launcherPath;
+    const executable = process.platform === "win32" ? process.execPath : "/usr/bin/env";
     const arguments_ = process.platform === "win32"
       ? [HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"]
-      : ["--plain", draftPath];
+      : ["node", HOST, draftPath, CONSOLE];
     const terminal = pty.spawn(executable, arguments_, {
       name: "xterm-256color",
       cols: options.columns ?? 140,
@@ -151,6 +191,7 @@ export async function runPtySmoke(options = {}) {
       returnedToHost: restored,
       draftUnchanged: unchanged,
       terminalRestored,
+      installedLauncherChecked,
       uninstallRestored,
       ownedChildrenAfterExit: isProcessAlive(ownedPid) ? 1 : 0
     };
