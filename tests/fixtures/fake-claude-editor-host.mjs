@@ -16,12 +16,17 @@ if (process.argv[2] === "--editor") {
 
 const draftPath = path.resolve(process.argv[2]);
 const consolePath = path.resolve(process.argv[3]);
+const installedLauncher = process.argv[4] === "--installed-launcher";
 const before = digest(draftPath);
 process.stdout.write(`CLAUDE_HOST:BEFORE:${before}\n`);
 
-const child = spawn(process.execPath, [consolePath, "--plain", draftPath], {
+const executable = installedLauncher ? consolePath : process.execPath;
+const args = installedLauncher
+  ? ["--plain", draftPath]
+  : [consolePath, "--plain", draftPath];
+const child = spawn(executable, args, {
   cwd: process.cwd(),
-  env: {
+  env: installedLauncher ? process.env : {
     ...process.env,
     NO_COLOR: "1",
     FLEET_ASCII: "1",
@@ -32,7 +37,9 @@ const child = spawn(process.execPath, [consolePath, "--plain", draftPath], {
       "--editor"
     ])
   },
-  shell: false,
+  shell: installedLauncher && process.platform === "win32"
+    ? process.env.ComSpec ?? process.env.COMSPEC
+    : false,
   stdio: "inherit",
   windowsHide: true
 });

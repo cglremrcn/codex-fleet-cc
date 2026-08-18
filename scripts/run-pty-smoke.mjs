@@ -5,10 +5,17 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import * as pty from "node-pty";
+import {
+  applySetup,
+  previewSetup,
+  previewUninstallSetup,
+  uninstallSetup
+} from "../plugins/fleet/scripts/lib/setup.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HOST = path.join(ROOT, "tests", "fixtures", "fake-claude-editor-host.mjs");
 const CONSOLE = path.join(ROOT, "plugins", "fleet", "scripts", "fleet-console.mjs");
+const RUNTIME_SOURCE = path.join(ROOT, "plugins", "fleet", "scripts");
 
 function parseArguments(argv) {
   const allowed = new Set(["--assert-clean-terminal", "--assert-draft-unchanged"]);
@@ -35,15 +42,40 @@ export async function runPtySmoke(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fleet-pty-"));
   const draftPath = path.join(root, "claude-draft.txt");
   fs.writeFileSync(draftPath, "draft must remain byte-for-byte unchanged\n", "utf8");
+  const claudeConfigDir = path.join(root, ".claude");
+  const settingsPath = path.join(claudeConfigDir, "settings.json");
+  fs.mkdirSync(claudeConfigDir, { recursive: true });
+  const originalEditor = `"${process.execPath}" "${HOST}" --editor`;
+  fs.writeFileSync(
+    settingsPath,
+    `${JSON.stringify({ env: { EDITOR: originalEditor } }, null, 2)}\n`,
+    "utf8"
+  );
+  const setupPlan = await previewSetup({
+    settingsPath,
+    pluginDataDir: path.join(root, "fleet-data"),
+    runtimeSourceDir: RUNTIME_SOURCE,
+    nodeExecutable: process.execPath,
+    platform: process.platform,
+    version: "0.1.0"
+  });
+  await applySetup({
+    ...setupPlan,
+    confirmation: setupPlan.confirmationToken
+  });
   let output = "";
   let editorSent = false;
   let quitSent = false;
+  const diagnosticTail = () => output
+    .slice(-8 * 1024)
+    .replaceAll(root, "<temp>")
+    .replaceAll(os.homedir(), "<home>");
 
   try {
     const executable = process.platform === "win32" ? process.execPath : "/usr/bin/env";
     const arguments_ = process.platform === "win32"
-      ? [HOST, draftPath, CONSOLE]
-      : ["node", HOST, draftPath, CONSOLE];
+      ? [HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"]
+      : ["node", HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"];
     const terminal = pty.spawn(executable, arguments_, {
       name: "xterm-256color",
       cols: options.columns ?? 140,
@@ -80,7 +112,9 @@ export async function runPtySmoke(options = {}) {
         }
         queueMicrotask(() => exitSubscription.dispose());
         if (exitCode === 0) resolve({ exitCode, signal });
-        else reject(new Error(`PTY host exited with ${signal ?? exitCode}.`));
+        else reject(new Error(
+          `PTY host exited with ${signal ?? exitCode}.\n${diagnosticTail()}`
+        ));
       });
     });
     await exit;
@@ -95,6 +129,16 @@ export async function runPtySmoke(options = {}) {
     if (options.assertCleanTerminal && !terminalRestored) {
       throw new Error("Fleet did not emit terminal restoration controls.");
     }
+    const uninstallPreview = await previewUninstallSetup({
+      pluginDataDir: setupPlan.pluginDataDir
+    });
+    await uninstallSetup({
+      pluginDataDir: setupPlan.pluginDataDir,
+      confirmationToken: uninstallPreview.confirmationToken
+    });
+    const restoredSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const uninstallRestored = restoredSettings.env?.EDITOR === originalEditor
+      && !("VISUAL" in restoredSettings.env);
     return {
       schemaVersion: 1,
       pty: process.platform === "win32" ? "conpty" : "forkpty",
@@ -102,6 +146,7 @@ export async function runPtySmoke(options = {}) {
       returnedToHost: restored,
       draftUnchanged: unchanged,
       terminalRestored,
+      uninstallRestored,
       ownedChildrenAfterExit: isProcessAlive(ownedPid) ? 1 : 0
     };
   } finally {
