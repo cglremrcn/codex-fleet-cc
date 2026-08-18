@@ -229,7 +229,9 @@ for (const [name, columns, preferences] of [
 ]) {
   test(`${name} golden stays stable`, async () => {
     const actual = renderScreen(viewFixture(), { columns, rows: 28 }, preferences);
-    const expected = await readFile(new URL(`./golden/${name}.txt`, import.meta.url), "utf8");
+    const expected = (
+      await readFile(new URL(`./golden/${name}.txt`, import.meta.url), "utf8")
+    ).replace(/\r\n?/g, "\n");
     assert.equal(`${actual}\n`, expected);
   });
 }
