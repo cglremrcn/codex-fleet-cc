@@ -5,6 +5,11 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { isTerminalStatus } from "./domain.mjs";
+import {
+  buildStartContractTemplate,
+  contractTemplateDefinition,
+  listContractTemplates
+} from "./contract-templates.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
 import { renderPlainStatus } from "./plain-status.mjs";
@@ -37,6 +42,7 @@ export const EXIT_CODES = Object.freeze({
 const MAX_CONTRACT_BYTES = 128 * 1024;
 const COMMANDS = new Set([
   "doctor",
+  "init",
   "start",
   "status",
   "result",
@@ -46,18 +52,29 @@ const COMMANDS = new Set([
   "setup",
   "uninstall"
 ]);
-const BOOLEAN_FLAGS = new Set(["--json", "--stdin", "--confirm", "--wait"]);
+const BOOLEAN_FLAGS = new Set(["--json", "--stdin", "--confirm", "--wait", "--list"]);
 const VALUE_FLAGS = new Set([
   "--contract",
   "--workspace",
   "--lane",
   "--output",
   "--confirm-token",
-  "--timeout-ms"
+  "--timeout-ms",
+  "--template",
+  "--objective",
+  "--confirmation-ref"
 ]);
 const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
 const COMMAND_FLAGS = Object.freeze({
   doctor: new Set(["--json", "--workspace"]),
+  init: new Set([
+    "--json",
+    "--list",
+    "--workspace",
+    "--template",
+    "--objective",
+    "--confirmation-ref"
+  ]),
   start: new Set(["--json", "--stdin", "--contract"]),
   status: new Set(["--json", "--workspace"]),
   result: new Set(["--json", "--workspace", "--lane", "--wait", "--timeout-ms"]),
@@ -541,6 +558,49 @@ async function runUninstallCommand(parsed, io) {
 }
 
 async function execute(parsed, io, dependencies) {
+  if (parsed.command === "init") {
+    if (parsed.flags.has("--list")) {
+      if (["--workspace", "--template", "--objective", "--confirmation-ref"]
+        .some((flag) => parsed.flags.has(flag))) {
+        throw new InvalidInputError("init --list does not accept template construction flags.");
+      }
+      return {
+        exitCode: EXIT_CODES.success,
+        payload: { schemaVersion: 1, templates: listContractTemplates() }
+      };
+    }
+    const templateName = parsed.flags.get("--template") ?? "research";
+    const definition = contractTemplateDefinition(templateName);
+    if (!definition) {
+      throw new InvalidInputError(
+        `Unknown Fleet template: ${templateName}. Choose: `
+        + `${listContractTemplates().map((template) => template.name).join(", ")}.`
+      );
+    }
+    const objective = parsed.flags.get("--objective");
+    if (!objective) {
+      throw new InvalidInputError("init requires --objective <bounded-observable-outcome>.");
+    }
+    const confirmationRef = parsed.flags.get("--confirmation-ref");
+    if (definition.confirmationRequired && !confirmationRef) {
+      throw new AuthorityDeniedError(
+        `Template ${templateName} requires --confirmation-ref from the user's explicit approval.`
+      );
+    }
+    const contract = buildStartContractTemplate({
+      name: templateName,
+      workspacePath: parsed.flags.get("--workspace") ?? io.cwd,
+      objective: boundedText(objective, "objective", 4096),
+      confirmationRef: confirmationRef
+        ? boundedText(confirmationRef, "confirmationRef", 512)
+        : null
+    });
+    return {
+      exitCode: EXIT_CODES.success,
+      payload: validateStartContract(contract)
+    };
+  }
+
   if (parsed.command === "doctor") {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
     const report = await doctorReport(context, io, dependencies);
@@ -634,6 +694,7 @@ async function execute(parsed, io, dependencies) {
 }
 
 function humanSummary(command, payload) {
+  if (command === "init") return JSON.stringify(payload, null, 2);
   if (command === "doctor") {
     const broker = payload.checks.find((check) => check.id === "broker");
     if (broker?.diagnostic?.action === "not_stopped") {

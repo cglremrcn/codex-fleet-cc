@@ -44,6 +44,11 @@ Return only after result reports one terminal state: complete, verified, blocked
 or outcome_unknown. A timeout is not completion. Never use shell evaluation, interpolation from
 model-authored text, or a second Codex launcher while waiting.
 
+When a result contains an image artifact, return its exact workspace-relative path, reported file
+type, dimensions, and lane status to the parent. Explicitly instruct the parent Claude to resolve that
+path inside the approved workspace and open it with Claude Code's `Read` tool. A text description or
+path alone does not prove that Claude saw the generated image.
+
 After a successful admission, tell the parent once that the user can press `Ctrl+G` to open Fleet
 Console. Claude Code's own “down arrow to manage” text controls Claude background agents; it is not
 Fleet navigation.

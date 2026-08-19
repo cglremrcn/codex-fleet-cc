@@ -89,6 +89,30 @@ test("image lanes use Codex built-in GPT Image 2 routing and workspace artifacts
   assert.match(routing, /image\.generate.*image\.edit/is);
 });
 
+test("parent Claude opens every returned image artifact before presenting it", async () => {
+  const [skill, agent, routing] = await Promise.all([
+    read("SKILL.md"),
+    readFile(new URL("../../agents/codex-lane.md", skillRoot), "utf8"),
+    read("references/capability-routing.md")
+  ]);
+
+  assert.match(agent, /image artifact.*workspace-relative path/is);
+  assert.match(skill, /parent Claude.*Read tool.*visual/is);
+  assert.match(routing, /path alone is not visual evidence/is);
+  assert.match(routing, /fresh visual verifier/is);
+});
+
+test("operator docs expose init templates and the exact verifier role literal", async () => {
+  const [readme, contracts] = await Promise.all([
+    readFile(new URL("../../../../README.md", skillRoot), "utf8"),
+    read("references/contracts.md")
+  ]);
+
+  assert.match(readme, /fleet\.mjs" init --list/is);
+  assert.match(readme, /image-generation.*confirmation-ref/is);
+  assert.match(contracts, /role.*exact literal.*independent-verifier/is);
+});
+
 test("browser and external effects fail closed without silent substitution", async () => {
   const browser = await read("references/browser-and-external-effects.md");
 

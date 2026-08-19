@@ -64,3 +64,10 @@ QA criteria. Built-in output may first appear under the Codex `generated_images`
 selected result into a new path inside the approved workspace, verify that the file exists and has the
 expected type and dimensions, and return the project-relative path as evidence. Never claim a visual
 is ready from prompt text alone.
+
+Path alone is not visual evidence for the parent. After the lane returns, parent Claude resolves the
+workspace-relative path inside the approved workspace and opens the image with Claude Code's `Read`
+tool. Claude performs visual QA against composition, text, brand constraints, dimensions, and
+exclusions before showing or approving it. For consequential visual work, dispatch a fresh visual verifier
+lane with the exact artifact path and requested criteria; parent inspection does not replace
+independent verification.

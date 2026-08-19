@@ -117,6 +117,12 @@ for this redundant gate. If the request needs new scope, new authority, a new ex
 unresolved user choice, or a third continuation, stop and ask the user. Never interpret `complete` as
 successful work when the requested artifact or evidence is absent.
 
+For every returned image artifact, the parent Claude must resolve the workspace-relative path inside
+the approved workspace and open the file with its Read tool before presenting or approving
+it. Perform visual QA against the requested composition, text, brand, dimensions, and exclusions; path
+existence alone is not visual evidence. Consequential visual work also receives a fresh visual verifier
+lane after parent inspection. Parent inspection and independent verification are separate evidence.
+
 ### 6. Observe without narrating noise
 
 Use Fleet state for status. Report meaningful transitions, capability denial, required user action,

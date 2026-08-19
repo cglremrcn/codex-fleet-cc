@@ -11,6 +11,7 @@ import {
 } from "./upstream/fake-codex-fixture.mjs";
 import { runCli } from "../plugins/fleet/scripts/lib/cli.mjs";
 import { workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
+import { validateStartContract } from "../plugins/fleet/scripts/lib/start-contract.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const FLEET = path.join(ROOT, "plugins", "fleet", "scripts", "fleet.mjs");
@@ -177,6 +178,87 @@ test("contract input is bounded to 128 KiB", (t) => {
 
   assert.equal(run.code, 2);
   assert.match(run.stderr, /128 kib/i);
+});
+
+test("init lists exact copy-paste contract templates without touching workspace state", (t) => {
+  const scope = fixture(t);
+  const before = workspaceSnapshot(scope.workspace);
+  const run = runFleet(
+    ["init", "--list", "--json"],
+    { cwd: scope.workspace, env: fixtureEnv(scope) }
+  );
+
+  assert.equal(run.code, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  assert.deepEqual(
+    payload.templates.map((template) => template.name),
+    ["research", "implementation", "verification", "image-generation"]
+  );
+  assert.equal(
+    payload.templates.find((template) => template.name === "verification").role,
+    "independent-verifier"
+  );
+  assert.equal(
+    payload.templates.find((template) => template.name === "image-generation")
+      .confirmationRequired,
+    true
+  );
+  assert.deepEqual(workspaceSnapshot(scope.workspace), before);
+});
+
+test("init emits a start-valid research contract with one concrete objective", (t) => {
+  const scope = fixture(t);
+  const run = runFleet([
+    "init",
+    "--template", "research",
+    "--workspace", scope.workspace,
+    "--objective", "Summarize the workspace README with file evidence.",
+    "--json"
+  ], { cwd: scope.workspace, env: fixtureEnv(scope) });
+
+  assert.equal(run.code, 0, run.stderr);
+  const contract = JSON.parse(run.stdout);
+  assert.equal(contract.workspacePath, path.resolve(scope.workspace));
+  assert.equal(contract.confirmationRef, null);
+  assert.equal(contract.lanes[0].role, "investigator");
+  assert.equal(contract.lanes[0].priority, "normal");
+  assert.match(contract.lanes[0].prompt, /Objective: Summarize the workspace README/i);
+  assert.match(contract.lanes[0].prompt, /Stop conditions:/i);
+
+  assert.doesNotThrow(() => validateStartContract(contract));
+});
+
+test("init requires explicit confirmation for writer and GPT Image 2 templates", (t) => {
+  const scope = fixture(t);
+  for (const template of ["implementation", "image-generation"]) {
+    const denied = runFleet([
+      "init",
+      "--template", template,
+      "--workspace", scope.workspace,
+      "--objective", "Create the approved artifact.",
+      "--json"
+    ], { cwd: scope.workspace, env: fixtureEnv(scope) });
+    assert.equal(denied.code, 3, denied.stderr);
+    assert.match(denied.stderr, /confirmation-ref/i);
+  }
+
+  const image = runFleet([
+    "init",
+    "--template", "image-generation",
+    "--workspace", scope.workspace,
+    "--objective", "Create a square cyan-on-black product visual.",
+    "--confirmation-ref", "user-approved-image-generation",
+    "--json"
+  ], { cwd: scope.workspace, env: fixtureEnv(scope) });
+
+  assert.equal(image.code, 0, image.stderr);
+  const contract = JSON.parse(image.stdout);
+  assert.equal(contract.confirmationRef, "user-approved-image-generation");
+  assert.equal(contract.lanes[0].role, "visual-analyst");
+  assert.equal(contract.lanes[0].authority.image.generate, true);
+  assert.match(contract.lanes[0].prompt, /\$imagegen/);
+  assert.match(contract.lanes[0].prompt, /workspace-relative path/i);
+  assert.match(contract.lanes[0].prompt, /parent Claude.*Read/iu);
 });
 
 test("doctor reports runtime unavailable with its dedicated exit code", (t) => {

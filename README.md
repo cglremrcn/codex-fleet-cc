@@ -127,6 +127,39 @@ If a worker merely asks for a redundant “say continue” approval even though 
 granted the required authority, Claude sends a bounded follow-up and requires the actual work and evidence.
 New scope, new authority, external effects, or a genuine user choice still stop for confirmation.
 
+For generated images, the Codex lane returns a verified workspace-relative artifact path. Parent Claude
+then opens that file with Claude Code's `Read` tool and performs visual QA before presenting it; a path or
+worker description alone is not treated as seeing the image. Consequential visuals can add a fresh visual
+verifier lane with the exact artifact and requested criteria.
+
+## Working contract templates
+
+Fleet can print maintained, schema-valid contracts instead of making users hand-write long JSON. List the
+gallery from a plugin environment:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" init --list --json
+```
+
+Create a ready read-only research contract with a concrete objective:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" init --template research --workspace . \
+  --objective "Summarize README.md with exact file evidence" --json
+```
+
+The gallery contains `research`, `implementation`, `verification`, and `image-generation`.
+`verification` emits the exact machine role `independent-verifier`. Writer and image templates fail closed
+unless the command includes a real user approval reference, for example:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" init --template image-generation --workspace . \
+  --objective "Create a square cyan-on-black product visual" \
+  --confirmation-ref "<visible-user-approval-reference>" --json
+```
+
+The generated JSON can be reviewed, saved, or passed unchanged to `fleet.mjs start --stdin --json`.
+
 ## Privacy and resource behavior
 
 Fleet is local-only and telemetry-free by default. It uses the Codex CLI authentication,

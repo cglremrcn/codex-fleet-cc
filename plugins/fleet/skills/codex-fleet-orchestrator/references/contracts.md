@@ -67,6 +67,12 @@ task. `confirmationRef` may be omitted or `null` for a safe read-only contract. 
 image generation/edit, browser mutation, database write, or external-effect grant requires a non-empty
 root `confirmationRef` from the exact visible plan.
 
+The machine `role` field requires an exact literal. Allowed values are `investigator`,
+`current-web-researcher`, `planner`, `implementer`, `browser-qa-operator`, `visual-analyst`,
+`integrator`, and `independent-verifier`. Natural-language shorthand such as `verifier` is descriptive
+prose, not a valid machine role. Use `fleet.mjs init --list --json` to inspect the maintained template
+gallery instead of guessing enum values.
+
 ## Immutability and follow-ups
 
 Once admitted, do not alter objective, authority, exclusions, or checkout. A clarification that stays
