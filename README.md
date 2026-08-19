@@ -14,9 +14,9 @@ Press `Ctrl+G` to temporarily hand the same terminal to Fleet Console. Press `q`
 to the same Claude Code session, with the draft prompt left intact. Opening or viewing the console
 does not create a Claude or Codex model turn.
 
-> **Development preview:** the runtime, console and Windows PTY handoff are implemented and covered
-> by the local release gate. The project is not yet published as a Claude Code marketplace plugin.
-> Cross-platform CI and the disposable-profile install/handoff smoke remain release gates.
+> **Development preview:** the runtime, console, reversible setup and terminal handoff are
+> implemented. The release gate passes on Windows, macOS Intel and Apple Silicon, Linux x64 and
+> ARM64 with Node 22 and 24. The project is not yet published as a Claude Code marketplace plugin.
 
 ## Why this exists
 
@@ -139,17 +139,18 @@ matrix.
 
 | Surface | Status |
 | --- | --- |
-| Windows live terminal handoff | **Proven** on Claude Code v2.1.234; clean-profile release smoke remains |
-| Windows runtime and PTY fixture | Passing: exact draft preserved, terminal restored, zero owned child |
-| macOS Intel and Apple Silicon | CI and PTY gates configured; a green run is required before release |
-| Linux x64 and ARM64 | CI and PTY gates configured; a green run is required before release |
+| Windows live terminal handoff | **Proven** on Claude Code v2.1.234 in a disposable profile |
+| Windows runtime and PTY fixture | Passing: installed launcher, exact draft, restored terminal, zero owned child |
+| macOS Intel and Apple Silicon | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
+| Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Not yet published |
-| Reversible settings setup | Preview/apply/uninstall CLI tested with immutable confirmation tokens |
+| Reversible settings setup | Preview/apply/uninstall, rollback and late-mutation refusal tested |
 | Live cross-process follow-up/cancel | Not yet integrated |
 
-No release will be called cross-platform until Windows, macOS, and Linux CI plus PTY handoff tests
-pass. Capability discovery is also kept separate from a successful live capability smoke.
+Cross-platform support is gated by Windows, macOS and Linux CI plus PTY handoff tests on every
+change and release tag. Capability discovery remains separate from a successful live capability
+smoke.
 
 ## Work with the source today
 
@@ -183,8 +184,8 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 ```
 
 Those commands are the public contract. Setup and uninstall use separate immutable previews and
-exact confirmation tokens. Live supervisor controls remain blocked in the development preview until
-their disposable-profile smoke passes.
+exact confirmation tokens. Cross-process follow-up and cancel controls remain unavailable until
+their runtime integration and dedicated safety smoke exist.
 
 ## Safety decisions that should not be “simplified”
 
