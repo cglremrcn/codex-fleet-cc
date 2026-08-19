@@ -159,3 +159,16 @@ test("cancel requires an immutable preview and interrupts only its pinned turn",
   });
   await waitForSupervisorExit(scope.manifest.manifestPath);
 });
+
+test("invalid mutation after terminal work does not suppress idle shutdown", async (t) => {
+  const scope = await fixture(t, "slow-task");
+  await request(scope, "start", startContract(scope, "terminal-before-error"));
+  await waitForLane(scope, "terminal-before-error", "complete");
+
+  await assert.rejects(request(scope, "followUp", {
+    laneId: "missing-terminal-lane",
+    message: "This must fail without keeping the supervisor alive."
+  }), /not a completed resumable lane/iu);
+
+  await waitForSupervisorExit(scope.manifest.manifestPath);
+});

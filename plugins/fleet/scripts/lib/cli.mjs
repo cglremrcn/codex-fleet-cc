@@ -78,6 +78,7 @@ const LANE_PROPERTIES = new Set([
   "model",
   "effort",
   "prompt",
+  "ephemeral",
   "authority",
   "checkoutKey",
   "priority",
@@ -325,6 +326,9 @@ function validateStartContract(value) {
     assertPlainObject(lane, `Lane ${index + 1}`);
     rejectUnknownProperties(lane, LANE_PROPERTIES, "lane");
     boundedText(lane.prompt, `Lane ${index + 1} prompt`, MAX_CONTRACT_BYTES);
+    if (lane.ephemeral !== undefined && typeof lane.ephemeral !== "boolean") {
+      throw new InvalidInputError(`Lane ${index + 1} ephemeral must be a boolean.`);
+    }
     const authority = validateAuthorityShape(lane.authority);
     if (!authority.process.start) {
       throw new AuthorityDeniedError(

@@ -1,0 +1,308 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { spawnSync } from "node:child_process";
+
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
+
+const ROOT = path.resolve(import.meta.dirname, "..");
+const FLEET = path.join(ROOT, "plugins", "fleet", "scripts", "fleet.mjs");
+const LIVE_FLAG = "--confirm-live-account";
+const MODEL = "gpt-5.6-sol";
+const EFFORT = "high";
+const COMMAND_TIMEOUT_MS = 240_000;
+const RESULT_TIMEOUT_MS = 180_000;
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+
+export function parseLiveSmokeArguments(argv) {
+  if (!Array.isArray(argv)) throw new TypeError("Live smoke arguments must be an array.");
+  for (const argument of argv) {
+    if (argument !== LIVE_FLAG) throw new Error(`Unknown live smoke flag: ${argument}.`);
+  }
+  if (argv.length !== 1 || argv[0] !== LIVE_FLAG) {
+    throw new Error(`Real Codex account access requires exactly ${LIVE_FLAG}.`);
+  }
+  return { confirmLiveAccount: true };
+}
+
+export function assertDisposableWorkspace(workspacePath, disposableRoot) {
+  const root = path.resolve(disposableRoot);
+  const workspace = path.resolve(workspacePath);
+  const relative = path.relative(root, workspace);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Live smoke workspace must be a strict child of its disposable root.");
+  }
+  return workspace;
+}
+
+function readOnlyAuthority() {
+  return {
+    sandbox: "read-only",
+    network: "off",
+    browser: { inspect: false, mutate: false },
+    process: { start: true, stopOwned: true },
+    database: { read: false, write: false },
+    externalEffects: { send: false, payment: false, deploy: false, delete: false },
+    retry: false
+  };
+}
+
+function startContract(workspacePath, lane) {
+  return {
+    schemaVersion: 1,
+    workspacePath,
+    limits: { maxActive: 1, maxWritersPerCheckout: 1, staggerMs: 0 },
+    lanes: [{
+      model: MODEL,
+      effort: EFFORT,
+      ephemeral: true,
+      authority: readOnlyAuthority(),
+      ...lane
+    }]
+  };
+}
+
+export function buildLiveSmokeContracts(workspacePath) {
+  const workspace = path.resolve(workspacePath);
+  return [
+    startContract(workspace, {
+      id: "live-investigator",
+      role: "investigator",
+      label: "Read-only live investigator",
+      prompt: [
+        "Inspect only README.md in this disposable workspace.",
+        "Do not edit files and do not access the network.",
+        "Reply with LIVE_INVESTIGATOR_OK and the first word in README.md."
+      ].join(" ")
+    }),
+    startContract(workspace, {
+      id: "live-verifier",
+      role: "independent-verifier",
+      label: "Independent live verifier",
+      prompt: [
+        "Independently inspect only README.md in this disposable workspace.",
+        "Do not edit files and do not access the network.",
+        "Reply with LIVE_VERIFIER_OK only if its first word is FleetLiveSmoke."
+      ].join(" ")
+    }),
+    startContract(workspace, {
+      id: "live-cancel",
+      role: "investigator",
+      label: "Owned cancellation probe",
+      prompt: [
+        "Run this read-only command and wait for it to finish:",
+        `${JSON.stringify(process.execPath)} -e \"setTimeout(() => {}, 120000)\".`,
+        "Do not do anything else."
+      ].join(" ")
+    })
+  ];
+}
+
+function publicLane(lane) {
+  return {
+    id: lane?.id ?? null,
+    model: lane?.model ?? null,
+    effort: lane?.effort ?? null,
+    status: lane?.status ?? null
+  };
+}
+
+export function sanitizeLiveEvidence(raw) {
+  const investigatorMessage = String(raw.investigator?.lastMessage ?? "");
+  const followUpMessage = String(raw.followUp?.lastMessage ?? "");
+  const verifierMessage = String(raw.verifier?.lastMessage ?? "");
+  const threadReused = Boolean(
+    raw.investigator?.threadId
+    && raw.investigator.threadId === raw.followUp?.threadId
+  );
+  const turnChanged = Boolean(
+    raw.investigator?.turnId
+    && raw.followUp?.turnId
+    && raw.investigator.turnId !== raw.followUp.turnId
+  );
+  const independentThread = Boolean(
+    raw.verifier?.threadId
+    && raw.verifier.threadId !== raw.investigator?.threadId
+  );
+  const evidence = {
+    schemaVersion: 1,
+    liveAccount: true,
+    loginAuthenticated: /logged in/iu.test(String(raw.loginStatus ?? "")),
+    codexVersion: String(raw.codexVersion ?? "").split(/\r?\n/u)[0].slice(0, 120),
+    investigator: {
+      ...publicLane(raw.investigator),
+      markerObserved: investigatorMessage.includes("LIVE_INVESTIGATOR_OK")
+    },
+    followUp: {
+      status: raw.followUp?.status ?? null,
+      markerObserved: followUpMessage.includes("LIVE_FOLLOW_UP_OK"),
+      threadReused,
+      turnChanged
+    },
+    verifier: {
+      ...publicLane(raw.verifier),
+      markerObserved: verifierMessage.includes("LIVE_VERIFIER_OK"),
+      independentThread
+    },
+    cancellation: {
+      accepted: raw.cancellation?.accepted === true,
+      status: raw.cancellation?.status ?? null
+    }
+  };
+  evidence.passed = evidence.loginAuthenticated
+    && evidence.investigator.status === "complete"
+    && evidence.investigator.markerObserved
+    && evidence.followUp.status === "complete"
+    && evidence.followUp.markerObserved
+    && evidence.followUp.threadReused
+    && evidence.followUp.turnChanged
+    && evidence.verifier.status === "complete"
+    && evidence.verifier.markerObserved
+    && evidence.verifier.independentThread
+    && evidence.cancellation.accepted
+    && evidence.cancellation.status === "cancelled";
+  return evidence;
+}
+
+function isolatedEnvironment(disposableRoot) {
+  const stateRoot = path.join(disposableRoot, "state");
+  fs.mkdirSync(stateRoot, { recursive: true });
+  if (process.platform === "win32") {
+    return { ...process.env, LOCALAPPDATA: stateRoot };
+  }
+  return { ...process.env, XDG_STATE_HOME: stateRoot };
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? ROOT,
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+    timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
+    maxBuffer: MAX_OUTPUT_BYTES
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "command failed")
+      .replace(/[\u0000-\u001f]+/gu, " ")
+      .slice(0, 1000);
+    throw new Error(`${path.basename(command)} failed with exit ${result.status}: ${detail}`);
+  }
+  return String(result.stdout).trim();
+}
+
+function runFleetJson(args, context) {
+  return JSON.parse(run(process.execPath, [FLEET, ...args, "--json"], context));
+}
+
+function writeContract(disposableRoot, name, value) {
+  const filePath = path.join(disposableRoot, `${name}.json`);
+  fs.writeFileSync(filePath, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+  return filePath;
+}
+
+function laneFromResult(payload, laneId) {
+  const lane = payload?.lanes?.find((candidate) => candidate.id === laneId);
+  if (!lane) throw new Error(`Live smoke result omitted lane ${laneId}.`);
+  return lane;
+}
+
+export function runLiveSmoke(options = {}) {
+  if (options.confirmLiveAccount !== true) {
+    throw new Error(`Real Codex account access requires exactly ${LIVE_FLAG}.`);
+  }
+  const disposableRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fleet-live-"));
+  const workspace = assertDisposableWorkspace(path.join(disposableRoot, "workspace"), disposableRoot);
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "README.md"), "FleetLiveSmoke disposable evidence\n", "utf8");
+  const env = isolatedEnvironment(disposableRoot);
+  const context = { cwd: workspace, env };
+
+  try {
+    const codexVersion = run("codex", ["--version"], context);
+    const loginStatus = run("codex", ["login", "status"], context);
+    const [investigatorContract, verifierContract, cancelContract] =
+      buildLiveSmokeContracts(workspace);
+
+    const investigatorPath = writeContract(
+      disposableRoot,
+      "investigator",
+      investigatorContract
+    );
+    runFleetJson(["start", "--contract", investigatorPath], context);
+    const first = laneFromResult(runFleetJson([
+      "result", "--workspace", workspace, "--lane", "live-investigator",
+      "--wait", "--timeout-ms", String(RESULT_TIMEOUT_MS)
+    ], context), "live-investigator");
+
+    const followUpPath = writeContract(disposableRoot, "follow-up", {
+      schemaVersion: 1,
+      workspacePath: workspace,
+      laneId: "live-investigator",
+      message: "Re-check README.md without edits or network access. Reply LIVE_FOLLOW_UP_OK."
+    });
+    runFleetJson(["follow-up", "--contract", followUpPath], context);
+    const followUp = laneFromResult(runFleetJson([
+      "result", "--workspace", workspace, "--lane", "live-investigator",
+      "--wait", "--timeout-ms", String(RESULT_TIMEOUT_MS)
+    ], context), "live-investigator");
+
+    const verifierPath = writeContract(disposableRoot, "verifier", verifierContract);
+    runFleetJson(["start", "--contract", verifierPath], context);
+    const verifier = laneFromResult(runFleetJson([
+      "result", "--workspace", workspace, "--lane", "live-verifier",
+      "--wait", "--timeout-ms", String(RESULT_TIMEOUT_MS)
+    ], context), "live-verifier");
+
+    const cancelPath = writeContract(disposableRoot, "cancel-start", cancelContract);
+    runFleetJson(["start", "--contract", cancelPath], context);
+    const previewPath = writeContract(disposableRoot, "cancel-preview", {
+      schemaVersion: 1,
+      workspacePath: workspace,
+      laneId: "live-cancel"
+    });
+    const preview = runFleetJson(["cancel", "--contract", previewPath], context);
+    const confirmPath = writeContract(disposableRoot, "cancel-confirm", {
+      schemaVersion: 1,
+      workspacePath: workspace,
+      laneId: "live-cancel",
+      expectedThreadId: preview.expectedThreadId,
+      expectedTurnId: preview.expectedTurnId,
+      confirmationToken: preview.confirmationToken
+    });
+    const accepted = runFleetJson([
+      "cancel", "--contract", confirmPath, "--confirm"
+    ], context);
+    const cancelled = laneFromResult(runFleetJson([
+      "result", "--workspace", workspace, "--lane", "live-cancel",
+      "--wait", "--timeout-ms", "30000"
+    ], context), "live-cancel");
+
+    const evidence = sanitizeLiveEvidence({
+      codexVersion,
+      loginStatus,
+      investigator: first,
+      followUp,
+      verifier,
+      cancellation: { accepted: accepted.accepted, status: cancelled.status }
+    });
+    if (!evidence.passed) throw new Error("Live Codex smoke did not satisfy every evidence gate.");
+    return evidence;
+  } finally {
+    fs.rmSync(disposableRoot, { recursive: true, force: true });
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  try {
+    const options = parseLiveSmokeArguments(process.argv.slice(2));
+    const result = runLiveSmoke(options);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  }
+}

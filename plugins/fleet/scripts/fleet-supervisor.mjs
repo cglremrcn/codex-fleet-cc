@@ -257,6 +257,14 @@ function createControlPlane(options) {
       }
       throw new Error(`Unknown Fleet supervisor method: ${method}.`);
     },
+    async restoreIdlePolicy() {
+      const current = await snapshot();
+      if (current.queued.length === 0 && current.active.length === 0) {
+        options.onIdle?.();
+      } else {
+        monitorActive();
+      }
+    },
     async close() {
       if (reconcileTimer) clearInterval(reconcileTimer);
       reconcileTimer = null;
@@ -346,7 +354,12 @@ export async function runSupervisor(options = {}) {
         setTimeout(() => close(), 50).unref?.();
         return { accepted: true };
       }
-      return control.handle(method, params);
+      try {
+        return await control.handle(method, params);
+      } catch (error) {
+        await control.restoreIdlePolicy().catch(() => undefined);
+        throw error;
+      }
     }
   });
 

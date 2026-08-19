@@ -292,6 +292,49 @@ test("hydrated completed lanes continue through a fresh runtime", async () => {
   assert.equal(scheduler.snapshot().active[0].authority.sandbox, "read-only");
 });
 
+test("failed follow-up persistence restores terminal state and writer capacity", async () => {
+  const runtime = recordingRuntime();
+  let failNextWrite = true;
+  const scheduler = createScheduler({
+    runtime,
+    store: {
+      async write() {
+        if (failNextWrite) {
+          failNextWrite = false;
+          throw new Error("follow-up state unavailable");
+        }
+      }
+    },
+    limits: { maxActive: 1, maxWritersPerCheckout: 1, staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{
+      ...writer("persisted-writer", "shared"),
+      status: "complete",
+      phase: "complete",
+      threadId: "thread-persisted-writer",
+      turnId: "turn-persisted-writer",
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z",
+      finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+
+  await assert.rejects(
+    scheduler.continue("persisted-writer", "Check the second pass."),
+    /follow-up state unavailable/iu
+  );
+  const restored = scheduler.snapshot().history.find((lane) => lane.id === "persisted-writer");
+  assert.equal(restored.status, "complete");
+  assert.equal(restored.phase, "complete");
+  assert.equal(restored.finishedAt, "2026-08-19T10:00:02.000Z");
+
+  const replacement = scheduler.enqueue(writer("replacement-writer", "shared"));
+  await nextTurn();
+  assert.deepEqual(runtime.starts, ["replacement-writer"]);
+  await replacement;
+});
+
 test("cancel refuses a stale caller-pinned turn identity", async () => {
   const runtime = recordingRuntime();
   const scheduler = createScheduler({

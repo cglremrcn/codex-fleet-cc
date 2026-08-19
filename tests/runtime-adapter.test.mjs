@@ -121,6 +121,20 @@ test("a completed lane can continue on its existing Codex thread", async (t) => 
   assert.match(fixture.readState().lastTurnStart.prompt, /remaining edge case/i);
 });
 
+test("an explicitly ephemeral lane is not retained by Codex", async (t) => {
+  const fixture = startFakeCodex(t);
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-ephemeral", { ephemeral: true }));
+
+  assert.equal(fixture.readState().threads.at(-1).ephemeral, true);
+});
+
 test("a fresh runtime resumes a persisted completed lane", async (t) => {
   const fixture = startFakeCodex(t);
   const firstRuntime = await createRuntime({

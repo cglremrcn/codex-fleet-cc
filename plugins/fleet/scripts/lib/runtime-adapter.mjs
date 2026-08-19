@@ -256,6 +256,7 @@ class FleetRuntime {
       ...validated,
       authority,
       workspacePath: path.resolve(contract.workspacePath),
+      ephemeral: contract.ephemeral === true,
       threadId: null,
       turnId: null,
       lastMessage: null,
@@ -271,7 +272,7 @@ class FleetRuntime {
         approvalPolicy: "never",
         sandbox: lane.authority.sandbox,
         serviceName: "codex_fleet_cc",
-        ephemeral: false
+        ephemeral: lane.ephemeral
       });
       this.bindThread(lane, thread.thread.id);
       await this.broker.request("thread/name/set", {

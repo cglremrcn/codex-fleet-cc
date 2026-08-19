@@ -441,6 +441,12 @@ class FleetScheduler {
       await this.persist();
     } catch (error) {
       this.active.delete(id);
+      if (item.authority.sandbox === "workspace-write") {
+        const remaining = Math.max(0, (this.writerCounts.get(item.checkoutKey) ?? 1) - 1);
+        if (remaining === 0) this.writerCounts.delete(item.checkoutKey);
+        else this.writerCounts.set(item.checkoutKey, remaining);
+      }
+      Object.assign(item, resumeRecord);
       this.history.set(id, item);
       throw error;
     }

@@ -79,6 +79,30 @@ test("supervisor protocol rejects oversized requests before dispatch", async (t)
   assert.equal(calls, 0);
 });
 
+test("supervisor envelope can carry a maximum-size CLI contract", async (t) => {
+  const dataDir = makeTempDir("fleet-supervisor-envelope-");
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const paths = supervisorPaths({ dataDir, workspaceKey: WORKSPACE_KEY });
+  const sourceContract = { prompt: "x".repeat(128 * 1024 - 100) };
+  assert.ok(Buffer.byteLength(JSON.stringify(sourceContract), "utf8") <= 128 * 1024);
+  const server = await createSupervisorServer({
+    ...paths,
+    workspaceKey: WORKSPACE_KEY,
+    token: TOKEN,
+    handleRequest: async ({ params }) => ({ length: params.sourceContract.prompt.length })
+  });
+  t.after(() => server.close());
+
+  const accepted = await requestSupervisor({
+    address: paths.address,
+    workspaceKey: WORKSPACE_KEY,
+    token: TOKEN,
+    method: "start",
+    params: { sourceContract }
+  });
+  assert.equal(accepted.length, sourceContract.prompt.length);
+});
+
 test("supervisor paths stay private and deterministic per workspace", async (t) => {
   const dataDir = makeTempDir("fleet-supervisor-paths-");
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));

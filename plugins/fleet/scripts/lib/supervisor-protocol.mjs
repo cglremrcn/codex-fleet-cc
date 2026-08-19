@@ -10,7 +10,7 @@ import {
   observeProcessStart
 } from "./process-ownership.mjs";
 
-export const MAX_SUPERVISOR_MESSAGE_BYTES = 128 * 1024;
+export const MAX_SUPERVISOR_MESSAGE_BYTES = 256 * 1024;
 export const SUPERVISOR_PROTOCOL_VERSION = 1;
 
 const WORKSPACE_KEY = /^[a-f0-9]{32}$/u;

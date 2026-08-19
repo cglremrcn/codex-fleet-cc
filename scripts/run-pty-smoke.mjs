@@ -15,7 +15,6 @@ import {
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HOST = path.join(ROOT, "tests", "fixtures", "fake-claude-editor-host.mjs");
-const CONSOLE = path.join(ROOT, "plugins", "fleet", "scripts", "fleet-console.mjs");
 const RUNTIME_SOURCE = path.join(ROOT, "plugins", "fleet", "scripts");
 
 function parseArguments(argv) {
@@ -122,10 +121,8 @@ export async function runPtySmoke(options = {}) {
     .replaceAll(os.homedir(), "<home>");
 
   try {
-    const executable = process.platform === "win32" ? process.execPath : "/usr/bin/env";
-    const arguments_ = process.platform === "win32"
-      ? [HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"]
-      : ["node", HOST, draftPath, CONSOLE];
+    const executable = process.execPath;
+    const arguments_ = [HOST, draftPath, setupPlan.launcherPath, "--installed-launcher"];
     const terminal = pty.spawn(executable, arguments_, {
       name: "xterm-256color",
       cols: options.columns ?? 140,
@@ -170,9 +167,7 @@ export async function runPtySmoke(options = {}) {
     await exit;
 
     const unchanged = draftBefore.equals(fs.readFileSync(draftPath));
-    const restored = process.platform === "win32"
-      ? output.includes("CLAUDE_HOST:AFTER:")
-      : true;
+    const restored = output.includes("CLAUDE_HOST:AFTER:");
     const terminalRestored = output.includes("\u001b[?1049l")
       && output.includes("\u001b[?25h");
     if (options.assertDraftUnchanged && !unchanged) {
@@ -199,6 +194,7 @@ export async function runPtySmoke(options = {}) {
       draftUnchanged: unchanged,
       terminalRestored,
       installedLauncherChecked,
+      installedLauncherHandoff: restored && output.includes("CONSOLE=0"),
       uninstallRestored,
       ownedChildrenAfterExit: isProcessAlive(ownedPid) ? 1 : 0
     };
