@@ -14,9 +14,10 @@ Press `Ctrl+G` to temporarily hand the same terminal to Fleet Console. Press `q`
 to the same Claude Code session, with the draft prompt left intact. Opening or viewing the console
 does not create a Claude or Codex model turn.
 
-> **Development preview:** the runtime, console, reversible setup and terminal handoff are
-> implemented. The release gate passes on Windows, macOS Intel and Apple Silicon, Linux x64 and
-> ARM64 with Node 22 and 24. The project is not yet published as a Claude Code marketplace plugin.
+> **Development preview:** the runtime, console, reversible setup, terminal handoff, live follow-up
+> and exact owned-lane cancellation are implemented. The release gate passes on Windows, macOS
+> Intel and Apple Silicon, Linux x64 and ARM64 with Node 22 and 24. The project is not yet published
+> as a Claude Code marketplace plugin.
 
 ## Why this exists
 
@@ -146,7 +147,8 @@ matrix.
 | Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Not yet published |
 | Reversible settings setup | Preview/apply/uninstall, rollback and late-mutation refusal tested |
-| Live cross-process follow-up/cancel | Not yet integrated |
+| Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator, same-thread follow-up, independent verifier and exact cancellation |
+| Live cross-process follow-up/cancel | Passing through the authenticated local supervisor; `m` follows up and `x` previews then confirms exact cancellation |
 
 Cross-platform support is gated by Windows, macOS and Linux CI plus PTY handoff tests on every
 change and release tag. Capability discovery remains separate from a successful live capability
@@ -163,12 +165,21 @@ npm ci
 npm run verify
 ```
 
+Maintainers can run the explicit real-account release smoke in a disposable temporary workspace:
+
+```bash
+npm run smoke:live
+```
+
+That smoke uses ephemeral read-only lanes, retains no prompt or runtime identifiers in its output,
+and stops the exact supervisor and Codex process tree it owns before deleting the workspace.
+
 The project keeps Node.js 22.20 as its compatibility floor, matching the Claude Code CLI runtime,
 and tests the maintained Node 22 and current Node 24 LTS lines. Fleet has no production npm
 dependencies.
 `node-pty` is development-only and is excluded from the plugin package.
-Do not point your main Claude profile at the development plugin yet; setup, rollback, packaging,
-and the live Claude smoke must all pass before that workflow is documented as supported.
+Until the marketplace package is published, use the source checkout and review the setup preview
+before applying it to a Claude Code profile.
 
 The plugin contract uses Claude Code's marketplace/plugin directory mechanism and these commands:
 
@@ -184,8 +195,9 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 ```
 
 Those commands are the public contract. Setup and uninstall use separate immutable previews and
-exact confirmation tokens. Cross-process follow-up and cancel controls remain unavailable until
-their runtime integration and dedicated safety smoke exist.
+exact confirmation tokens. Inside Fleet Console, `m` continues the selected completed lane on its
+existing Codex thread and `x` performs an immutable preview before cancelling only the pinned
+owned thread and turn.
 
 ## Safety decisions that should not be “simplified”
 
