@@ -163,17 +163,20 @@ claude plugin marketplace add cglremrcn/codex-fleet-cc
 claude plugin install fleet@codex-fleet-cc
 ```
 
-Restart Claude Code, then run the checks in this order:
+Reload plugins or restart Claude Code:
 
 ```text
-/fleet:doctor
-/fleet:setup
+/reload-plugins
 ```
 
-`/fleet:setup` shows the settings it proposes to own and asks one plain confirmation question.
-Answer yes and Claude applies the exact preview; the integrity token stays internal, so there is
-nothing to copy or paste. Restart Claude Code once, then press `Ctrl+G` to enter Fleet Console. Use
-`q` or `Esc` to return to the same Claude Code session.
+On the first session without a Fleet ownership manifest, Claude asks one question: `Enable Ctrl+G
+Fleet Console now?` Answer yes and Claude previews and applies the reversible integration itself.
+There is no command or integrity token to copy. The SessionStart check is read-only; it cannot
+change settings before that explicit confirmation. Restart Claude Code once after setup, then press
+`Ctrl+G` to enter Fleet Console. Use `q` or `Esc` to return to the same Claude Code session.
+
+Run `/fleet:doctor` when you want an explicit capability report. `/fleet:setup` remains available as
+a manual recovery path, but it is not part of normal first-run onboarding.
 
 ### Migrating from the legacy standalone skill
 
@@ -213,7 +216,8 @@ and tests the maintained Node 22 and current Node 24 LTS lines. Fleet has no pro
 dependencies.
 `node-pty` is development-only and is excluded from the plugin package.
 The GitHub marketplace installs the packaged plugin. Source contributors should still use the
-checkout above and review the setup preview before applying it to a Claude Code profile.
+checkout above. Automatic onboarding and manual `/fleet:setup` both use the same immutable preview
+and explicit-confirmation boundary before applying anything to a Claude Code profile.
 
 The plugin contract uses Claude Code's marketplace/plugin directory mechanism and these commands:
 
@@ -229,10 +233,10 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 ```
 
 Those commands are the public contract. Setup and uninstall use separate immutable previews and
-exact confirmation tokens. Setup carries its token internally after one plain user confirmation;
-users never need to copy or paste it. Inside Fleet Console, `m` continues the selected completed
-lane on its existing Codex thread and `x` performs an immutable preview before cancelling only the
-pinned owned thread and turn.
+exact confirmation tokens. SessionStart only detects missing setup; after one plain user
+confirmation, setup carries its token internally. Users never need to copy or paste it. Inside Fleet
+Console, `m` continues the selected completed lane on its existing Codex thread and `x` performs an
+immutable preview before cancelling only the pinned owned thread and turn.
 
 ## Safety decisions that should not be “simplified”
 
