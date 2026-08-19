@@ -63,7 +63,7 @@ export function createInputDecoder(options = {}) {
     DEFAULT_MAX_PENDING_BYTES
   );
   let pending = Buffer.alloc(0);
-  let textMode = false;
+  let textMode = null;
 
   function rejectOversizedEscape(events) {
     if (pending.length <= maxPendingBytes || pending[0] !== 0x1b) return false;
@@ -86,7 +86,7 @@ export function createInputDecoder(options = {}) {
         pending = pending.subarray(byteLength);
         if (textMode) {
           if (character === "\r" || character === "\n") {
-            events.push({ type: "applyFilter" });
+            events.push({ type: textMode === "composer" ? "submitMessage" : "applyFilter" });
           } else if (character === "\b" || character === "\u007f") {
             events.push({ type: "backspace" });
           } else if (character.codePointAt(0) >= 0x20) {
@@ -127,8 +127,11 @@ export function createInputDecoder(options = {}) {
 
   function flush() {
     if (pending.length === 0) return [];
+    const escapeType = textMode === "composer"
+      ? "discardMessage"
+      : textMode === "filter" ? "clearFilter" : "quit";
     const events = pending.equals(Buffer.from(ESCAPE))
-      ? [{ type: textMode ? "clearFilter" : "quit" }]
+      ? [{ type: escapeType }]
       : [{ type: "invalidInput", reason: "incomplete-escape-sequence" }];
     pending = Buffer.alloc(0);
     return events;
@@ -138,7 +141,9 @@ export function createInputDecoder(options = {}) {
     push,
     flush,
     setTextMode(value) {
-      textMode = value === true;
+      textMode = value === "composer" ? "composer" : value === true || value === "filter"
+        ? "filter"
+        : null;
     },
     get pendingBytes() {
       return pending.length;

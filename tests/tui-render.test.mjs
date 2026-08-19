@@ -199,6 +199,18 @@ test("compact masthead keeps complete health counters", () => {
   assert.doesNotMatch(healthLine, /…/);
 });
 
+test("every layout exposes follow-up and cancel controls without hidden help", () => {
+  for (const columns of [160, 100, 72]) {
+    const output = stripAnsi(renderScreen(
+      viewFixture(),
+      { columns, rows: 28 },
+      plainPreferences()
+    ));
+    assert.match(output, /M (?:FOLLOW-UP|MESSAGE)/);
+    assert.match(output, /X CANCEL/);
+  }
+});
+
 test("screen-reader mode is linear and excludes decorative formation output", () => {
   const output = renderScreen(
     viewFixture(),

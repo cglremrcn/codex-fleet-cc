@@ -5,11 +5,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { runConsole } from "./lib/console-controller.mjs";
 import { isMainModule } from "./lib/is-main.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./lib/paths.mjs";
 import { readWorkspaceState } from "./lib/safe-state.mjs";
+import {
+  ensureSupervisor,
+  requestSupervisor
+} from "./lib/supervisor-protocol.mjs";
 import { buildViewModel, renderScreen } from "./lib/tui-render.mjs";
 
 const EXIT_SUCCESS = 0;
@@ -116,6 +121,66 @@ export function createOriginalEditor(env = process.env) {
   };
 }
 
+export async function createSupervisorRuntime(options = {}) {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const home = options.home ?? os.homedir();
+  const key = await workspaceKey(cwd, { platform });
+  const dataDir = getFleetDataDir(env, platform, home);
+  const ensure = options.ensureSupervisor ?? ensureSupervisor;
+  const request = options.requestSupervisor ?? requestSupervisor;
+
+  async function call(method, params) {
+    const manifest = await ensure({
+      dataDir,
+      workspaceKey: key,
+      workspacePath: cwd,
+      scriptPath: fileURLToPath(new URL("./fleet-supervisor.mjs", import.meta.url)),
+      nodeExecutable: process.execPath,
+      env
+    });
+    return request({
+      address: manifest.address,
+      workspaceKey: key,
+      token: manifest.token,
+      method,
+      params
+    });
+  }
+
+  return Object.freeze({
+    async followUp(lane, message) {
+      return call("followUp", { laneId: lane.id, message });
+    },
+    async cancel(lane, expectedIdentity) {
+      if (
+        expectedIdentity?.threadId !== (lane.threadId ?? null)
+        || expectedIdentity?.turnId !== (lane.turnId ?? null)
+      ) {
+        const error = new Error("Cancellation target identity changed.");
+        error.code = "AUTHORITY_DENIED";
+        throw error;
+      }
+      const preview = await call("cancel", { laneId: lane.id });
+      if (
+        preview.expectedThreadId !== expectedIdentity.threadId
+        || preview.expectedTurnId !== expectedIdentity.turnId
+      ) {
+        const error = new Error("Cancellation target identity changed.");
+        error.code = "AUTHORITY_DENIED";
+        throw error;
+      }
+      return call("cancel", {
+        laneId: lane.id,
+        expectedThreadId: preview.expectedThreadId,
+        expectedTurnId: preview.expectedTurnId,
+        confirmationToken: preview.confirmationToken
+      });
+    }
+  });
+}
+
 function parseArguments(argv) {
   let benchmark = false;
   let plain = false;
@@ -167,6 +232,14 @@ export async function runEntry(argv, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const io = dependencies.io ?? { stdin: process.stdin, stdout, lifecycle: process };
   try {
+    const runtime = dependencies.runtime ?? await createSupervisorRuntime({
+      cwd,
+      env,
+      platform: dependencies.platform,
+      home: dependencies.home,
+      ensureSupervisor: dependencies.ensureSupervisor,
+      requestSupervisor: dependencies.requestSupervisor
+    });
     await (dependencies.runConsole ?? runConsole)({
       cwd,
       draftPath: parsed.draftPath ? path.resolve(parsed.draftPath) : null,
@@ -178,6 +251,7 @@ export async function runEntry(argv, dependencies = {}) {
         home: dependencies.home
       }),
       spawnEditor: dependencies.spawnEditor ?? createOriginalEditor(env),
+      runtime,
       preferences: {
         color: parsed.plain !== true && env.NO_COLOR === undefined,
         unicode: env.FLEET_ASCII !== "1",

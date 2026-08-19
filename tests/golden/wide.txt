@@ -25,4 +25,4 @@ LANES  4                                        │ SELECTED / console-build    
                                                 │                                                                          │
                                                 │                                                                          │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↑↓/JK SELECT   ENTER DETAIL   TAB PANEL   / FILTER   P MOTION   ? HELP   Q RETURN
+↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  ENTER DETAIL  TAB PANEL  / FILTER  P MOTION  ? HELP  Q RETURN

@@ -186,7 +186,7 @@ test("denied cancellation shows the authority reason and never calls runtime", a
 
 test("owned cancellation runs only after the visible confirmation", async () => {
   const runtime = recordingRuntime();
-  const owned = lane();
+  const owned = lane({ turnId: "owned-turn-a" });
   owned.threadId = "owned-thread-a";
   owned.authority = {
     ...owned.authority,
@@ -206,7 +206,110 @@ test("owned cancellation runs only after the visible confirmation", async () => 
   assert.equal(runtime.calls.length, 1);
   assert.equal(runtime.calls[0][0], "cancel");
   assert.equal(runtime.calls[0][1].id, "lane-a");
-  assert.deepEqual(runtime.calls[0][2], { confirmed: true });
+  assert.deepEqual(runtime.calls[0][2], {
+    threadId: "owned-thread-a",
+    turnId: "owned-turn-a"
+  });
+});
+
+test("message opens a bounded composer and submits text without triggering shortcuts", async () => {
+  const runtime = recordingRuntime();
+  const completed = lane({ status: "complete", phase: "complete" });
+  const writes = [];
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [completed, lane({ id: "lane-b" })] }),
+    runtime,
+    write: (value) => writes.push(value),
+    terminal: { columns: 100, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "message" });
+  assert.deepEqual(runtime.calls, []);
+  assert.equal(controller.state().composer.laneId, "lane-a");
+  await controller.dispatch({ type: "text", value: "j" });
+  await controller.dispatch({ type: "text", value: "m" });
+  await controller.dispatch({ type: "backspace" });
+  await controller.dispatch({ type: "submitMessage" });
+
+  assert.equal(controller.state().selectedIndex, 0);
+  assert.equal(controller.state().composer, null);
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(runtime.calls[0][0], "followUp");
+  assert.equal(runtime.calls[0][1].id, "lane-a");
+  assert.equal(runtime.calls[0][2], "j");
+  assert.match(writes.join("\n"), /FOLLOW-UP/i);
+});
+
+test("composer Escape discards text without invoking the runtime", async () => {
+  const runtime = recordingRuntime();
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [lane({ status: "complete" })] }),
+    runtime,
+    terminal: { columns: 100, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "message" });
+  await controller.dispatch({ type: "text", value: "do not send" });
+  await controller.dispatch({ type: "discardMessage" });
+
+  assert.equal(controller.state().composer, null);
+  assert.deepEqual(runtime.calls, []);
+});
+
+test("one terminal chunk can enter composer, type, submit, and return safely", async () => {
+  const io = fakeIo();
+  const runtime = recordingRuntime();
+  const running = runConsole({
+    cwd: process.cwd(),
+    io,
+    runtime,
+    clock: idleClock(),
+    readSnapshot: async () => snapshot({
+      lanes: [lane({ status: "complete", phase: "complete" })]
+    }),
+    terminalSession: async (_io, run) => run({ signal: new AbortController().signal })
+  });
+
+  await emitAfterStart(io, "mhello\rq");
+  await running;
+
+  assert.equal(runtime.calls.length, 1);
+  assert.equal(runtime.calls[0][0], "followUp");
+  assert.equal(runtime.calls[0][2], "hello");
+});
+
+test("cancellation refuses a lane whose pinned turn changed before confirmation", async () => {
+  const runtime = recordingRuntime();
+  const first = lane({
+    threadId: "owned-thread-a",
+    turnId: "owned-turn-a",
+    authority: {
+      ...lane().authority,
+      process: { start: true, stopOwned: true }
+    }
+  });
+  let current = snapshot({ lanes: [first] });
+  const writes = [];
+  const controller = createConsoleController({
+    snapshot: current,
+    readSnapshot: async () => current,
+    runtime,
+    write: (value) => writes.push(value),
+    terminal: { columns: 100, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "cancel" });
+  current = snapshot({
+    lanes: [{ ...first, turnId: "owned-turn-b" }]
+  });
+  await controller.dispatch({ type: "tick" });
+  await controller.dispatch({ type: "confirm" });
+
+  assert.deepEqual(runtime.calls, []);
+  assert.match(writes.at(-1), /confirmation-target-changed/);
 });
 
 test("filter mode narrows lanes without treating typed J and K as navigation", async () => {

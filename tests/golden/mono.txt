@@ -25,4 +25,4 @@ LANES  4                              | LANE DETAIL
                                       |
                                       |
 ----------------------------------------------------------------------------------------------------
-↑↓/JK SELECT   TAB PANEL   P MOTION   ? HELP   Q RETURN
+↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  TAB PANEL  P MOTION  ? HELP  Q RETURN
