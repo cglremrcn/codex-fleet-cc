@@ -9,7 +9,7 @@
     {
       "name": "fleet",
       "description": "Orchestrate bounded Codex lanes and inspect them in a same-terminal console.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Emircan Caglar"
       },
