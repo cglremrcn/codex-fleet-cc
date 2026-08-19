@@ -44,6 +44,30 @@ test("state round trip is atomic and sanitizes lane metadata", async () => {
   assert.deepEqual(files, ["state.json"]);
 });
 
+test("Windows transient atomic replace failures are retried within a bound", async () => {
+  const root = await stateRoot();
+  const delays = [];
+  let attempts = 0;
+
+  await writeWorkspaceState(root, fixtureState(), {
+    platform: "win32",
+    rename: async (source, destination) => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error("transient hosted-runner file lock");
+        error.code = "EPERM";
+        throw error;
+      }
+      await fs.rename(source, destination);
+    },
+    sleep: async (milliseconds) => delays.push(milliseconds)
+  });
+
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [10, 20]);
+  assert.deepEqual(await readWorkspaceState(root), fixtureState());
+});
+
 test("state refuses excessive lane count and serialized size", async () => {
   const root = await stateRoot();
   await assert.rejects(

@@ -83,6 +83,21 @@ test("filter text mode captures navigation letters without triggering controls",
   assert.deepEqual(decoder.flush(), [{ type: "clearFilter" }]);
 });
 
+test("composer mode captures shortcuts and emits submit or discard events", () => {
+  const decoder = createInputDecoder();
+  decoder.setTextMode("composer");
+
+  assert.deepEqual(decoder.push(Buffer.from("jmk\u007f\r")), [
+    { type: "text", value: "j" },
+    { type: "text", value: "m" },
+    { type: "text", value: "k" },
+    { type: "backspace" },
+    { type: "submitMessage" }
+  ]);
+  assert.deepEqual(decoder.push(Buffer.from("\u001b")), []);
+  assert.deepEqual(decoder.flush(), [{ type: "discardMessage" }]);
+});
+
 test("input reducer changes only local console state", () => {
   const initial = {
     laneCount: 3,

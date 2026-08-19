@@ -1,3 +1,5 @@
+import { StringDecoder } from "node:string_decoder";
+
 import { authorizeAction } from "./authority.mjs";
 import { createInputDecoder, reduceInput } from "./tui-input.mjs";
 import { buildViewModel, renderScreen } from "./tui-render.mjs";
@@ -6,7 +8,8 @@ import { withTerminalSession } from "./tui-session.mjs";
 const PANELS = Object.freeze(["lanes", "detail", "evidence", "authority", "controls"]);
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const MAX_FILTER_LENGTH = 64;
-const TICK_MS = 250;
+const MAX_COMPOSER_LENGTH = 4_096;
+export const CONSOLE_TICK_MS = 250;
 const ESCAPE_FLUSH_MS = 35;
 
 function defaultSnapshot(cwd) {
@@ -70,7 +73,9 @@ function boundedStatus(value, width) {
 
 function decorateFooter(screen, state, columns) {
   let message = null;
-  if (state.confirmation) {
+  if (state.composer) {
+    message = `FOLLOW-UP / ${state.composer.laneId} · ${state.composer.value || "type a message"} · Enter send · Esc discard`;
+  } else if (state.confirmation) {
     message = `[CONFIRM] cancel ${state.confirmation.laneId} · C confirm · Q return`;
   } else if (state.filterEditing) {
     message = `FILTER / ${state.filterQuery || "type to narrow"} · Enter apply · Esc clear`;
@@ -113,7 +118,8 @@ export function createConsoleController(options = {}) {
     filterQuery: "",
     frame: 0,
     notice: null,
-    confirmation: null
+    confirmation: null,
+    composer: null
   };
   let previousScreen = null;
   let firstRender = true;
@@ -172,19 +178,27 @@ export function createConsoleController(options = {}) {
   async function runRuntimeAction(method, lane, ...args) {
     if (typeof runtime[method] !== "function") {
       setNotice(`${method}-control-unavailable`);
-      return;
+      return false;
     }
     try {
       await runtime[method](lane, ...args);
       setNotice(`${method}-requested · ${lane.id}`);
+      return true;
     } catch (error) {
       setNotice(actionFailure(error));
+      return false;
     }
   }
 
   async function confirmCancellation() {
     const lane = selectedLane();
-    if (!lane || ui.confirmation?.laneId !== lane.id) {
+    const pinned = ui.confirmation;
+    if (
+      !lane
+      || pinned?.laneId !== lane.id
+      || pinned.threadId !== (lane.threadId ?? null)
+      || pinned.turnId !== (lane.turnId ?? null)
+    ) {
       setNotice("confirmation-target-changed");
       return;
     }
@@ -195,7 +209,10 @@ export function createConsoleController(options = {}) {
       setNotice(decision.reason);
       return;
     }
-    await runRuntimeAction("cancel", lane, { confirmed: true });
+    await runRuntimeAction("cancel", lane, {
+      threadId: pinned.threadId,
+      turnId: pinned.turnId
+    });
   }
 
   async function retryOrReconcile() {
@@ -248,9 +265,13 @@ export function createConsoleController(options = {}) {
     } else if (event.type === "filter") {
       ui.filterEditing = true;
       ui.notice = null;
+    } else if (event.type === "text" && ui.composer) {
+      ui.composer.value = `${ui.composer.value}${event.value}`.slice(0, MAX_COMPOSER_LENGTH);
     } else if (event.type === "text" && ui.filterEditing) {
       ui.filterQuery = `${ui.filterQuery}${event.value}`.slice(0, MAX_FILTER_LENGTH);
       ui.selectedIndex = 0;
+    } else if (event.type === "backspace" && ui.composer) {
+      ui.composer.value = Array.from(ui.composer.value).slice(0, -1).join("");
     } else if (event.type === "backspace" && ui.filterEditing) {
       ui.filterQuery = Array.from(ui.filterQuery).slice(0, -1).join("");
       ui.selectedIndex = 0;
@@ -282,11 +303,35 @@ export function createConsoleController(options = {}) {
       const lane = selectedLane();
       const decision = authorize(lane, "process.start");
       if (!decision.allowed) setNotice(decision.reason);
-      else if (lane) await runRuntimeAction("followUp", lane);
+      else if (lane?.status !== "complete") setNotice("follow-up-requires-complete-lane");
+      else if (lane) {
+        ui.filterEditing = false;
+        ui.confirmation = null;
+        ui.notice = null;
+        ui.composer = { laneId: lane.id, value: "" };
+      }
+    } else if (event.type === "submitMessage" && ui.composer) {
+      const composer = ui.composer;
+      const lane = snapshot.lanes.find((candidate) => candidate.id === composer.laneId);
+      if (!composer.value.trim()) setNotice("follow-up-message-empty");
+      else if (!lane) setNotice("follow-up-target-changed");
+      else {
+        const succeeded = await runRuntimeAction("followUp", lane, composer.value);
+        if (succeeded) ui.composer = null;
+      }
+    } else if (event.type === "discardMessage" && ui.composer) {
+      ui.composer = null;
+      setNotice("FOLLOW-UP DISCARDED");
     } else if (event.type === "cancel") {
       const lane = selectedLane();
       if (lane) {
-        ui.confirmation = { action: "cancel", laneId: lane.id };
+        ui.confirmation = {
+          action: "cancel",
+          laneId: lane.id,
+          threadId: lane.threadId ?? null,
+          turnId: lane.turnId ?? null
+        };
+        ui.composer = null;
         ui.notice = null;
       }
     } else if (event.type === "confirm") {
@@ -305,7 +350,10 @@ export function createConsoleController(options = {}) {
       if (["move", "cyclePanel", "toggleMotion"].includes(event.type)) ui.notice = null;
     }
     await renderCurrent();
-    return { exit: ui.exitRequested, textMode: ui.filterEditing };
+    return {
+      exit: ui.exitRequested,
+      textMode: ui.composer ? "composer" : ui.filterEditing ? "filter" : false
+    };
   }
 
   return Object.freeze({
@@ -338,6 +386,7 @@ export async function runConsole(options = {}) {
 
   return terminalSession(io, async ({ signal, suspend }) => {
     const decoder = createInputDecoder();
+    const utf8Decoder = new StringDecoder("utf8");
     let acceptingWrites = true;
     const suspendedEditor = typeof options.spawnEditor === "function"
       ? (draftPath) => (
@@ -378,16 +427,30 @@ export async function runConsole(options = {}) {
         else resolve({ exitReason: signal?.aborted ? "signal" : "return" });
       }
 
-      function enqueue(events) {
-        for (const event of events) {
-          queue = queue.then(async () => {
-            if (finished) return;
-            const result = await controller.dispatch(event);
-            decoder.setTextMode(result.textMode === true);
-            if (result.exit) finish();
-          });
+    async function dispatchEvents(events) {
+      for (const event of events) {
+        if (finished) return;
+        const result = await controller.dispatch(event);
+        decoder.setTextMode(result.textMode);
+        if (result.exit) finish();
+      }
+    }
+
+    function enqueue(events) {
+      queue = queue.then(() => dispatchEvents(events));
+      queue.catch(finish);
+    }
+
+    function enqueueInput(chunk) {
+      const decoded = utf8Decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      queue = queue.then(async () => {
+        for (const character of decoded) {
+          await dispatchEvents(decoder.push(Buffer.from(character)));
+          if (finished) return;
         }
-        queue.catch(finish);
+        scheduleEscapeFlush();
+      });
+      queue.catch(finish);
       }
 
       function scheduleEscapeFlush() {
@@ -401,8 +464,7 @@ export async function runConsole(options = {}) {
       }
 
       function onData(chunk) {
-        enqueue(decoder.push(chunk));
-        scheduleEscapeFlush();
+        enqueueInput(chunk);
       }
 
       function onResize() {
@@ -420,7 +482,7 @@ export async function runConsole(options = {}) {
       io.stdin.on("data", onData);
       io.stdout.on?.("resize", onResize);
       signal?.addEventListener?.("abort", onAbort, { once: true });
-      interval = clock.setInterval(() => enqueue([{ type: "tick" }]), TICK_MS);
+      interval = clock.setInterval(() => enqueue([{ type: "tick" }]), CONSOLE_TICK_MS);
       controller.render().catch(finish);
     });
   });

@@ -2,15 +2,26 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { normalizeAuthority } from "./authority.mjs";
+import { isTerminalStatus } from "./domain.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
 import { renderPlainStatus } from "./plain-status.mjs";
 import { createRuntime } from "./runtime-adapter.mjs";
-import { readWorkspaceState, writeWorkspaceState } from "./safe-state.mjs";
-import { createScheduler } from "./scheduler.mjs";
+import { readWorkspaceState } from "./safe-state.mjs";
+import {
+  applySetup,
+  previewSetup,
+  previewUninstallSetup,
+  uninstallSetup
+} from "./setup.mjs";
 import { previewSupportBundle, writeSupportBundle } from "./support-bundle.mjs";
+import {
+  ensureSupervisor,
+  requestSupervisor
+} from "./supervisor-protocol.mjs";
 
 export const EXIT_CODES = Object.freeze({
   success: 0,
@@ -32,20 +43,21 @@ const COMMANDS = new Set([
   "setup",
   "uninstall"
 ]);
-const BOOLEAN_FLAGS = new Set(["--json", "--stdin", "--confirm"]);
+const BOOLEAN_FLAGS = new Set(["--json", "--stdin", "--confirm", "--wait"]);
 const VALUE_FLAGS = new Set([
   "--contract",
   "--workspace",
   "--lane",
   "--output",
-  "--confirm-token"
+  "--confirm-token",
+  "--timeout-ms"
 ]);
 const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
 const COMMAND_FLAGS = Object.freeze({
   doctor: new Set(["--json", "--workspace"]),
   start: new Set(["--json", "--stdin", "--contract"]),
   status: new Set(["--json", "--workspace"]),
-  result: new Set(["--json", "--workspace", "--lane"]),
+  result: new Set(["--json", "--workspace", "--lane", "--wait", "--timeout-ms"]),
   "follow-up": new Set(["--json", "--stdin", "--contract"]),
   cancel: new Set(["--json", "--stdin", "--contract", "--confirm"]),
   export: new Set(["--json", "--workspace", "--output", "--confirm-token"]),
@@ -66,6 +78,7 @@ const LANE_PROPERTIES = new Set([
   "model",
   "effort",
   "prompt",
+  "ephemeral",
   "authority",
   "checkoutKey",
   "priority",
@@ -313,6 +326,9 @@ function validateStartContract(value) {
     assertPlainObject(lane, `Lane ${index + 1}`);
     rejectUnknownProperties(lane, LANE_PROPERTIES, "lane");
     boundedText(lane.prompt, `Lane ${index + 1} prompt`, MAX_CONTRACT_BYTES);
+    if (lane.ephemeral !== undefined && typeof lane.ephemeral !== "boolean") {
+      throw new InvalidInputError(`Lane ${index + 1} ephemeral must be a boolean.`);
+    }
     const authority = validateAuthorityShape(lane.authority);
     if (!authority.process.start) {
       throw new AuthorityDeniedError(
@@ -341,14 +357,37 @@ function validateStartContract(value) {
 function validateSimpleContract(value, command, confirmed) {
   const allowed = command === "follow-up"
     ? new Set(["schemaVersion", "workspacePath", "laneId", "message"])
-    : new Set(["schemaVersion", "workspacePath", "laneId"]);
+    : new Set([
+        "schemaVersion",
+        "workspacePath",
+        "laneId",
+        "expectedThreadId",
+        "expectedTurnId",
+        "confirmationToken"
+      ]);
   assertPlainObject(value, `${command} contract`);
   rejectUnknownProperties(value, allowed, "contract");
   if (value.schemaVersion !== 1) {
     throw new InvalidInputError(`${command} contract schemaVersion must be 1.`);
   }
-  if (command === "cancel" && !confirmed) {
-    throw new AuthorityDeniedError("Cancellation requires explicit --confirm authority.");
+  const cancellationFields = [
+    value.expectedThreadId,
+    value.expectedTurnId,
+    value.confirmationToken
+  ];
+  if (command === "cancel" && !confirmed && cancellationFields.some((item) => item !== undefined)) {
+    throw new InvalidInputError("Cancellation preview accepts only workspacePath and laneId.");
+  }
+  if (command === "cancel" && confirmed) {
+    if (
+      value.expectedThreadId === undefined
+      || value.expectedTurnId === undefined
+      || !/^[a-f0-9]{64}$/u.test(value.confirmationToken ?? "")
+    ) {
+      throw new AuthorityDeniedError(
+        "Confirmed cancellation requires the exact preview identity and confirmation token."
+      );
+    }
   }
   return {
     schemaVersion: 1,
@@ -356,8 +395,34 @@ function validateSimpleContract(value, command, confirmed) {
     laneId: boundedText(value.laneId, "laneId", 64),
     message: command === "follow-up"
       ? boundedText(value.message, "message", MAX_CONTRACT_BYTES)
-      : null
+      : null,
+    expectedThreadId: command === "cancel"
+      ? value.expectedThreadId === null
+        ? null
+        : value.expectedThreadId === undefined
+          ? undefined
+          : boundedText(value.expectedThreadId, "expectedThreadId", 256)
+      : undefined,
+    expectedTurnId: command === "cancel"
+      ? value.expectedTurnId === null
+        ? null
+        : value.expectedTurnId === undefined
+          ? undefined
+          : boundedText(value.expectedTurnId, "expectedTurnId", 256)
+      : undefined,
+    confirmationToken: command === "cancel" ? value.confirmationToken : undefined
   };
+}
+
+function boundedTimeout(value) {
+  if (!/^\d+$/u.test(value ?? "")) {
+    throw new InvalidInputError("--timeout-ms must be an integer.");
+  }
+  const milliseconds = Number(value);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 100 || milliseconds > 3_600_000) {
+    throw new InvalidInputError("--timeout-ms must be between 100 and 3600000.");
+  }
+  return milliseconds;
 }
 
 async function stateContext(workspacePath, io) {
@@ -487,60 +552,125 @@ async function runExport(parsed, context, state, io, dependencies) {
   };
 }
 
-function serializedStateStore(root) {
-  let writes = Promise.resolve();
-  return {
-    write(snapshot) {
-      const state = {
-        schemaVersion: 1,
-        updatedAt: new Date().toISOString(),
-        lanes: [...snapshot.queued, ...snapshot.active, ...snapshot.history]
-      };
-      writes = writes.then(() => writeWorkspaceState(root, state));
-      return writes;
-    }
-  };
+async function requestLiveSupervisor(context, method, params, io, dependencies) {
+  const ensure = dependencies.ensureSupervisor ?? ensureSupervisor;
+  const request = dependencies.requestSupervisor ?? requestSupervisor;
+  const manifest = await ensure({
+    dataDir: context.dataDir,
+    workspaceKey: context.key,
+    workspacePath: context.workspace,
+    scriptPath: fileURLToPath(new URL("../fleet-supervisor.mjs", import.meta.url)),
+    nodeExecutable: process.execPath,
+    env: io.env
+  });
+  return request({
+    address: manifest.address,
+    workspaceKey: context.key,
+    token: manifest.token,
+    method,
+    params
+  });
 }
 
 async function runStart(contract, io, dependencies) {
   const context = await stateContext(contract.workspacePath, io);
-  const runtimeFactory = dependencies.createRuntime ?? createRuntime;
-  const runtime = await runtimeFactory({ cwd: context.workspace, env: io.env });
-  const scheduler = createScheduler({
-    runtime,
-    store: serializedStateStore(context.root),
-    limits: contract.limits
-  });
+  const payload = await requestLiveSupervisor(context, "start", contract, io, dependencies);
+  return {
+    exitCode: EXIT_CODES.success,
+    payload: { ...payload, workspaceKey: context.key }
+  };
+}
 
+async function runControl(contract, command, io, dependencies) {
+  const context = await stateContext(contract.workspacePath, io);
+  const params = command === "follow-up"
+    ? { laneId: contract.laneId, message: contract.message }
+    : {
+        laneId: contract.laneId,
+        expectedThreadId: contract.expectedThreadId,
+        expectedTurnId: contract.expectedTurnId,
+        confirmationToken: contract.confirmationToken
+      };
   try {
-    const admissions = contract.lanes.map((lane) => scheduler.enqueue({
-      ...lane,
-      workspacePath: context.workspace,
-      workspaceKey: context.key,
-      checkoutKey: lane.checkoutKey ?? context.key
-    }));
-    while (true) {
-      await scheduler.reconcile();
-      const snapshot = scheduler.snapshot();
-      if (snapshot.queued.length === 0 && snapshot.active.length === 0) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+    const payload = await requestLiveSupervisor(
+      context,
+      command === "follow-up" ? "followUp" : "cancel",
+      params,
+      io,
+      dependencies
+    );
+    return { exitCode: EXIT_CODES.success, payload };
+  } catch (error) {
+    if (command === "cancel" && /confirmation|target identity/iu.test(error.message)) {
+      throw new AuthorityDeniedError(error.message);
     }
-    await Promise.all(admissions);
-    const snapshot = scheduler.snapshot();
-    const unknown = snapshot.history.some((lane) => lane.status === "outcome_unknown");
+    throw error;
+  }
+}
+
+async function setupContext(io) {
+  const settingsRoot = io.env.CLAUDE_CONFIG_DIR
+    ? path.resolve(io.env.CLAUDE_CONFIG_DIR)
+    : path.join(io.home, ".claude");
+  const dataRoot = io.env.CLAUDE_PLUGIN_DATA
+    ? path.resolve(io.env.CLAUDE_PLUGIN_DATA)
+    : resolveOwnedPath(getFleetDataDir(io.env, io.platform, io.home), "integration");
+  const manifest = JSON.parse(
+    await fs.readFile(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")
+  );
+  return {
+    settingsPath: path.join(settingsRoot, "settings.json"),
+    pluginDataDir: dataRoot,
+    runtimeSourceDir: path.resolve(fileURLToPath(new URL("..", import.meta.url))),
+    nodeExecutable: process.execPath,
+    platform: io.platform,
+    version: manifest.version
+  };
+}
+
+async function runSetupCommand(parsed, io) {
+  const options = await setupContext(io);
+  const plan = await previewSetup(options);
+  const confirmation = parsed.flags.get("--confirm-token");
+  if (!confirmation) {
     return {
-      exitCode: unknown ? EXIT_CODES.outcomeUnknown : EXIT_CODES.success,
+      exitCode: EXIT_CODES.success,
       payload: {
         schemaVersion: 1,
-        workspaceKey: context.key,
-        lanes: snapshot.history
+        writesPerformed: false,
+        settingsPath: plan.settingsPath,
+        pluginDataDir: plan.pluginDataDir,
+        runtimeTargetDir: plan.runtimeTargetDir,
+        launcherPath: plan.launcherPath,
+        changes: plan.changes,
+        restartRequired: plan.restartRequired,
+        keybindingsModified: plan.keybindingsModified,
+        confirmationToken: plan.confirmationToken
       }
     };
-  } finally {
-    await runtime.close();
   }
+  if (confirmation !== plan.confirmationToken) {
+    throw new AuthorityDeniedError("Setup requires the exact current preview confirmation token.");
+  }
+  const result = await applySetup({ ...plan, confirmation });
+  return { exitCode: EXIT_CODES.success, payload: { schemaVersion: 1, ...result } };
+}
+
+async function runUninstallCommand(parsed, io) {
+  const options = await setupContext(io);
+  const preview = await previewUninstallSetup({ pluginDataDir: options.pluginDataDir });
+  const confirmation = parsed.flags.get("--confirm-token");
+  if (!confirmation) {
+    return { exitCode: EXIT_CODES.success, payload: preview };
+  }
+  if (confirmation !== preview.confirmationToken) {
+    throw new AuthorityDeniedError("Uninstall requires the exact current preview confirmation token.");
+  }
+  const result = await uninstallSetup({
+    pluginDataDir: options.pluginDataDir,
+    confirmationToken: confirmation
+  });
+  return { exitCode: EXIT_CODES.success, payload: { schemaVersion: 1, ...result } };
 }
 
 async function execute(parsed, io, dependencies) {
@@ -557,7 +687,7 @@ async function execute(parsed, io, dependencies) {
 
   if (parsed.command === "status" || parsed.command === "result" || parsed.command === "export") {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
-    const state = await readStateWithoutCreating(context.root);
+    let state = await readStateWithoutCreating(context.root);
     if (parsed.command === "export") {
       return runExport(parsed, context, state, io, dependencies);
     }
@@ -570,6 +700,35 @@ async function execute(parsed, io, dependencies) {
       lanes = state.lanes.filter((lane) => lane.id === laneId);
       if (lanes.length === 0) {
         throw new InvalidInputError(`Lane result was not found: ${laneId}.`);
+      }
+      if (parsed.flags.has("--wait")) {
+        if (!parsed.flags.has("--timeout-ms")) {
+          throw new InvalidInputError("result --wait requires --timeout-ms.");
+        }
+        const deadline = Date.now() + boundedTimeout(parsed.flags.get("--timeout-ms"));
+        while (!isTerminalStatus(lanes[0].status)) {
+          if (Date.now() >= deadline) {
+            throw new RuntimeUnavailableError(`Timed out waiting for lane ${laneId}.`);
+          }
+          const liveLane = await requestLiveSupervisor(
+            context,
+            "result",
+            { laneId },
+            io,
+            dependencies
+          );
+          lanes = [liveLane];
+          if (isTerminalStatus(liveLane.status)) break;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          state = await readStateWithoutCreating(context.root);
+          const persisted = state.lanes.find((lane) => lane.id === laneId);
+          if (!persisted) {
+            throw new RuntimeUnavailableError(
+              `Lane disappeared while waiting: ${laneId}.`
+            );
+          }
+          lanes = [persisted];
+        }
       }
     }
     const unknown = lanes.some((lane) => lane.status === "outcome_unknown");
@@ -593,17 +752,16 @@ async function execute(parsed, io, dependencies) {
 
   if (parsed.command === "follow-up" || parsed.command === "cancel") {
     const raw = await readContract(parsed, io);
-    validateSimpleContract(raw, parsed.command, parsed.flags.has("--confirm"));
-    throw new RuntimeUnavailableError(
-      `${parsed.command} requires a live Fleet supervisor; supervisor control is not available.`
+    const contract = validateSimpleContract(
+      raw,
+      parsed.command,
+      parsed.flags.has("--confirm")
     );
+    return runControl(contract, parsed.command, io, dependencies);
   }
 
-  if (parsed.command === "setup" || parsed.command === "uninstall") {
-    throw new RuntimeUnavailableError(
-      `${parsed.command} is provided by the reversible editor setup layer, which is not installed.`
-    );
-  }
+  if (parsed.command === "setup") return runSetupCommand(parsed, io);
+  if (parsed.command === "uninstall") return runUninstallCommand(parsed, io);
 
   throw new InvalidInputError(`Unsupported command: ${parsed.command}.`);
 }

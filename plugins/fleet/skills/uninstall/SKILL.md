@@ -14,5 +14,7 @@ for explicit confirmation; the accepted preview token authorizes only that immut
 node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" uninstall --workspace "${CLAUDE_PROJECT_DIR}" --json
 ```
 
+After explicit confirmation, rerun the command with `--confirm-token "<exact-token>"`.
+
 Never delete workspace state, user-edited files, an unowned editor setting, or anything absent from the
 ownership manifest. On drift, stop and preserve the file.

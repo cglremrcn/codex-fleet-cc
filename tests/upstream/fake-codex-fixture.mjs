@@ -162,7 +162,10 @@ function saveImportLedger(ledger) {
 
 function emitTurnCompleted(threadId, turnId, item) {
   const items = Array.isArray(item) ? item : [item];
-  send({ method: "turn/started", params: { threadId, turn: buildTurn(turnId) } });
+  const turnStartedParams = BEHAVIOR === "official-turn-envelope"
+    ? { turn: buildTurn(turnId) }
+    : { threadId, turn: buildTurn(turnId) };
+  send({ method: "turn/started", params: turnStartedParams });
   for (const entry of items) {
     if (entry && entry.started) {
       send({ method: "item/started", params: { threadId, turnId, item: entry.started } });
@@ -171,7 +174,10 @@ function emitTurnCompleted(threadId, turnId, item) {
       send({ method: "item/completed", params: { threadId, turnId, item: entry.completed } });
     }
   }
-  send({ method: "turn/completed", params: { threadId, turn: buildTurn(turnId, "completed") } });
+  const turnCompletedParams = BEHAVIOR === "official-turn-envelope"
+    ? { turn: buildTurn(turnId, "completed") }
+    : { threadId, turn: buildTurn(turnId, "completed") };
+  send({ method: "turn/completed", params: turnCompletedParams });
 }
 
 function emitTurnCompletedLater(threadId, turnId, item, delayMs) {
@@ -320,6 +326,9 @@ rl.on("line", (line) => {
 
       case "thread/name/set": {
         const thread = ensureThread(state, message.params.threadId);
+        if (BEHAVIOR === "ephemeral-name-rejected" && thread.ephemeral) {
+          throw new Error("ephemeral thread does not support metadata updates: " + thread.id);
+        }
         thread.name = message.params.name;
         thread.updatedAt = now();
         saveState(state);
@@ -345,6 +354,9 @@ rl.on("line", (line) => {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
         const thread = ensureThread(state, message.params.threadId);
+        if (thread.ephemeral) {
+          throw new Error("no rollout found for thread id " + thread.id);
+        }
         thread.updatedAt = now();
         saveState(state);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });

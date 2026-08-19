@@ -9,6 +9,7 @@ import {
   buildEnv,
   installFakeCodex
 } from "./upstream/fake-codex-fixture.mjs";
+import { workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const FLEET = path.join(ROOT, "plugins", "fleet", "scripts", "fleet.mjs");
@@ -57,6 +58,37 @@ function workspaceSnapshot(workspace) {
     .map((name) => [name, fs.statSync(path.join(workspace, name)).isFile()
       ? fs.readFileSync(path.join(workspace, name), "utf8")
       : null]);
+}
+
+async function waitForCliLane(scope, laneId, status, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = runFleet(
+      ["status", "--workspace", scope.workspace, "--json"],
+      { cwd: scope.workspace, env: scope.env }
+    );
+    const lane = JSON.parse(result.stdout).lanes.find((candidate) => candidate.id === laneId);
+    if (lane?.status === status) return lane;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for " + laneId + " to reach " + status + ".");
+}
+
+async function waitForCliSupervisorExit(scope, timeoutMs = 20_000) {
+  const key = await workspaceKey(scope.workspace);
+  const manifestPath = path.join(
+    scope.data,
+    "codex-fleet-cc",
+    "supervisors",
+    key,
+    "supervisor.json"
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!fs.existsSync(manifestPath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for the CLI supervisor to exit.");
 }
 
 test("status is read-only and emits one machine JSON object", (t) => {
@@ -163,9 +195,10 @@ test("doctor reports runtime unavailable with its dedicated exit code", (t) => {
 test("export previews without writing and accepts only its exact confirmation token", (t) => {
   const scope = fixture(t);
   const output = path.join(scope.root, "support.json");
+  const env = fixtureEnv(scope, { PATH: "" });
   const previewRun = runFleet(
     ["export", "--json", "--workspace", scope.workspace, "--output", output],
-    { env: fixtureEnv(scope) }
+    { env }
   );
 
   assert.equal(previewRun.code, 0, previewRun.stderr);
@@ -178,7 +211,7 @@ test("export previews without writing and accepts only its exact confirmation to
       "export", "--json", "--workspace", scope.workspace, "--output", output,
       "--confirm-token", "wrong-token"
     ],
-    { env: fixtureEnv(scope) }
+    { env }
   );
   assert.equal(denied.code, 3);
   assert.equal(fs.existsSync(output), false);
@@ -188,7 +221,7 @@ test("export previews without writing and accepts only its exact confirmation to
       "export", "--json", "--workspace", scope.workspace, "--output", output,
       "--confirm-token", preview.confirmationToken
     ],
-    { env: fixtureEnv(scope) }
+    { env }
   );
   assert.equal(written.code, 0, written.stderr);
   assert.equal(JSON.parse(written.stdout).written, true);
@@ -228,11 +261,13 @@ test("authority-bearing commands require an explicit confirmation reference", (t
   assert.match(run.stderr, /confirmation reference/i);
 });
 
-test("start runs a JSON fleet contract through one fake Codex broker", (t) => {
+test("start and follow-up use one background Fleet supervisor contract", async (t) => {
   const scope = fixture(t);
   const binDir = path.join(scope.root, "bin");
   fs.mkdirSync(binDir);
-  installFakeCodex(binDir);
+  installFakeCodex(binDir, "slow-task");
+  const env = fixtureEnv(scope, { PATH: buildEnv(binDir).PATH });
+  const cliScope = { ...scope, env };
   const contractPath = path.join(scope.root, "fleet.json");
   fs.writeFileSync(contractPath, JSON.stringify({
     schemaVersion: 1,
@@ -258,22 +293,173 @@ test("start runs a JSON fleet contract through one fake Codex broker", (t) => {
     ["start", "--contract", contractPath, "--json"],
     {
       cwd: scope.workspace,
-      env: fixtureEnv(scope, { PATH: buildEnv(binDir).PATH })
+      env
     }
   );
 
   assert.equal(run.code, 0, run.stderr);
   const payload = JSON.parse(run.stdout);
-  assert.equal(payload.lanes[0].status, "complete");
+  assert.equal(payload.background, true);
+  assert.equal(payload.lanes[0].status, "running");
+  const firstResult = runFleet(
+    [
+      "result", "--workspace", scope.workspace, "--lane", "cli-investigator",
+      "--wait", "--timeout-ms", "5000", "--json"
+    ],
+    { cwd: scope.workspace, env }
+  );
+  const firstStatus = runFleet(
+    ["status", "--workspace", scope.workspace, "--json"],
+    { cwd: scope.workspace, env }
+  );
+  assert.equal(firstResult.code, 0, firstResult.stderr + firstStatus.stdout);
+  const first = JSON.parse(firstResult.stdout).lanes[0];
+  assert.equal(first.status, "complete");
   const fakeState = JSON.parse(
     fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8")
   );
   assert.equal(fakeState.appServerStarts, 1);
 
-  const status = runFleet(
-    ["status", "--workspace", scope.workspace, "--json"],
-    { cwd: scope.workspace, env: fixtureEnv(scope) }
+  const followUpPath = path.join(scope.root, "follow-up.json");
+  fs.writeFileSync(followUpPath, JSON.stringify({
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    laneId: "cli-investigator",
+    message: "Inspect the second CLI surface."
+  }));
+  const followUp = runFleet(
+    ["follow-up", "--contract", followUpPath, "--json"],
+    { cwd: scope.workspace, env }
   );
-  assert.equal(status.code, 0, status.stderr);
-  assert.equal(JSON.parse(status.stdout).lanes[0].status, "complete");
+  assert.equal(followUp.code, 0, followUp.stderr);
+  assert.equal(JSON.parse(followUp.stdout).status, "running");
+  const secondResult = runFleet(
+    [
+      "result", "--workspace", scope.workspace, "--lane", "cli-investigator",
+      "--wait", "--timeout-ms", "5000", "--json"
+    ],
+    { cwd: scope.workspace, env }
+  );
+  assert.equal(secondResult.code, 0, secondResult.stderr);
+  const second = JSON.parse(secondResult.stdout).lanes[0];
+  assert.equal(second.status, "complete");
+  assert.equal(second.threadId, first.threadId);
+  assert.notEqual(second.turnId, first.turnId);
+  await waitForCliSupervisorExit(cliScope);
+});
+
+test("cancel previews and confirms one exact CLI-owned turn", async (t) => {
+  const scope = fixture(t);
+  const binDir = path.join(scope.root, "bin");
+  fs.mkdirSync(binDir);
+  installFakeCodex(binDir, "interruptible-slow-task");
+  const env = fixtureEnv(scope, { PATH: buildEnv(binDir).PATH });
+  const cliScope = { ...scope, env };
+  const startPath = path.join(scope.root, "cancel-start.json");
+  fs.writeFileSync(startPath, JSON.stringify({
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    lanes: [{
+      id: "cli-cancel",
+      role: "investigator",
+      label: "Cancel exact turn",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      prompt: "Wait for explicit cancellation.",
+      authority: {
+        sandbox: "read-only",
+        network: "off",
+        process: { start: true, stopOwned: true }
+      }
+    }]
+  }));
+  const started = runFleet(
+    ["start", "--contract", startPath, "--json"],
+    { cwd: scope.workspace, env }
+  );
+  assert.equal(started.code, 0, started.stderr);
+  const running = await waitForCliLane(cliScope, "cli-cancel", "running");
+
+  const previewPath = path.join(scope.root, "cancel-preview.json");
+  fs.writeFileSync(previewPath, JSON.stringify({
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    laneId: "cli-cancel"
+  }));
+  const previewRun = runFleet(
+    ["cancel", "--contract", previewPath, "--json"],
+    { cwd: scope.workspace, env }
+  );
+  assert.equal(previewRun.code, 0, previewRun.stderr);
+  const preview = JSON.parse(previewRun.stdout);
+  assert.equal(preview.writesPerformed, false);
+  assert.equal(preview.expectedTurnId, running.turnId);
+
+  const confirmPath = path.join(scope.root, "cancel-confirm.json");
+  fs.writeFileSync(confirmPath, JSON.stringify({
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    laneId: "cli-cancel",
+    expectedThreadId: preview.expectedThreadId,
+    expectedTurnId: preview.expectedTurnId,
+    confirmationToken: preview.confirmationToken
+  }));
+  const confirmed = runFleet(
+    ["cancel", "--contract", confirmPath, "--confirm", "--json"],
+    { cwd: scope.workspace, env }
+  );
+  assert.equal(confirmed.code, 0, confirmed.stderr);
+  assert.equal(JSON.parse(confirmed.stdout).accepted, true);
+  await waitForCliLane(cliScope, "cli-cancel", "cancelled");
+  await waitForCliSupervisorExit(cliScope);
+});
+
+test("setup previews before applying and uninstall requires its own exact token", (t) => {
+  const scope = fixture(t);
+  const claudeConfig = path.join(scope.root, ".claude-disposable");
+  const pluginData = path.join(scope.root, "plugin-data");
+  fs.mkdirSync(claudeConfig, { recursive: true });
+  fs.writeFileSync(
+    path.join(claudeConfig, "settings.json"),
+    `${JSON.stringify({ env: { EDITOR: "code --wait" }, keep: true })}\n`
+  );
+  const env = fixtureEnv(scope, {
+    CLAUDE_CONFIG_DIR: claudeConfig,
+    CLAUDE_PLUGIN_DATA: pluginData
+  });
+
+  const previewRun = runFleet(["setup", "--json"], { env });
+  assert.equal(previewRun.code, 0, previewRun.stderr);
+  const preview = JSON.parse(previewRun.stdout);
+  assert.equal(preview.writesPerformed, false);
+  assert.equal(fs.existsSync(path.join(pluginData, "ownership.json")), false);
+
+  const appliedRun = runFleet(
+    ["setup", "--json", "--confirm-token", preview.confirmationToken],
+    { env }
+  );
+  assert.equal(appliedRun.code, 0, appliedRun.stderr);
+  assert.equal(JSON.parse(appliedRun.stdout).applied, true);
+  assert.equal(fs.existsSync(path.join(pluginData, "ownership.json")), true);
+
+  const uninstallPreviewRun = runFleet(["uninstall", "--json"], { env });
+  assert.equal(uninstallPreviewRun.code, 0, uninstallPreviewRun.stderr);
+  const uninstallPreview = JSON.parse(uninstallPreviewRun.stdout);
+  assert.equal(uninstallPreview.writesPerformed, false);
+
+  const denied = runFleet(
+    ["uninstall", "--json", "--confirm-token", "wrong-token"],
+    { env }
+  );
+  assert.equal(denied.code, 3);
+
+  const removed = runFleet(
+    ["uninstall", "--json", "--confirm-token", uninstallPreview.confirmationToken],
+    { env }
+  );
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal(JSON.parse(removed.stdout).restored, true);
+  const settings = JSON.parse(fs.readFileSync(path.join(claudeConfig, "settings.json"), "utf8"));
+  assert.equal(settings.env.EDITOR, "code --wait");
+  assert.equal(settings.keep, true);
 });

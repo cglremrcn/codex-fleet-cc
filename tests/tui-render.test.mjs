@@ -199,6 +199,18 @@ test("compact masthead keeps complete health counters", () => {
   assert.doesNotMatch(healthLine, /…/);
 });
 
+test("every layout exposes follow-up and cancel controls without hidden help", () => {
+  for (const columns of [160, 100, 72]) {
+    const output = stripAnsi(renderScreen(
+      viewFixture(),
+      { columns, rows: 28 },
+      plainPreferences()
+    ));
+    assert.match(output, /M (?:FOLLOW-UP|MESSAGE)/);
+    assert.match(output, /X CANCEL/);
+  }
+});
+
 test("screen-reader mode is linear and excludes decorative formation output", () => {
   const output = renderScreen(
     viewFixture(),
@@ -229,7 +241,9 @@ for (const [name, columns, preferences] of [
 ]) {
   test(`${name} golden stays stable`, async () => {
     const actual = renderScreen(viewFixture(), { columns, rows: 28 }, preferences);
-    const expected = await readFile(new URL(`./golden/${name}.txt`, import.meta.url), "utf8");
+    const expected = (
+      await readFile(new URL(`./golden/${name}.txt`, import.meta.url), "utf8")
+    ).replace(/\r\n?/g, "\n");
     assert.equal(`${actual}\n`, expected);
   });
 }

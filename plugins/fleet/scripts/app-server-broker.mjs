@@ -8,6 +8,10 @@ import process from "node:process";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 
+import {
+  cancelOwnedProcess,
+  captureOwnedProcess
+} from "./lib/process-ownership.mjs";
 import { terminateProcessTree } from "./lib/upstream/process.mjs";
 
 export const BROKER_PROTOCOL_VERSION = 1;
@@ -33,6 +37,52 @@ const CAPABILITIES = Object.freeze({
     "item/reasoning/textDelta"
   ]
 });
+
+function safeProtocolName(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_./-]{1,120}$/u.test(value)
+    ? value
+    : null;
+}
+
+function safeProtocolKeys(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value).filter((key) => safeProtocolName(key)).sort().slice(0, 16);
+}
+
+export function summarizeProtocolMessage(message) {
+  const serverRequest = message?.id !== undefined && Boolean(message?.method);
+  const notification = message?.id === undefined && Boolean(message?.method);
+  return Object.freeze({
+    kind: serverRequest ? "serverRequest" : notification ? "notification" : "response",
+    method: safeProtocolName(message?.method),
+    turnStatus: safeProtocolName(message?.params?.turn?.status),
+    itemType: safeProtocolName(message?.params?.item?.type),
+    paramsKeys: safeProtocolKeys(message?.params),
+    turnKeys: safeProtocolKeys(message?.params?.turn),
+    hasError: Boolean(message?.error ?? message?.params?.turn?.error)
+  });
+}
+
+export async function stopOwnedProcessTree(record, options = {}) {
+  const stopTree = options.terminateProcessTree ?? terminateProcessTree;
+  return cancelOwnedProcess(record, {
+    observeStart: options.observeStart,
+    platform: options.platform,
+    env: options.env,
+    kill: (pid) => {
+      const result = stopTree(pid, {
+        platform: options.platform,
+        env: options.env,
+        cwd: options.cwd
+      });
+      if (!result?.delivered) {
+        const error = new Error("Owned process is no longer running.");
+        error.code = "ESRCH";
+        throw error;
+      }
+    }
+  });
+}
 
 function candidateExtensions(platform, env, command) {
   if (platform !== "win32" || path.extname(command)) {
@@ -133,6 +183,8 @@ class AppServerBroker {
     this.eventHandler = null;
     this.exitError = null;
     this.protocolVersion = BROKER_PROTOCOL_VERSION;
+    this.captureOwnedProcess = options.captureOwnedProcess ?? captureOwnedProcess;
+    this.stopOwnedProcessTree = options.stopOwnedProcessTree ?? stopOwnedProcessTree;
   }
 
   async start() {
@@ -166,6 +218,19 @@ class AppServerBroker {
 
     this.lines = readline.createInterface({ input: this.child.stdout });
     this.lines.on("line", (line) => this.handleLine(line));
+
+    try {
+      this.ownedProcess = await this.captureOwnedProcess(this.child.pid, {
+        env: this.options.env ?? process.env
+      });
+    } catch (error) {
+      this.closed = true;
+      this.child.kill("SIGTERM");
+      await this.exitPromise;
+      throw new Error("Could not establish ownership of the Codex app-server process.", {
+        cause: error
+      });
+    }
 
     await this.request("initialize", {
       clientInfo: CLIENT_INFO,
@@ -229,6 +294,12 @@ class AppServerBroker {
       return;
     }
 
+    try {
+      this.options.onProtocolMessage?.(summarizeProtocolMessage(message));
+    } catch {
+      // Diagnostics cannot alter the broker state machine.
+    }
+
     if (message.id !== undefined && message.method) {
       this.send({
         id: message.id,
@@ -281,19 +352,28 @@ class AppServerBroker {
     }
     this.closed = true;
     this.lines?.close();
-    this.child?.stdin?.end();
+    if (!this.exited && Number.isFinite(this.child?.pid)) {
+      const outcome = await this.stopOwnedProcessTree(this.ownedProcess, {
+        env: this.options.env,
+        cwd: this.options.cwd,
+        platform: process.platform
+      });
+      if (!outcome.cancelled && outcome.reason !== "not-running") {
+        throw new Error(`Refused to stop an unverified app-server process: ${outcome.reason}.`);
+      }
+    }
+    this.child?.stdin?.destroy();
 
+    let exitTimeout;
     const exited = await Promise.race([
       this.exitPromise.then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), 500))
+      new Promise((resolve) => {
+        exitTimeout = setTimeout(() => resolve(false), 5_000);
+        exitTimeout.unref?.();
+      })
     ]);
-    if (!exited && Number.isFinite(this.child?.pid)) {
-      terminateProcessTree(this.child.pid, {
-        env: this.options.env,
-        cwd: this.options.cwd
-      });
-      await this.exitPromise;
-    }
+    clearTimeout(exitTimeout);
+    if (!exited) throw new Error("Owned Codex app-server did not exit after termination.");
   }
 }
 

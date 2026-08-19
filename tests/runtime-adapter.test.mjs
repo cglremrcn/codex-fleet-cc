@@ -121,6 +121,81 @@ test("a completed lane can continue on its existing Codex thread", async (t) => 
   assert.match(fixture.readState().lastTurnStart.prompt, /remaining edge case/i);
 });
 
+test("official turn envelopes without threadId resolve through the turn index", async (t) => {
+  const fixture = startFakeCodex(t, "official-turn-envelope");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-official-envelope"));
+  const completed = await waitFor(
+    () => runtime.inspectLane("lane-official-envelope")?.status === "complete"
+      ? runtime.inspectLane("lane-official-envelope")
+      : null,
+    "official turn completion"
+  );
+
+  assert.equal(completed.status, "complete");
+  assert.match(completed.lastMessage, /handled the requested task/i);
+});
+
+test("an explicitly ephemeral lane is not retained by Codex", async (t) => {
+  const fixture = startFakeCodex(t, "ephemeral-name-rejected");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-ephemeral", { ephemeral: true }));
+
+  assert.equal(fixture.readState().threads.at(-1).ephemeral, true);
+});
+
+test("a fresh runtime resumes a persisted completed lane", async (t) => {
+  const fixture = startFakeCodex(t);
+  const firstRuntime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  const started = await firstRuntime.startLane(readOnlyContract(fixture, "lane-fresh-resume"));
+  const completed = await waitFor(
+    () => firstRuntime.inspectLane("lane-fresh-resume")?.status === "complete"
+      ? firstRuntime.inspectLane("lane-fresh-resume")
+      : null,
+    "persistable first turn"
+  );
+  await firstRuntime.close();
+
+  const secondRuntime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => secondRuntime.close());
+  await secondRuntime.resumeLane(
+    completed,
+    fixture.workspace,
+    "Inspect the second bounded surface."
+  );
+  const resumed = await waitFor(
+    () => {
+      const lane = secondRuntime.inspectLane("lane-fresh-resume");
+      return lane?.status === "complete" && lane.turnId !== completed.turnId ? lane : null;
+    },
+    "fresh-runtime follow-up"
+  );
+
+  assert.equal(resumed.threadId, started.threadId);
+  assert.equal(fixture.appServerStarts(), 2);
+  assert.match(fixture.readState().lastTurnStart.prompt, /second bounded surface/i);
+});
+
 test("interrupt targets the selected owned lane turn", async (t) => {
   const fixture = startFakeCodex(t, "interruptible-slow-task");
   const runtime = await createRuntime({

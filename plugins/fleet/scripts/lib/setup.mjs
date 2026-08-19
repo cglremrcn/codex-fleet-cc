@@ -8,6 +8,7 @@ const OWNERSHIP_FILE = "ownership.json";
 const SETTINGS_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
 const WINDOWS_UNSAFE_COMMAND_PATH = /[%!^&|<>\"]/;
+const WINDOWS_UNSAFE_EDITOR_JSON = /[%!^&|<>\r\n]/;
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -59,6 +60,7 @@ function confirmationPayload(plan) {
     settingsAfter: plan.settingsAfter,
     originalValues: plan.originalValues,
     originalEditor: plan.originalEditor,
+    originalEditorCommand: plan.originalEditorCommand,
     changes: plan.changes,
     restartRequired: plan.restartRequired,
     keybindingsModified: plan.keybindingsModified
@@ -111,7 +113,59 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'"'"'`)}'`;
 }
 
-function renderLauncher(template, platform, nodeExecutable, consolePath) {
+function parseEditorCommand(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const source = String(value);
+  if (source.length > 4096 || /[\u0000\r\n]/.test(source)) {
+    throw new Error("Original editor command is invalid or too long.");
+  }
+  const command = [];
+  let current = "";
+  let quote = null;
+  let started = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote === null && /\s/.test(character)) {
+      if (started) {
+        command.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      if (quote === null) {
+        quote = character;
+        started = true;
+        continue;
+      }
+      if (quote === character) {
+        quote = null;
+        continue;
+      }
+    }
+    if (character === "\\" && quote !== "'" && index + 1 < source.length) {
+      const next = source[index + 1];
+      if (next === quote || next === "\\" || (quote === null && /[\s'\"]/.test(next))) {
+        current += next;
+        started = true;
+        index += 1;
+        continue;
+      }
+    }
+    current += character;
+    started = true;
+  }
+  if (quote !== null) throw new Error("Original editor command contains an unmatched quote.");
+  if (started) command.push(current);
+  if (command.length === 0 || command.length > 32) {
+    throw new Error("Original editor command must contain between 1 and 32 arguments.");
+  }
+  return command;
+}
+
+function renderLauncher(template, platform, nodeExecutable, consolePath, originalEditorCommand) {
+  const originalEditorJson = JSON.stringify(originalEditorCommand);
   if (platform === "win32") {
     if (
       WINDOWS_UNSAFE_COMMAND_PATH.test(nodeExecutable)
@@ -119,13 +173,18 @@ function renderLauncher(template, platform, nodeExecutable, consolePath) {
     ) {
       throw new Error("Fleet launcher paths contain characters unsafe for Windows batch files.");
     }
+    if (WINDOWS_UNSAFE_EDITOR_JSON.test(originalEditorJson)) {
+      throw new Error("Original editor command contains characters unsafe for Windows batch files.");
+    }
     return template
       .replaceAll("__FLEET_NODE__", nodeExecutable)
-      .replaceAll("__FLEET_CONSOLE__", consolePath);
+      .replaceAll("__FLEET_CONSOLE__", consolePath)
+      .replaceAll("__FLEET_ORIGINAL_EDITOR_JSON__", originalEditorJson);
   }
   return template
     .replace("'__FLEET_NODE__'", shellQuote(nodeExecutable))
-    .replace("'__FLEET_CONSOLE__'", shellQuote(consolePath));
+    .replace("'__FLEET_CONSOLE__'", shellQuote(consolePath))
+    .replace("'__FLEET_ORIGINAL_EDITOR_JSON__'", shellQuote(originalEditorJson));
 }
 
 async function readLauncherTemplate(platform) {
@@ -252,7 +311,6 @@ export async function previewSetup(options = {}) {
   const launcherName = platform === "win32" ? "fleet-editor.cmd" : "fleet-editor.sh";
   const launcherPath = resolveOwnedPath(pluginDataDir, "bin", launcherName);
   const template = await readLauncherTemplate(platform);
-  const launcherContent = renderLauncher(template, platform, nodeExecutable, consolePath);
   const editorCommand = platform === "win32"
     ? `"${launcherPath}"`
     : shellQuote(launcherPath);
@@ -265,6 +323,14 @@ export async function previewSetup(options = {}) {
     : originalValues.EDITOR.existed
       ? originalValues.EDITOR.value
       : null;
+  const originalEditorCommand = parseEditorCommand(originalEditor);
+  const launcherContent = renderLauncher(
+    template,
+    platform,
+    nodeExecutable,
+    consolePath,
+    originalEditorCommand
+  );
   settingsAfter.env.EDITOR = editorCommand;
   settingsAfter.env.VISUAL = editorCommand;
 
@@ -284,6 +350,7 @@ export async function previewSetup(options = {}) {
     settingsAfter,
     originalValues,
     originalEditor,
+    originalEditorCommand,
     changes: [
       { path: "env.EDITOR", before: originalValues.EDITOR, after: editorCommand },
       { path: "env.VISUAL", before: originalValues.VISUAL, after: editorCommand }
@@ -294,7 +361,7 @@ export async function previewSetup(options = {}) {
   return Object.freeze({ ...plan, confirmationToken: confirmationToken(plan) });
 }
 
-export async function applySetup(plan = {}) {
+export async function applySetup(plan = {}, dependencies = {}) {
   assertPlainObject(plan, "Setup plan");
   if (!plan.confirmation || plan.confirmation !== plan.confirmationToken) {
     throw new Error("Setup requires the exact preview confirmation token.");
@@ -309,58 +376,110 @@ export async function applySetup(plan = {}) {
   if (await pathExists(plan.runtimeTargetDir)) {
     throw new Error(`Versioned Fleet runtime already exists: ${plan.runtimeTargetDir}`);
   }
+  const ownershipPath = resolveOwnedPath(plan.pluginDataDir, OWNERSHIP_FILE);
+  if (await pathExists(plan.launcherPath) || await pathExists(ownershipPath)) {
+    throw new Error("Fleet setup already owns a launcher or manifest; uninstall it first.");
+  }
 
+  const writeJson = dependencies.atomicWriteJson ?? atomicWriteJson;
+  const beforeSettingsCommit = dependencies.beforeSettingsCommit ?? (() => undefined);
   await fs.mkdir(plan.pluginDataDir, { recursive: true, mode: DIRECTORY_MODE });
   const stagingDir = resolveOwnedPath(
     plan.pluginDataDir,
     "runtime",
     `.staging-${plan.version}-${crypto.randomUUID()}`
   );
-  await copyTreeSafe(plan.runtimeSourceDir, stagingDir);
-  await fs.rename(stagingDir, plan.runtimeTargetDir);
-  await atomicWrite(
-    plan.launcherPath,
-    plan.launcherContent,
-    plan.platform === "win32" ? 0o600 : 0o700
-  );
-
   const backupDir = resolveOwnedPath(plan.pluginDataDir, "backups");
-  await fs.mkdir(backupDir, { recursive: true, mode: DIRECTORY_MODE });
   const timestamp = Number.isFinite(plan.now?.()) ? plan.now() : Date.now();
   const backupPath = resolveOwnedPath(
     backupDir,
     `settings-${timestamp}-${crypto.randomUUID()}.bak`
   );
-  await atomicWrite(backupPath, current.raw);
+  const expectedSettings = Buffer.from(`${JSON.stringify(plan.settingsAfter, null, 2)}\n`);
+  let settingsWriteAttempted = false;
+  try {
+    await copyTreeSafe(plan.runtimeSourceDir, stagingDir);
+    await fs.rename(stagingDir, plan.runtimeTargetDir);
+    await atomicWrite(
+      plan.launcherPath,
+      plan.launcherContent,
+      plan.platform === "win32" ? 0o600 : 0o700
+    );
+    await fs.mkdir(backupDir, { recursive: true, mode: DIRECTORY_MODE });
+    await atomicWrite(backupPath, current.raw);
 
-  const ownershipPath = resolveOwnedPath(plan.pluginDataDir, OWNERSHIP_FILE);
-  const ownership = {
-    schemaVersion: 1,
-    status: "pending",
-    platform: plan.platform,
-    version: plan.version,
-    settingsPath: plan.settingsPath,
-    settingsExisted: plan.settingsExisted,
-    originalValues: plan.originalValues,
-    originalEditor: plan.originalEditor,
-    writtenValues: { EDITOR: plan.editorCommand, VISUAL: plan.editorCommand },
-    writtenHashes: {
-      EDITOR: hashValue(plan.editorCommand),
-      VISUAL: hashValue(plan.editorCommand)
-    },
-    runtimeTargetDir: plan.runtimeTargetDir,
-    runtimeHash: await hashTree(plan.runtimeTargetDir),
-    launcherPath: plan.launcherPath,
-    launcherHash: hashBytes(Buffer.from(plan.launcherContent, "utf8")),
-    backupPath,
-    restartRequired: true,
-    keybindingsModified: false,
-    appliedAt: new Date(timestamp).toISOString()
-  };
-  await atomicWriteJson(ownershipPath, ownership);
-  await atomicWriteJson(plan.settingsPath, plan.settingsAfter);
-  ownership.status = "applied";
-  await atomicWriteJson(ownershipPath, ownership);
+    const ownership = {
+      schemaVersion: 1,
+      status: "pending",
+      platform: plan.platform,
+      version: plan.version,
+      settingsPath: plan.settingsPath,
+      settingsExisted: plan.settingsExisted,
+      originalValues: plan.originalValues,
+      originalEditor: plan.originalEditor,
+      originalEditorCommand: plan.originalEditorCommand,
+      writtenValues: { EDITOR: plan.editorCommand, VISUAL: plan.editorCommand },
+      writtenHashes: {
+        EDITOR: hashValue(plan.editorCommand),
+        VISUAL: hashValue(plan.editorCommand)
+      },
+      runtimeTargetDir: plan.runtimeTargetDir,
+      runtimeHash: await hashTree(plan.runtimeTargetDir),
+      launcherPath: plan.launcherPath,
+      launcherHash: hashBytes(Buffer.from(plan.launcherContent, "utf8")),
+      backupPath,
+      restartRequired: true,
+      keybindingsModified: false,
+      appliedAt: new Date(timestamp).toISOString()
+    };
+    await writeJson(ownershipPath, ownership);
+    await beforeSettingsCommit();
+    const latest = await readSettingsSource(plan.settingsPath);
+    if (latest.hash !== current.hash || latest.existed !== current.existed) {
+      throw new Error("Claude settings changed while setup was being prepared; try again.");
+    }
+    settingsWriteAttempted = true;
+    await writeJson(plan.settingsPath, plan.settingsAfter);
+    ownership.status = "applied";
+    await writeJson(ownershipPath, ownership);
+  } catch (error) {
+    let safeToRemoveOwnedFiles = !settingsWriteAttempted;
+    if (settingsWriteAttempted) {
+      const latest = await readSettingsSource(plan.settingsPath).catch(() => null);
+      if (latest?.hash === hashBytes(expectedSettings)) {
+        if (plan.settingsExisted) {
+          await atomicWrite(plan.settingsPath, current.raw);
+        } else {
+          await fs.unlink(plan.settingsPath).catch((unlinkError) => {
+            if (unlinkError.code !== "ENOENT") throw unlinkError;
+          });
+        }
+        safeToRemoveOwnedFiles = true;
+      } else if (latest?.hash === current.hash && latest.existed === current.existed) {
+        safeToRemoveOwnedFiles = true;
+      }
+    }
+    if (safeToRemoveOwnedFiles) {
+      await fs.unlink(ownershipPath).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+      await fs.unlink(plan.launcherPath).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+      await fs.rm(plan.runtimeTargetDir, { recursive: true, force: true });
+      await fs.unlink(backupPath).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+    }
+    await fs.rm(stagingDir, { recursive: true, force: true });
+    if (!safeToRemoveOwnedFiles) {
+      throw new Error(
+        "Fleet setup failed after Claude settings changed externally; owned recovery files were retained.",
+        { cause: error }
+      );
+    }
+    throw error;
+  }
 
   return {
     applied: true,
@@ -380,6 +499,10 @@ function restoreOwnedValue(env, key, original) {
 
 export async function uninstallSetup(options = {}) {
   const pluginDataDir = requireAbsolute(options.pluginDataDir, "pluginDataDir");
+  const preview = await previewUninstallSetup({ pluginDataDir });
+  if (options.confirmationToken !== preview.confirmationToken) {
+    throw new Error("Uninstall requires the exact preview confirmation token.");
+  }
   const ownershipPath = resolveOwnedPath(pluginDataDir, OWNERSHIP_FILE);
   let ownership;
   try {
@@ -443,4 +566,47 @@ export async function uninstallSetup(options = {}) {
   await fs.unlink(ownershipPath);
 
   return { restored: true, retained, restartRequired: true };
+}
+
+export async function previewUninstallSetup(options = {}) {
+  const pluginDataDir = requireAbsolute(options.pluginDataDir, "pluginDataDir");
+  const ownershipPath = resolveOwnedPath(pluginDataDir, OWNERSHIP_FILE);
+  let ownership;
+  try {
+    ownership = JSON.parse(await fs.readFile(ownershipPath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error("Fleet setup ownership manifest was not found.");
+    }
+    throw error;
+  }
+  assertPlainObject(ownership, "Fleet ownership manifest");
+  if (ownership.schemaVersion !== 1 || ownership.status !== "applied") {
+    throw new Error("Fleet setup ownership manifest is incomplete or unsupported.");
+  }
+  const current = await readSettingsSource(ownership.settingsPath);
+  const settings = current.settings;
+  const env = settings.env && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : {};
+  for (const key of ["EDITOR", "VISUAL"]) {
+    if (hashValue(env[key]) !== ownership.writtenHashes[key]) {
+      throw new Error(`Claude env.${key} is no longer owned by Fleet; uninstall will not overwrite it.`);
+    }
+  }
+  const payload = stableObject({
+    schemaVersion: 1,
+    pluginDataDir,
+    ownershipPath,
+    settingsPath: ownership.settingsPath,
+    settingsSourceHash: current.hash,
+    restore: ownership.originalValues,
+    remove: [ownership.launcherPath, ownership.runtimeTargetDir],
+    restartRequired: true
+  });
+  return Object.freeze({
+    ...payload,
+    writesPerformed: false,
+    confirmationToken: hashBytes(JSON.stringify(payload))
+  });
 }

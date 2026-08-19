@@ -537,7 +537,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓/JK SELECT   ENTER DETAIL   TAB PANEL   / FILTER   P MOTION   ? HELP   Q RETURN",
+      "↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  ENTER DETAIL  TAB PANEL  / FILTER  P MOTION  ? HELP  Q RETURN",
       terminal.columns
     )
   ];
@@ -570,7 +570,10 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
       rightLines
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
-    truncate("↑↓/JK SELECT   TAB PANEL   P MOTION   ? HELP   Q RETURN", terminal.columns)
+    truncate(
+      "↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  TAB PANEL  P MOTION  ? HELP  Q RETURN",
+      terminal.columns
+    )
   ];
 }
 
@@ -598,7 +601,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("TAB PANEL   ↑↓ SELECT   P MOTION   Q RETURN", terminal.columns)
+    truncate("↑↓ SELECT  M MESSAGE  X CANCEL  TAB PANEL  P MOTION  Q RETURN", terminal.columns)
   ];
 }
 

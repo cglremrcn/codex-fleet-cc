@@ -14,6 +14,6 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" setup --workspace "${CLAUDE_PROJE
 
 Show the exact preview, including every settings path and value Fleet proposes to own. Never edit
 Claude settings, keybindings, shell profiles, or project files by hand. Apply only after the user gives
-explicit confirmation using the exact preview token. If setup support is unavailable, report that
-verbatim; do not emulate the write. Fleet data belongs under `${CLAUDE_PLUGIN_DATA}` and uninstall
-may remove only files recorded in its ownership manifest.
+explicit confirmation using the exact preview token, then rerun the same command with
+`--confirm-token "<exact-token>"`. Fleet data belongs under `${CLAUDE_PLUGIN_DATA}` and uninstall may
+remove only files recorded in its ownership manifest.
