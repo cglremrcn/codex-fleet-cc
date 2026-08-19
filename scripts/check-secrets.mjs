@@ -2,8 +2,9 @@ import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -77,9 +78,7 @@ export async function scanRepository(root, options = {}) {
   });
 }
 
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   try {
     const report = await scanRepository(process.cwd());
     process.stdout.write(`${JSON.stringify(report)}\n`);

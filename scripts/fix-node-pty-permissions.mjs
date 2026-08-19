@@ -2,6 +2,8 @@ import { chmod, lstat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
+
 export async function ensureNodePtyHelperPermissions({
   root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
   platform = process.platform,
@@ -37,7 +39,7 @@ export async function ensureNodePtyHelperPermissions({
   return { changed: true, path: helperPath };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   const result = await ensureNodePtyHelperPermissions();
   if (result.changed) {
     process.stdout.write(`Prepared node-pty helper: ${result.path}\n`);

@@ -2,10 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
 import * as pty from "node-pty";
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
 import {
   applySetup,
   previewSetup,
@@ -42,7 +42,6 @@ function isProcessAlive(pid) {
 async function verifyInstalledLauncher(launcherPath) {
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/sh", [
-      "-x",
       launcherPath,
       "--benchmark-startup",
       "--plain"
@@ -78,7 +77,7 @@ async function verifyInstalledLauncher(launcherPath) {
       } catch (error) {
         reject(new Error(
           `Installed launcher returned invalid benchmark JSON: ${error.message}. `
-          + `Shell trace: ${stderr.trim()}`
+          + `Launcher stderr: ${stderr.trim()}`
         ));
       }
     });
@@ -208,9 +207,7 @@ export async function runPtySmoke(options = {}) {
   }
 }
 
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   try {
     const result = await runPtySmoke(parseArguments(process.argv.slice(2)));
     process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(0));

@@ -5,9 +5,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 
 import { runConsole } from "./lib/console-controller.mjs";
+import { isMainModule } from "./lib/is-main.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./lib/paths.mjs";
 import { readWorkspaceState } from "./lib/safe-state.mjs";
 import { buildViewModel, renderScreen } from "./lib/tui-render.mjs";
@@ -191,6 +191,4 @@ export async function runEntry(argv, dependencies = {}) {
   }
 }
 
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) process.exitCode = await runEntry(process.argv.slice(2));
+if (isMainModule(import.meta.url)) process.exitCode = await runEntry(process.argv.slice(2));

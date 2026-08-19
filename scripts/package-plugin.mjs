@@ -4,6 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEXT_FILE = /(?:\.json|\.md|\.mjs|\.js|\.ts|\.sh|\.cmd)$/iu;
 const FORBIDDEN_PATH = /(?:^|\/)(?:\.git|node_modules|tests?|\.fleet|support-bundles?)(?:\/|$)/iu;
@@ -146,9 +148,7 @@ export async function buildPluginArchive(options = {}) {
   };
 }
 
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   const versionIndex = process.argv.indexOf("--version");
   const version = versionIndex === -1 ? "0.1.0" : process.argv[versionIndex + 1];
   const result = await buildPluginArchive({ version });

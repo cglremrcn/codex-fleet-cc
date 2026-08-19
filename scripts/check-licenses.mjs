@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
 
 const ALLOWED_LICENSES = new Set([
   "Apache-2.0",
@@ -70,9 +71,7 @@ export async function auditLicenses(root) {
   });
 }
 
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   try {
     const report = await auditLicenses(process.cwd());
     process.stdout.write(`${JSON.stringify(report)}\n`);

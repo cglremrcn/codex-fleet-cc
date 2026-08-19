@@ -2,10 +2,10 @@ import { execFile as execFileCallback } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CONSOLE_TICK_MS } from "../plugins/fleet/scripts/lib/console-controller.mjs";
+import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
 import {
   buildViewModel,
   renderScreen
@@ -130,9 +130,7 @@ export async function measurePerformance() {
   });
 }
 
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   try {
     const report = await measurePerformance();
     process.stdout.write(`${JSON.stringify(report)}\n`);

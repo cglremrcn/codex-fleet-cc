@@ -22,6 +22,7 @@ test("release archive is deterministic and contains only the installable plugin"
   assert.equal(first.entries.includes("LICENSE"), true);
   assert.equal(first.entries.includes("NOTICE"), true);
   assert.equal(first.entries.includes(".claude-plugin/plugin.json"), true);
+  assert.equal(first.entries.includes("scripts/lib/is-main.mjs"), true);
   assert.equal(first.containsSecretPattern, false);
   assert.equal(first.sha256, second.sha256);
   assert.deepEqual(
