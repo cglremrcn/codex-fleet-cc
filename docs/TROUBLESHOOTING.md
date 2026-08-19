@@ -11,9 +11,13 @@ The report distinguishes discovery, configuration, a successful smoke, denial an
 ## `Ctrl+G` opens the old editor
 
 Fleet setup has not been applied, Claude has not been restarted, or the settings file changed after
-the setup preview. Run `/fleet:setup`, inspect the exact proposed values and confirm that preview.
-Do not replace `VISUAL` or `EDITOR` manually. Fleet needs the ownership manifest to uninstall
-safely.
+the setup preview. After plugin reload, the read-only SessionStart check offers to enable Fleet;
+answer yes and let Claude apply the exact preview. Run `/fleet:setup` only if that offer does not
+appear. Do not replace `VISUAL` or `EDITOR` manually. Fleet needs the ownership manifest to
+uninstall safely.
+
+If SessionStart reports unreadable or incomplete ownership, run `/fleet:doctor`. Do not rerun setup
+or delete the manifest until the report identifies the conflict.
 
 ## The console says the original editor is unavailable
 

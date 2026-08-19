@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const PLUGIN = path.join(ROOT, "plugins", "fleet");
+const SESSION_HOOK = path.join(PLUGIN, "scripts", "fleet-session-hook.mjs");
 const SKILLS = [
   "setup",
   "doctor",
@@ -27,6 +30,39 @@ async function exists(relativePath) {
   } catch {
     return false;
   }
+}
+
+async function pathExists(target) {
+  try {
+    await fs.lstat(target);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function runSessionHook({ workspace, pluginData }) {
+  const isolatedHome = path.join(path.dirname(pluginData), "home");
+  const isolatedLocalAppData = path.join(path.dirname(pluginData), "local-app-data");
+  const isolatedState = path.join(path.dirname(pluginData), "state");
+  const result = spawnSync(process.execPath, [SESSION_HOOK], {
+    cwd: workspace,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: pluginData,
+      CLAUDE_PROJECT_DIR: workspace,
+      HOME: isolatedHome,
+      LOCALAPPDATA: isolatedLocalAppData,
+      USERPROFILE: isolatedHome,
+      XDG_STATE_HOME: isolatedState,
+    },
+    input: JSON.stringify({ cwd: workspace, hook_event_name: "SessionStart" }),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
 }
 
 async function readTree(root) {
@@ -88,7 +124,7 @@ test("setup keeps its preview token internal and asks the user for one plain con
   const metadata = frontmatter(source);
 
   assert.equal(metadata.name, "setup");
-  assert.equal(metadata["disable-model-invocation"], "true");
+  assert.equal(metadata["disable-model-invocation"], "false");
   assert.match(source, /explicit(?: confirmation|ly confirms)/i);
   assert.match(source, /keep.*token.*internal|never ask.*copy|do not ask.*paste/is);
   assert.match(source, /--confirm-token.*confirmationToken/is);
@@ -131,4 +167,40 @@ test("SessionStart hook reconciles status but never starts a lane", async () => 
   assert.match(source, /"status"/);
   assert.doesNotMatch(source, /runCli\(\s*\[\s*["']start["']/);
   assert.doesNotMatch(source, /createRuntime|scheduler\.enqueue/);
+});
+
+test("SessionStart offers one-confirm setup without mutating user state", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-session-onboarding-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = path.join(root, "workspace");
+  const pluginData = path.join(root, "plugin-data");
+  await fs.mkdir(workspace, { recursive: true });
+
+  const response = runSessionHook({ workspace, pluginData });
+  const context = response.hookSpecificOutput?.additionalContext ?? "";
+
+  assert.match(context, /Ctrl\+G Fleet Console/i);
+  assert.match(context, /one plain confirmation question/i);
+  assert.match(context, /explicitly agrees/i);
+  assert.doesNotMatch(context, /[a-f0-9]{64}/i);
+  assert.equal(await pathExists(pluginData), false, "the hook must not create plugin state");
+  assert.deepEqual(await fs.readdir(workspace), [], "the hook must not create workspace state");
+});
+
+test("SessionStart stays silent when Fleet integration ownership is applied", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-session-configured-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = path.join(root, "workspace");
+  const pluginData = path.join(root, "plugin-data");
+  await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(pluginData, { recursive: true });
+  await fs.writeFile(
+    path.join(pluginData, "ownership.json"),
+    JSON.stringify({ schemaVersion: 1, status: "applied" }),
+    "utf8",
+  );
+
+  const response = runSessionHook({ workspace, pluginData });
+
+  assert.equal(response.hookSpecificOutput?.additionalContext, undefined);
 });
