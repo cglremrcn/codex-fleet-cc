@@ -36,6 +36,7 @@ function reader(id, checkoutKey, overrides) {
 function recordingRuntime() {
   const lanes = new Map();
   const starts = [];
+  const resumes = [];
   const interrupts = [];
   let active = 0;
   let peak = 0;
@@ -62,6 +63,24 @@ function recordingRuntime() {
       lanes.set(lane.id, state);
       starts.push(lane.id);
       return { ...state };
+    },
+    async resumeLane(record, workspacePath, message) {
+      const state = {
+        ...record,
+        workspacePath,
+        status: "running",
+        turnId: `turn-resumed-${record.id}`
+      };
+      lanes.set(record.id, state);
+      resumes.push({ id: record.id, workspacePath, message });
+      return { ...state };
+    },
+    async continueLane(id, message) {
+      const lane = lanes.get(id);
+      lane.status = "running";
+      lane.turnId = `turn-continued-${id}`;
+      resumes.push({ id, workspacePath: lane.workspacePath, message });
+      return { ...lane };
     },
     inspectLane(id) {
       const lane = lanes.get(id);
@@ -97,6 +116,7 @@ function recordingRuntime() {
       return writerPeaks.get(checkoutKey) ?? 0;
     },
     starts,
+    resumes,
     interrupts
   };
 }
@@ -220,6 +240,73 @@ test("cancellation requires the exact recorded owned thread", async () => {
   runtime.replaceThread("changed", "unrelated-thread");
   await assert.rejects(scheduler.cancel("changed"), /ownership/i);
   assert.deepEqual(runtime.interrupts, ["owned"]);
+});
+
+test("hydrated completed lanes continue through a fresh runtime", async () => {
+  const runtime = recordingRuntime();
+  const workspacePath = "C:\\workspace\\persisted";
+  const scheduler = createScheduler({
+    runtime,
+    store: memoryStore(),
+    limits: { staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath,
+    initialRecords: [{
+      id: "persisted",
+      role: "investigator",
+      label: "Persisted lane",
+      workspaceKey: WORKSPACE_KEY,
+      checkoutKey: "persisted",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      authority: {
+        sandbox: "read-only",
+        network: "off",
+        process: { start: true, stopOwned: true }
+      },
+      priority: "normal",
+      status: "complete",
+      phase: "complete",
+      externalEffect: false,
+      retryOf: null,
+      reconciliationRef: null,
+      threadId: "thread-persisted",
+      turnId: "turn-persisted",
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z",
+      finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+
+  const continued = await scheduler.continue("persisted", "Check the second pass.");
+
+  assert.equal(continued.status, "running");
+  assert.equal(continued.turnId, "turn-resumed-persisted");
+  assert.deepEqual(runtime.resumes, [{
+    id: "persisted",
+    workspacePath,
+    message: "Check the second pass."
+  }]);
+  assert.equal(scheduler.snapshot().history.length, 0);
+  assert.equal(scheduler.snapshot().active.length, 1);
+  assert.equal(scheduler.snapshot().active[0].authority.sandbox, "read-only");
+});
+
+test("cancel refuses a stale caller-pinned turn identity", async () => {
+  const runtime = recordingRuntime();
+  const scheduler = createScheduler({
+    runtime,
+    store: memoryStore(),
+    limits: { staggerMs: 0 },
+    clock: deterministicClock()
+  });
+  const started = await scheduler.enqueue(reader("pinned", "a"));
+
+  await assert.rejects(scheduler.cancel("pinned", {
+    threadId: started.threadId,
+    turnId: "stale-turn"
+  }), /target identity changed/i);
+  assert.deepEqual(runtime.interrupts, []);
 });
 
 test("unknown external outcomes block retry until reconciliation evidence exists", async () => {

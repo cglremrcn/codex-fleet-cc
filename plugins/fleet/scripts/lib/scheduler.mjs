@@ -93,14 +93,18 @@ function publicRecord(item, status = item.status) {
     checkoutKey: item.checkoutKey,
     model: item.model,
     effort: item.effort,
+    authority: item.authority,
     sandbox: item.authority.sandbox,
     priority: item.priority,
     status,
+    phase: item.phase ?? status,
     externalEffect: item.externalEffect,
     retryOf: item.retryOf,
     reconciliationRef: item.reconciliationRef,
     threadId: item.threadId,
     turnId: item.turnId,
+    lastMessage: item.lastMessage ?? null,
+    exitReason: item.exitReason ?? null,
     enqueuedAt: item.enqueuedAt,
     startedAt: item.startedAt,
     finishedAt: item.finishedAt
@@ -114,8 +118,12 @@ function sortQueue(left, right) {
 }
 
 class FleetScheduler {
-  constructor({ runtime, store, limits, clock }) {
-    assertDependency(runtime, ["startLane", "inspectLane", "interruptLane"], "runtime");
+  constructor({ runtime, store, limits, clock, workspacePath, initialRecords }) {
+    assertDependency(
+      runtime,
+      ["startLane", "continueLane", "resumeLane", "inspectLane", "interruptLane"],
+      "runtime"
+    );
     assertDependency(store, ["write"], "store");
     assertDependency(clock, ["now", "sleep"], "clock");
     this.runtime = runtime;
@@ -129,6 +137,63 @@ class FleetScheduler {
     this.nextSequence = 1;
     this.lastStartedAt = null;
     this.drainPromise = null;
+    this.workspacePath = workspacePath ?? null;
+    this.hydrate(initialRecords ?? []);
+  }
+
+  hydrate(records) {
+    if (!Array.isArray(records)) {
+      throw new TypeError("Scheduler initial records must be an array.");
+    }
+    for (const record of records) {
+      if (!record || typeof record !== "object" || Array.isArray(record)) {
+        throw new TypeError("Persisted scheduler records must be objects.");
+      }
+      const authority = normalizeAuthority(record.authority);
+      const validated = createLane({
+        ...record,
+        authority,
+        createdAt: record.enqueuedAt ?? record.createdAt
+      });
+      const originalStatus = record.status;
+      const status = TERMINAL_STATUSES.has(originalStatus)
+        ? originalStatus
+        : hasExternalEffect(authority) ? "outcome_unknown" : "failed";
+      const item = {
+        id: validated.id,
+        role: validated.role,
+        label: validated.label,
+        workspaceKey: validated.workspaceKey,
+        checkoutKey: boundedIdentifier(
+          record.checkoutKey ?? record.workspaceKey,
+          "Persisted lane checkout key"
+        ),
+        model: validated.model,
+        effort: validated.effort,
+        authority,
+        priority: PRIORITY_ORDER.includes(record.priority) ? record.priority : "normal",
+        externalEffect: hasExternalEffect(authority),
+        retryOf: record.retryOf ?? null,
+        reconciliationRef: record.reconciliationRef ?? null,
+        status,
+        phase: status,
+        sequence: this.nextSequence,
+        enqueuedAt: record.enqueuedAt ?? validated.createdAt,
+        startedAt: record.startedAt ?? null,
+        finishedAt: record.finishedAt ?? new Date(this.clock.now()).toISOString(),
+        threadId: record.threadId ?? null,
+        turnId: record.turnId ?? null,
+        lastMessage: record.lastMessage ?? null,
+        exitReason: originalStatus === status
+          ? record.exitReason ?? null
+          : "Previous Fleet supervisor ended before the lane reached a terminal state.",
+        resolve: null,
+        reject: null
+      };
+      this.nextSequence += 1;
+      this.assertUnique(item.id);
+      this.history.set(item.id, item);
+    }
   }
 
   normalizeContract(contract) {
@@ -164,12 +229,15 @@ class FleetScheduler {
       retryOf: contract.retryOf ?? null,
       reconciliationRef: contract.reconciliationRef ?? null,
       status: "queued",
+      phase: "queued",
       sequence: this.nextSequence,
       enqueuedAt: new Date(this.clock.now()).toISOString(),
       startedAt: null,
       finishedAt: null,
       threadId: null,
       turnId: null,
+      lastMessage: null,
+      exitReason: null,
       resolve: null,
       reject: null
     };
@@ -285,6 +353,7 @@ class FleetScheduler {
       const [item] = this.queue.splice(index, 1);
       await this.stagger();
       item.status = "starting";
+      item.phase = "starting";
       item.startedAt = new Date(this.clock.now()).toISOString();
       this.active.set(item.id, item);
       if (item.authority.sandbox === "workspace-write") {
@@ -309,6 +378,7 @@ class FleetScheduler {
       try {
         const started = await this.runtime.startLane(item.contract);
         item.status = started.status ?? "running";
+        item.phase = started.phase ?? item.status;
         item.threadId = started.threadId ?? null;
         item.turnId = started.turnId ?? null;
         this.lastStartedAt = this.clock.now();
@@ -333,11 +403,69 @@ class FleetScheduler {
       }
     }
     item.status = status;
+    item.phase = status;
     item.finishedAt = new Date(this.clock.now()).toISOString();
     this.history.set(item.id, item);
   }
 
-  async cancel(id) {
+  async continue(id, message) {
+    if (typeof message !== "string" || !message.trim() || message.length > 128 * 1024) {
+      throw new TypeError("Follow-up message must contain between 1 and 131072 characters.");
+    }
+    if (message.includes("\0")) {
+      throw new TypeError("Follow-up message cannot contain null bytes.");
+    }
+    if (!this.workspacePath) {
+      throw new Error("Scheduler workspace path is required for a persisted follow-up.");
+    }
+    const item = this.history.get(id);
+    if (!item || item.status !== "complete" || !item.threadId) {
+      throw new Error(`Lane ${id} is not a completed resumable lane.`);
+    }
+    const resumeRecord = { ...item, status: "complete", phase: "complete" };
+    const runtimeAlreadyOwnsLane = this.runtime.inspectLane(id) !== null;
+
+    this.history.delete(id);
+    item.status = "starting";
+    item.phase = "continuing";
+    item.finishedAt = null;
+    item.startedAt = new Date(this.clock.now()).toISOString();
+    this.active.set(id, item);
+    if (item.authority.sandbox === "workspace-write") {
+      this.writerCounts.set(
+        item.checkoutKey,
+        (this.writerCounts.get(item.checkoutKey) ?? 0) + 1
+      );
+    }
+    try {
+      await this.persist();
+    } catch (error) {
+      this.active.delete(id);
+      this.history.set(id, item);
+      throw error;
+    }
+
+    try {
+      const resumed = runtimeAlreadyOwnsLane
+        ? await this.runtime.continueLane(id, message)
+        : await this.runtime.resumeLane(resumeRecord, this.workspacePath, message);
+      item.status = resumed.status ?? "running";
+      item.phase = resumed.phase ?? item.status;
+      item.threadId = resumed.threadId ?? item.threadId;
+      item.turnId = resumed.turnId ?? null;
+      item.lastMessage = resumed.lastMessage ?? item.lastMessage;
+      item.exitReason = resumed.exitReason ?? null;
+      await this.persist();
+      return publicRecord(item);
+    } catch (error) {
+      this.release(item, "failed");
+      item.exitReason = error.message;
+      await this.persist();
+      throw error;
+    }
+  }
+
+  async cancel(id, expectedIdentity = null) {
     const queuedIndex = this.queue.findIndex((item) => item.id === id);
     if (queuedIndex !== -1) {
       const [item] = this.queue.splice(queuedIndex, 1);
@@ -354,6 +482,15 @@ class FleetScheduler {
       throw new Error(`Lane is not queued or active: ${id}.`);
     }
     const current = this.runtime.inspectLane(id);
+    if (
+      expectedIdentity
+      && (
+        expectedIdentity.threadId !== item.threadId
+        || expectedIdentity.turnId !== item.turnId
+      )
+    ) {
+      throw new Error(`Lane ${id} target identity changed; cancellation was refused.`);
+    }
     if (
       !item.threadId
       || !item.turnId
@@ -377,6 +514,10 @@ class FleetScheduler {
         continue;
       }
       item.turnId = current.turnId ?? item.turnId;
+      item.threadId = current.threadId ?? item.threadId;
+      item.phase = current.phase ?? item.phase;
+      item.lastMessage = current.lastMessage ?? item.lastMessage;
+      item.exitReason = current.exitReason ?? item.exitReason;
       if (TERMINAL_STATUSES.has(current.status)) {
         this.release(item, current.status);
       }
@@ -408,6 +549,8 @@ export function createScheduler(options = {}) {
     runtime: options.runtime,
     store: options.store,
     limits: options.limits,
-    clock: options.clock ?? defaultClock()
+    clock: options.clock ?? defaultClock(),
+    workspacePath: options.workspacePath,
+    initialRecords: options.initialRecords
   });
 }

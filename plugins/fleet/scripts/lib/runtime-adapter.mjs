@@ -26,6 +26,18 @@ function assertPrompt(value, label) {
   return value;
 }
 
+function assertRuntimeId(value, label) {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > 256
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new TypeError(`${label} must contain between 1 and 256 safe characters.`);
+  }
+  return value;
+}
+
 function copyLane(lane) {
   return Object.freeze({
     id: lane.id,
@@ -329,6 +341,39 @@ class FleetRuntime {
     });
     lane.turnId = turn.turn?.id ?? lane.turnId;
     return copyLane(lane);
+  }
+
+  async resumeLane(record, workspacePath, message) {
+    this.assertMutableProtocol();
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new TypeError("Persisted lane record must be an object.");
+    }
+    if (record.status !== "complete") {
+      throw new Error(`Lane ${String(record.id)} can only resume after a completed turn.`);
+    }
+    if (!path.isAbsolute(workspacePath ?? "")) {
+      throw new TypeError("Lane workspacePath must be absolute.");
+    }
+    if (this.lanes.has(record.id)) {
+      throw new Error(`Lane already exists: ${record.id}.`);
+    }
+
+    const authority = normalizeAuthority(record.authority);
+    const validated = createLane({ ...record, authority });
+    const lane = {
+      ...validated,
+      authority,
+      workspacePath: path.resolve(workspacePath),
+      status: "complete",
+      phase: "complete",
+      threadId: assertRuntimeId(record.threadId, "Persisted Codex thread id"),
+      turnId: record.turnId ?? null,
+      lastMessage: record.lastMessage ? redactText(record.lastMessage) : null,
+      exitReason: null
+    };
+    this.lanes.set(lane.id, lane);
+    this.bindThread(lane, lane.threadId);
+    return this.continueLane(lane.id, message);
   }
 
   async interruptLane(id) {
