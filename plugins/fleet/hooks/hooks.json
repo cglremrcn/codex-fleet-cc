@@ -1,5 +1,5 @@
 {
-  "description": "Read existing Fleet state at session start without launching work.",
+  "description": "Read Fleet lane and setup state at session start without launching work or changing settings.",
   "hooks": {
     "SessionStart": [
       {

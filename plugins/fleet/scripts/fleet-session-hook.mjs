@@ -1,11 +1,59 @@
 #!/usr/bin/env node
 
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
 import { runCli } from "./lib/cli.mjs";
+import { getFleetDataDir, resolveOwnedPath } from "./lib/paths.mjs";
 
 const MAX_INPUT_BYTES = 64 * 1024;
+const MAX_OWNERSHIP_BYTES = 64 * 1024;
+const ACTIVE_STATUSES = new Set([
+  "queued",
+  "starting",
+  "running",
+  "cancelling",
+  "outcome_unknown"
+]);
+
+function ownershipCandidates() {
+  const candidates = [];
+  if (process.env.CLAUDE_PLUGIN_DATA) {
+    candidates.push(path.resolve(process.env.CLAUDE_PLUGIN_DATA, "ownership.json"));
+  }
+  const fallbackRoot = resolveOwnedPath(
+    getFleetDataDir(process.env, process.platform, os.homedir()),
+    "integration"
+  );
+  candidates.push(path.resolve(fallbackRoot, "ownership.json"));
+  return [...new Set(candidates)];
+}
+
+async function inspectOwnership(candidate) {
+  try {
+    const metadata = await fs.lstat(candidate);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_OWNERSHIP_BYTES) {
+      return "invalid";
+    }
+    const payload = JSON.parse(await fs.readFile(candidate, "utf8"));
+    return payload?.schemaVersion === 1 && payload?.status === "applied"
+      ? "applied"
+      : "invalid";
+  } catch (error) {
+    return error?.code === "ENOENT" ? "missing" : "invalid";
+  }
+}
+
+async function setupContext() {
+  const states = await Promise.all(ownershipCandidates().map(inspectOwnership));
+  if (states.includes("applied")) return null;
+  if (states.includes("invalid")) {
+    return "Fleet integration ownership is unreadable or incomplete. Use /fleet:doctor before setup; do not overwrite settings or ownership state.";
+  }
+  return "Fleet is installed but Ctrl+G Fleet Console is not configured. Ask the user exactly one plain confirmation question: \"Enable Ctrl+G Fleet Console now?\" Wait for an explicit yes. If the user explicitly agrees, invoke the Fleet setup skill, keep its preview token internal, and apply only the exact preview. Never ask the user to copy or paste a token. This SessionStart hook is read-only and must not modify settings.";
+}
 
 async function readHookInput() {
   const chunks = [];
@@ -49,12 +97,16 @@ async function main() {
       return;
     }
     const payload = JSON.parse(output);
-    const active = payload.lanes.filter((lane) =>
-      ["queued", "starting", "running", "cancelling", "outcome_unknown"].includes(lane.status)
-    ).length;
-    const context = active > 0
-      ? `Fleet has ${active} active or unresolved lane(s) for this workspace. Use /fleet:status before scheduling overlapping work.`
-      : null;
+    const active = payload.lanes.filter((lane) => ACTIVE_STATUSES.has(lane.status)).length;
+    const messages = [];
+    if (active > 0) {
+      messages.push(
+        `Fleet has ${active} active or unresolved lane(s) for this workspace. Use /fleet:status before scheduling overlapping work.`
+      );
+    }
+    const onboarding = await setupContext();
+    if (onboarding) messages.push(onboarding);
+    const context = messages.length > 0 ? messages.join("\n\n") : null;
     process.stdout.write(`${JSON.stringify(hookResponse(context))}\n`);
   } catch {
     process.stdout.write(`${JSON.stringify(hookResponse())}\n`);

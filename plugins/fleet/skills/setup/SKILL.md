@@ -1,10 +1,14 @@
 ---
 name: setup
-description: Preview the reversible Claude Code external-editor integration for Fleet. Use only when the user explicitly asks to install or configure Fleet.
-disable-model-invocation: true
+description: Preview the reversible Claude Code external-editor integration for Fleet. Use when the user explicitly asks to configure Fleet or explicitly accepts the SessionStart onboarding offer.
+disable-model-invocation: false
 ---
 
 # Fleet setup
+
+Do not invoke this skill merely because SessionStart reports missing setup. First ask its one plain
+confirmation question and wait. Continue only after the user explicitly accepts that onboarding
+offer, or when the user directly asks to configure Fleet.
 
 Run the deterministic setup preview for `${CLAUDE_PROJECT_DIR}` through:
 
