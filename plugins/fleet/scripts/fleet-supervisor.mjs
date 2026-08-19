@@ -5,13 +5,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import { normalizeAuthority } from "./lib/authority.mjs";
 import { isMainModule } from "./lib/is-main.mjs";
 import { resolveOwnedPath } from "./lib/paths.mjs";
 import { captureOwnedProcess } from "./lib/process-ownership.mjs";
 import { createRuntime } from "./lib/runtime-adapter.mjs";
 import { readWorkspaceState, writeWorkspaceState } from "./lib/safe-state.mjs";
 import { createScheduler, recoverPersistedRecords } from "./lib/scheduler.mjs";
+import { validateStartContract } from "./lib/start-contract.mjs";
 import {
   SUPERVISOR_PROTOCOL_VERSION,
   createSupervisorServer,
@@ -79,13 +79,6 @@ export function createShutdownGuard() {
   });
 }
 
-function assertObject(value, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${label} must be an object.`);
-  }
-  return value;
-}
-
 function assertSafeId(value, label) {
   if (!SAFE_ID.test(value ?? "")) {
     throw new TypeError(`${label} must be a 1-64 character URL-safe identifier.`);
@@ -103,34 +96,6 @@ function assertMessage(value) {
     throw new TypeError("Follow-up message must contain 1-131072 characters without null bytes.");
   }
   return value;
-}
-
-function hasConfirmationAction(authority) {
-  return authority.sandbox === "workspace-write"
-    || authority.browser.mutate
-    || Object.values(authority.externalEffects).some(Boolean);
-}
-
-function validateStartContract(contract, workspacePath) {
-  assertObject(contract, "Fleet start contract");
-  if (contract.schemaVersion !== 1 || path.resolve(contract.workspacePath ?? "") !== workspacePath) {
-    throw new Error("Fleet start contract workspace identity mismatch.");
-  }
-  if (!Array.isArray(contract.lanes) || contract.lanes.length === 0 || contract.lanes.length > 256) {
-    throw new TypeError("Fleet start contract must contain between 1 and 256 lanes.");
-  }
-  const lanes = contract.lanes.map((lane) => {
-    assertObject(lane, "Fleet lane contract");
-    const authority = normalizeAuthority(lane.authority);
-    if (!authority.process.start) {
-      throw new Error(`Lane ${String(lane.id)} lacks process start authority.`);
-    }
-    if (hasConfirmationAction(authority) && !contract.confirmationRef) {
-      throw new Error(`Lane ${String(lane.id)} requires a confirmation reference.`);
-    }
-    return { ...lane, authority };
-  });
-  return Object.freeze({ ...contract, lanes });
 }
 
 function serializeStateStore(root) {
@@ -290,7 +255,9 @@ export function createControlPlane(options) {
       }
       if (method === "start") {
         options.onActivity?.();
-        const contract = validateStartContract(params, options.workspacePath);
+        const contract = validateStartContract(params, {
+          expectedWorkspacePath: options.workspacePath
+        });
         const owner = await ensureScheduler(contract.limits);
         const admissions = contract.lanes.map((lane) => owner.enqueue({
           ...lane,

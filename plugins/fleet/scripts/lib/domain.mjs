@@ -20,7 +20,7 @@ export const TERMINAL_STATUSES = Object.freeze([
 
 const LANE_STATUS_SET = new Set(LANE_STATUSES);
 const TERMINAL_STATUS_SET = new Set(TERMINAL_STATUSES);
-const LANE_ROLES = new Set([
+export const LANE_ROLES = Object.freeze([
   "investigator",
   "current-web-researcher",
   "planner",
@@ -30,6 +30,7 @@ const LANE_ROLES = new Set([
   "integrator",
   "independent-verifier"
 ]);
+const LANE_ROLE_SET = new Set(LANE_ROLES);
 
 const TRANSITIONS = Object.freeze({
   queued: new Set(["running", "blocked", "failed", "cancelled"]),
@@ -43,7 +44,7 @@ const TRANSITIONS = Object.freeze({
 });
 
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
-const LANE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+export const LANE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const WORKSPACE_KEY = /^[a-f0-9]{32}$/;
 
 function assertPlainObject(value, label) {
@@ -106,10 +107,10 @@ export function isTerminalStatus(status) {
 export function createLane(input) {
   assertPlainObject(input, "Lane contract");
 
-  if (!LANE_ID.test(input.id ?? "")) {
+  if (!LANE_ID_PATTERN.test(input.id ?? "")) {
     throw new TypeError("Lane id must be 1-64 URL-safe characters.");
   }
-  if (!LANE_ROLES.has(input.role)) {
+  if (!LANE_ROLE_SET.has(input.role)) {
     throw new TypeError(`Unknown lane role: ${String(input.role)}.`);
   }
   assertBoundedText(input.label, "Lane label", 120);

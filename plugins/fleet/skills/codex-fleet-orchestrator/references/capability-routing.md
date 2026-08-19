@@ -36,6 +36,7 @@ Only `smoke_passed` proves operational reach. A parent-Claude smoke does not pro
 | Browser submission | single browser operator | inspect smoke + mutation confirmation | stop |
 | Database read | read-only query lane | intended database identity + harmless query | explicit alternative or stop |
 | Image/visual inspection | visual-capable lane/tool | one non-sensitive fixture | explicit parent fallback or stop |
+| Image generation or edit | Codex built-in `$imagegen` (GPT Image 2) | explicit confirmation + lane-local generated artifact | explicit parent fallback or stop |
 | External provider | dedicated operator | provider/tenant identity + sandbox-safe status | stop unless separately authorized |
 
 ## Fallback rules
@@ -47,3 +48,19 @@ into a Codex capability.
 
 Re-run discovery when the runtime restarts, configuration changes, auth changes, a plugin updates, the
 target account changes, or the prior smoke is stale for the task's risk.
+
+## GPT Image 2 lanes
+
+For image generation or editing, the Codex built-in `$imagegen` route is preferred. It uses GPT Image
+2 through the user's Codex environment; do not silently substitute an API-key script, another image
+provider, or a parent-Claude image tool. Generation is a metered, artifact-producing action, so it is
+not a non-mutating smoke: require explicit confirmation and declare `image.generate` or `image.edit`
+in the authority contract. Editing also requires the exact source image path and must preserve the
+original unless replacement was explicitly approved.
+
+The lane prompt must name `$imagegen`, the intended visual outcome, aspect ratio or dimensions,
+composition, style, brand constraints, required source images, exclusions, output filename, and visual
+QA criteria. Built-in output may first appear under the Codex `generated_images` directory. Copy the
+selected result into a new path inside the approved workspace, verify that the file exists and has the
+expected type and dimensions, and return the project-relative path as evidence. Never claim a visual
+is ready from prompt text alone.

@@ -390,6 +390,40 @@ test("unknown external outcomes block retry until reconciliation evidence exists
   assert.doesNotMatch(JSON.stringify(store.writes), /Run send-original/);
 });
 
+test("interrupted mutable capability lanes become external unknown outcomes", () => {
+  const cases = [
+    { id: "image-interrupted", image: { generate: true, edit: false } },
+    { id: "browser-interrupted", browser: { inspect: true, mutate: true } },
+    { id: "database-interrupted", database: { read: true, write: true } }
+  ];
+
+  for (const { id, ...grants } of cases) {
+    const recovered = createScheduler({
+      runtime: recordingRuntime(),
+      store: memoryStore(),
+      limits: { staggerMs: 0 },
+      clock: deterministicClock(),
+      initialRecords: [{
+        ...writer(id, "mutable-surface", {
+          authority: {
+            sandbox: "workspace-write",
+            network: "off",
+            process: { start: true, stopOwned: true },
+            ...grants
+          }
+        }),
+        status: "running",
+        phase: "running",
+        enqueuedAt: "2026-08-19T10:00:00.000Z",
+        startedAt: "2026-08-19T10:00:01.000Z"
+      }]
+    }).snapshot().history[0];
+
+    assert.equal(recovered.externalEffect, true, id);
+    assert.equal(recovered.status, "outcome_unknown", id);
+  }
+});
+
 test("state persistence failure rolls back admission before Codex starts", async () => {
   const runtime = recordingRuntime();
   let writeCount = 0;

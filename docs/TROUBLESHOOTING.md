@@ -49,6 +49,19 @@ Fleet cancels only an owned Codex turn or a process whose PID and process-start 
 match. A denial protects a process that may now belong to something else. Refresh status and let a
 finished process reconcile naturally.
 
+If doctor reports `ownership-mismatch`, Fleet did not terminate the process. The report includes the
+recorded PID, a safe identity comparison, and the next step without guessing which application owns it.
+Re-run doctor once; if the mismatch repeats, inspect or close that exact process through normal OS or app
+controls. Do not kill processes broadly by executable name.
+
+## Fleet keys appear to do nothing
+
+Claude Code's `↓ to manage` hint controls Claude background agents. Press `Ctrl+G` to enter Fleet
+Console, then use `↑`/`↓` or `j`/`k` to select lanes. With only one lane, Fleet reports that the selection
+cannot change. `Tab`, `Enter`, and `?` display the focused panel in brackets. `p` pauses or resumes KITE
+and shows an explicit notice; completed lanes may move while awaiting verification, while verified,
+blocked, failed, and unknown states remain locked.
+
 ## Status shows no lanes
 
 Status is workspace-scoped. Confirm the `--workspace` path and check the platform data directory.

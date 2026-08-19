@@ -6,7 +6,8 @@ import { buildViewModel, renderScreen } from "./tui-render.mjs";
 import { withTerminalSession } from "./tui-session.mjs";
 
 const PANELS = Object.freeze(["lanes", "detail", "evidence", "authority", "controls"]);
-const ACTIVE_STATUSES = new Set(["queued", "running"]);
+const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
+const CANCELLABLE_STATUSES = new Set(["queued", "starting", "running"]);
 const MAX_FILTER_LENGTH = 64;
 const MAX_COMPOSER_LENGTH = 4_096;
 export const CONSOLE_TICK_MS = 250;
@@ -59,7 +60,7 @@ function safeTerminal(value = {}) {
 }
 
 function selectedFormationFrame(status, tick) {
-  if (ACTIVE_STATUSES.has(status)) return tick % 4;
+  if (MOTION_STATUSES.has(status)) return tick % 4;
   if (status === "blocked") return 3;
   if (status === "failed" || status === "outcome_unknown") return 0;
   return 2;
@@ -74,7 +75,7 @@ function boundedStatus(value, width) {
 function decorateFooter(screen, state, columns) {
   let message = null;
   if (state.composer) {
-    message = `FOLLOW-UP / ${state.composer.laneId} · ${state.composer.value || "type a message"} · Enter send · Esc discard`;
+    message = `FOLLOW-UP / ${state.composer.laneId} · EXISTING CODEX THREAD · ${state.composer.value || "type a message"} · Enter send · Esc discard`;
   } else if (state.confirmation) {
     message = `[CONFIRM] cancel ${state.confirmation.laneId} · C confirm · Q return`;
   } else if (state.filterEditing) {
@@ -182,7 +183,9 @@ export function createConsoleController(options = {}) {
     }
     try {
       await runtime[method](lane, ...args);
-      setNotice(`${method}-requested · ${lane.id}`);
+      setNotice(method === "followUp"
+        ? `FOLLOW-UP SENT · ${lane.id} · EXISTING CODEX THREAD`
+        : `${method}-requested · ${lane.id}`);
       return true;
     } catch (error) {
       setNotice(actionFailure(error));
@@ -261,7 +264,7 @@ export function createConsoleController(options = {}) {
           setNotice("state-read-failed");
         }
       }
-      if (ui.motion && ACTIVE_STATUSES.has(selectedLane()?.status)) ui.frame += 1;
+      if (ui.motion && MOTION_STATUSES.has(selectedLane()?.status)) ui.frame += 1;
     } else if (event.type === "filter") {
       ui.filterEditing = true;
       ui.notice = null;
@@ -284,10 +287,10 @@ export function createConsoleController(options = {}) {
       setNotice("FILTER CLEARED");
     } else if (event.type === "help") {
       ui.panelIndex = PANELS.indexOf("controls");
-      ui.notice = null;
+      setNotice("PANEL CONTROLS · 5/5");
     } else if (event.type === "activate") {
       ui.panelIndex = PANELS.indexOf("detail");
-      ui.notice = null;
+      setNotice("PANEL DETAIL · 2/5");
     } else if (event.type === "edit") {
       if (!draftPath) setNotice("draft-path-not-provided");
       else if (typeof spawnEditor !== "function") setNotice("original-editor-unavailable");
@@ -324,7 +327,9 @@ export function createConsoleController(options = {}) {
       setNotice("FOLLOW-UP DISCARDED");
     } else if (event.type === "cancel") {
       const lane = selectedLane();
-      if (lane) {
+      if (lane && !CANCELLABLE_STATUSES.has(lane.status)) {
+        setNotice(`${String(lane.status).toUpperCase()} LANE · NOTHING TO CANCEL`);
+      } else if (lane) {
         ui.confirmation = {
           action: "cancel",
           laneId: lane.id,
@@ -345,9 +350,21 @@ export function createConsoleController(options = {}) {
       terminal = safeTerminal(event);
     } else if (event.type === "invalidInput") {
       setNotice(event.reason);
+    } else if (event.type === "move") {
+      if (ui.laneCount <= 1) {
+        setNotice(`ONLY ${ui.laneCount} LANE · selection unchanged`);
+      } else {
+        ui = { ...ui, ...reduceInput(ui, event) };
+        ui.notice = null;
+      }
+    } else if (event.type === "cyclePanel") {
+      ui = { ...ui, ...reduceInput(ui, event) };
+      setNotice(`PANEL ${PANELS[ui.panelIndex].toUpperCase()} · ${ui.panelIndex + 1}/${PANELS.length}`);
+    } else if (event.type === "toggleMotion") {
+      ui = { ...ui, ...reduceInput(ui, event) };
+      setNotice(ui.motion ? "KITE MOTION RESUMED" : "KITE MOTION PAUSED");
     } else {
       ui = { ...ui, ...reduceInput(ui, event) };
-      if (["move", "cyclePanel", "toggleMotion"].includes(event.type)) ui.notice = null;
     }
     await renderCurrent();
     return {

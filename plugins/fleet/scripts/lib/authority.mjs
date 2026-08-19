@@ -1,7 +1,10 @@
 const CONFIRMATION_ACTIONS = new Set([
+  "filesystem.write",
   "browser.submit",
   "process.stop",
   "database.write",
+  "image.generate",
+  "image.edit",
   "send.message",
   "payment.execute",
   "deploy.production",
@@ -61,6 +64,26 @@ export function requiresConfirmation(action) {
   return CONFIRMATION_ACTIONS.has(action);
 }
 
+export function requiredAdmissionConfirmationActions(authorityInput) {
+  const authority = normalizeAuthority(authorityInput);
+  const actions = [];
+  if (authority.sandbox === "workspace-write") actions.push("filesystem.write");
+  if (authority.browser.mutate) actions.push("browser.submit");
+  if (authority.database.write) actions.push("database.write");
+  if (authority.image.generate) actions.push("image.generate");
+  if (authority.image.edit) actions.push("image.edit");
+  const externalActions = {
+    send: "send.message",
+    payment: "payment.execute",
+    deploy: "deploy.production",
+    delete: "delete.resource"
+  };
+  for (const [capability, action] of Object.entries(externalActions)) {
+    if (authority.externalEffects[capability]) actions.push(action);
+  }
+  return Object.freeze(actions);
+}
+
 export function normalizeAuthority(input) {
   assertObject(input, "Authority");
 
@@ -80,6 +103,7 @@ export function normalizeAuthority(input) {
     browser: normalizeFlags(input.browser, "Authority browser", ["inspect", "mutate"]),
     process: normalizeFlags(input.process, "Authority process", ["start", "stopOwned"]),
     database: normalizeFlags(input.database, "Authority database", ["read", "write"]),
+    image: normalizeFlags(input.image, "Authority image", ["generate", "edit"]),
     externalEffects: normalizeFlags(input.externalEffects, "Authority externalEffects", [
       "send",
       "payment",
@@ -129,6 +153,14 @@ export function authorizeAction(authorityInput, action, context = {}) {
       return authority.database.write
         ? decision(true, "database-write-authorized", action)
         : decision(false, "database-write-not-authorized", action);
+    case "image.generate":
+      return authority.image.generate
+        ? decision(true, "image-generation-authorized", action)
+        : decision(false, "image-generation-not-authorized", action);
+    case "image.edit":
+      return authority.image.edit
+        ? decision(true, "image-edit-authorized", action)
+        : decision(false, "image-edit-not-authorized", action);
     case "send.message":
       return authority.externalEffects.send
         ? decision(true, "message-send-authorized", action)

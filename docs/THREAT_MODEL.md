@@ -51,9 +51,9 @@ signal. Viewing starts no model operation.
 
 ### Fleet to external systems
 
-Network, browser mutation, send, payment, deployment and deletion are separate authorities. A
-confirmation reference is bound to the proposed effect. Timeout after a possible effect produces
-`OUTCOME_UNKNOWN`, which blocks blind retry.
+Network, browser mutation, GPT Image generation/editing, send, payment, deployment and deletion are
+separate authorities. A confirmation reference is bound to the proposed effect. Timeout after a
+possible effect produces `OUTCOME_UNKNOWN`, which blocks blind retry.
 
 ## Primary threats and controls
 
@@ -64,6 +64,7 @@ confirmation reference is bound to the proposed effect. Timeout after a possible
 | Cross-workspace disclosure | Hashed workspace keys, owned paths, redaction | Evidence files intentionally referenced by a lane remain governed by workspace permissions |
 | PID reuse kills another process | PID plus process-start identity | Platform process APIs can fail, in which case cancellation denies |
 | Duplicate external mutation | Exact confirmation and unknown-outcome reconciliation | Providers without idempotency still require operator reconciliation |
+| Unapproved or substituted image generation | Explicit image authority and `$imagegen` route contract | Built-in image availability still requires a lane-local smoke |
 | Terminal escape injection | Bounded sanitized display and pure renderer | Terminal emulator vulnerabilities are outside Fleet |
 | Settings loss | Structural merge, backup, ownership manifest and drift-aware uninstall | Manual edits during setup require a fresh preview |
 | Secret leakage in support output | Preview, redaction rules and bounded export | Novel credential formats may require new rules |

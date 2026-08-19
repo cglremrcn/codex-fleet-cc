@@ -14,6 +14,9 @@ Press `Ctrl+G` to temporarily hand the same terminal to Fleet Console. Press `q`
 to the same Claude Code session, with the draft prompt left intact. Opening or viewing the console
 does not create a Claude or Codex model turn.
 
+Claude Code's `↓ to manage` hint belongs to Claude's own background-agent UI; it does not open or
+navigate Fleet. Use `Ctrl+G` for Fleet, then the arrow keys or `j`/`k` inside the console.
+
 > **Development preview:** the runtime, console, reversible setup, terminal handoff, live follow-up
 > and exact owned-lane cancellation are implemented. The release gate passes on Windows, macOS
 > Intel and Apple Silicon, Linux x64 and ARM64 with Node 22 and 24. The project is installable from
@@ -40,7 +43,7 @@ explicit.
 ```text
 Claude Code
   ├─ orchestration skill     decides lane shape, authority and evidence contract
-  ├─ /fleet:* commands       setup, doctor, status, result, export and uninstall
+  ├─ /fleet:* commands       setup, doctor, status, result, follow-up and recovery
   └─ Ctrl+G handoff ──────────────────────────────────────┐
                                                          │ same terminal
 Fleet Console                                            │
@@ -65,8 +68,9 @@ The interface is intentionally closer to an operator terminal than an AI chat da
 near-black surfaces, dense alignment, restrained cyan and amber, green reserved for verified work,
 and no ambient decorative motion. Its one living signature is KITE: a small terminal-native fleet
 formation driven by the selected lane's real status. Active work assembles and releases the
-formation at a capped four frames per second; verified work locks it; blocked and failed work use
-distinct static postures. Wide terminals show lanes, selected evidence, and authority together.
+formation at a capped four frames per second; completed work keeps a subtle awaiting-verification
+motion; verified work locks it; blocked and failed work use distinct static postures. Wide terminals
+show lanes, selected evidence, controls, and authority with visible panel focus.
 Compact and narrow layouts progressively collapse KITE into a small signal sigil without hiding
 essential controls.
 
@@ -106,11 +110,22 @@ contract can independently permit or deny:
 - browser and account access;
 - local process execution;
 - database mutation;
+- GPT Image 2 generation and editing;
 - external send, payment, deployment, deletion, and retry.
 
 The default is read-only and fail-closed. Mutable browser profiles, production tenants, and shared
 checkouts are single-operator resources unless the contract explicitly isolates them. Cancellation
 targets only the exact Codex thread and turn owned by the lane.
+
+Image work uses explicit `image.generate` and `image.edit` grants. An approved visual lane routes
+through Codex's built-in `$imagegen` capability (GPT Image 2), preserves edit sources unless replacement
+was approved, copies the selected output into the project workspace, and returns the verified artifact
+path. Fleet does not silently switch to an API-key script or another image provider.
+
+Claude can also inspect status and results, then continue a completed lane in the same Codex task/thread.
+If a worker merely asks for a redundant “say continue” approval even though the original contract already
+granted the required authority, Claude sends a bounded follow-up and requires the actual work and evidence.
+New scope, new authority, external effects, or a genuine user choice still stop for confirmation.
 
 ## Privacy and resource behavior
 
@@ -227,6 +242,7 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 /fleet:status     show a compact evidence-oriented status
 /fleet:open       show the configured Fleet shortcut
 /fleet:result     inspect a sanitized lane result
+/fleet:follow-up  continue a completed lane on its existing Codex thread
 /fleet:cancel     request confirmed cancellation
 /fleet:export     preview and create a redacted support bundle
 /fleet:uninstall restore only settings owned by Fleet

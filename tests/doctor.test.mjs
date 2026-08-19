@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { runDoctor } from "../plugins/fleet/scripts/lib/doctor.mjs";
@@ -47,4 +49,60 @@ test("doctor never mutates an account and reports probe failures as unknown", as
   assert.equal(mutations, 0);
   assert.equal(report.checks.find((check) => check.id === "codex-auth").state, "unknown");
   assert.match(report.checks.find((check) => check.id === "codex-auth").detail, /unavailable/);
+});
+
+test("doctor preserves safe structured broker ownership diagnostics", async () => {
+  const refusal = new Error("Refused to stop an unverified app-server process.");
+  refusal.code = "FLEET_BROKER_OWNERSHIP_REFUSED";
+  refusal.diagnostic = {
+    reasonCode: "ownership-mismatch",
+    action: "not_stopped",
+    pid: 4242,
+    recordedIdentityPresent: true,
+    currentIdentity: "different",
+    remediation: "Re-run doctor; inspect the process through normal OS or app controls."
+  };
+  const report = await runDoctor({
+    commandProbe: async () => ({ available: true }),
+    authProbe: async () => ({ configured: true }),
+    brokerProbe: async () => { throw refusal; },
+    stateProbe: async () => ({ smokePassed: true }),
+    editorProbe: async () => ({ configured: true }),
+    terminalProbe: async () => ({ smokePassed: true })
+  });
+
+  const broker = report.checks.find((check) => check.id === "broker");
+  assert.equal(broker.state, "unknown");
+  assert.deepEqual(broker.diagnostic, refusal.diagnostic);
+  assert.equal(report.overall, "blocked");
+});
+
+test("timed-out command probes release pipes even when close never arrives", async () => {
+  const doctorModule = await import("../plugins/fleet/scripts/lib/doctor.mjs");
+  assert.equal(typeof doctorModule.probeCommand, "function");
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  let kills = 0;
+  let unrefs = 0;
+  child.kill = () => {
+    kills += 1;
+    return true;
+  };
+  child.unref = () => {
+    unrefs += 1;
+  };
+
+  const result = await doctorModule.probeCommand("hanging-probe", ["--version"], {
+    timeoutMs: 5,
+    killGraceMs: 5,
+    spawnProcess: () => child
+  });
+
+  assert.equal(result.unknown, true);
+  assert.match(result.detail, /timed out/iu);
+  assert.equal(kills, 1);
+  assert.equal(unrefs, 1);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
 });

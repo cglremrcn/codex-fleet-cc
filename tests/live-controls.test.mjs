@@ -123,6 +123,17 @@ test("a second client follows up a completed supervisor-owned lane", async (t) =
   assert.notEqual(second.turnId, first.turnId);
 });
 
+test("supervisor rejects database write admission without a confirmation reference", async (t) => {
+  const scope = await fixture(t, "slow-task");
+  const contract = startContract(scope, "database-write-without-confirmation");
+  contract.lanes[0].authority.database = { read: true, write: true };
+
+  await assert.rejects(
+    request(scope, "start", contract),
+    /database\.write|confirmation reference/iu
+  );
+});
+
 test("a fresh supervisor reconciles an interrupted read-only lane", async (t) => {
   const scope = await fixture(t, "interruptible-slow-task");
   await request(scope, "start", startContract(scope, "crash-recovery"));

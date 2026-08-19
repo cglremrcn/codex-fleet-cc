@@ -81,7 +81,11 @@ function boundedIdentifier(value, label) {
 }
 
 function hasExternalEffect(authority) {
-  return Object.values(authority.externalEffects).some(Boolean);
+  return authority.browser.mutate
+    || authority.database.write
+    || authority.image.generate
+    || authority.image.edit
+    || Object.values(authority.externalEffects).some(Boolean);
 }
 
 function publicRecord(item, status = item.status) {

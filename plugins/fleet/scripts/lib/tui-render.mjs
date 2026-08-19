@@ -2,6 +2,7 @@ import { STATUS_PRESENTATION, createTheme } from "./theme.mjs";
 
 const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
 const PANELS = new Set(["lanes", "detail", "evidence", "authority", "controls"]);
+const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
 const segmenter = typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter("en", { granularity: "grapheme" })
   : null;
@@ -130,6 +131,7 @@ function normalizeAuthority(value = {}) {
   const browser = value.browser ?? {};
   const processAuthority = value.process ?? {};
   const database = value.database ?? {};
+  const imageAuthority = value.image ?? {};
   const external = value.externalEffects ?? {};
   return Object.freeze({
     sandbox: value.sandbox === "workspace-write" ? "workspace-write" : "read-only",
@@ -140,6 +142,10 @@ function normalizeAuthority(value = {}) {
       stopOwned: processAuthority.stopOwned === true
     }),
     database: Object.freeze({ read: database.read === true, write: database.write === true }),
+    image: Object.freeze({
+      generate: imageAuthority.generate === true,
+      edit: imageAuthority.edit === true
+    }),
     externalEffects: Object.freeze({
       send: external.send === true,
       payment: external.payment === true,
@@ -302,6 +308,7 @@ function authorityLines(lane, width) {
     `BROWSER   inspect ${grant(value.browser.inspect)}  mutate ${grant(value.browser.mutate)}`,
     `PROCESS   start ${grant(value.process.start)}  stop-owned ${grant(value.process.stopOwned)}`,
     `DATABASE  read ${grant(value.database.read)}  write ${grant(value.database.write)}`,
+    `IMAGE     generate ${grant(value.image.generate)}  edit ${grant(value.image.edit)}`,
     `SEND      ${grant(value.externalEffects.send)}`,
     `PAYMENT   ${grant(value.externalEffects.payment)}`,
     `DEPLOY    ${grant(value.externalEffects.deploy)}`,
@@ -409,11 +416,16 @@ function formationFrame(preferences, length) {
   return moving ? Math.abs(requestedFrame) % length : 2;
 }
 
+function postureFrame(status, preferences, length) {
+  if (!MOTION_STATUSES.has(status)) return 2 % length;
+  return formationFrame(preferences, length);
+}
+
 export function renderFleetMark(view, preferences = {}) {
   const useUnicode = preferences.unicode !== false;
   const orbits = useUnicode ? KITE_ORBITS : KITE_ASCII_ORBITS;
-  const frame = formationFrame(preferences, orbits.length);
   const status = view?.selectedLane?.status ?? "queued";
+  const frame = postureFrame(status, preferences, orbits.length);
   const [leftEye, rightEye, mouth, core] = kiteFeatures(status, frame, useUnicode);
   const body = useUnicode
     ? [
@@ -434,8 +446,8 @@ export function renderFleetMark(view, preferences = {}) {
 
 function renderCompactMark(view, preferences = {}) {
   const useUnicode = preferences.unicode !== false;
-  const frame = formationFrame(preferences, 4);
   const status = view?.selectedLane?.status ?? "queued";
+  const frame = postureFrame(status, preferences, 4);
   const [leftEye, rightEye, , core] = kiteFeatures(status, frame, useUnicode);
   return useUnicode
     ? `╭▰ ${leftEye} ${rightEye} ▰╮${core}`
@@ -457,8 +469,8 @@ function wideMasthead(view, columns, preferences) {
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
   const selected = view.selectedLane;
   const motion = preferences.motion === false || preferences.reducedMotion === true
-    ? "STILL"
-    : "LIVE";
+    ? "PAUSED"
+    : "ENABLED";
   return [
     placeRight(
       `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
@@ -513,6 +525,20 @@ function divider(widths, border) {
     .join(`${border.horizontal}${border.horizontal}${border.horizontal}`);
 }
 
+function panelLabel(label, panel, selectedPanel) {
+  return panel === selectedPanel ? `[${label}]` : label;
+}
+
+function panelBody(view, panel, width, useUnicode) {
+  switch (panel) {
+    case "detail": return detailLines(view.selectedLane, width);
+    case "evidence": return evidenceLines(view.selectedLane, width);
+    case "authority": return authorityLines(view.selectedLane, width);
+    case "controls": return controlsLines(width);
+    default: return laneLines(view, width, useUnicode);
+  }
+}
+
 function renderWide(view, terminal, border, useUnicode, preferences) {
   const separators = 6;
   const available = terminal.columns - separators;
@@ -521,18 +547,22 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
   const detailWidth = available - laneWidth - authorityWidth;
   const widths = [laneWidth, detailWidth, authorityWidth];
   const bodyHeight = Math.max(4, terminal.rows - 10);
+  const middlePanel = ["evidence", "controls"].includes(view.panel) ? view.panel : "detail";
+  const middleLabel = middlePanel === "detail"
+    ? `${panelLabel("DETAIL", "detail", view.panel)} / ${view.selectedLane?.id ?? "NONE"}`
+    : panelLabel(middlePanel.toUpperCase(), middlePanel, view.panel);
   return [
     ...wideMasthead(view, terminal.columns, preferences),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
-      `LANES  ${view.lanes.length}`,
-      `SELECTED / ${view.selectedLane?.id ?? "NONE"}`,
-      "AUTHORITY"
+      `${panelLabel("LANES", "lanes", view.panel)}  ${view.lanes.length}`,
+      middleLabel,
+      panelLabel("AUTHORITY", "authority", view.panel)
     ], widths, border),
     divider(widths, border),
     ...joinPanels([
       laneLines(view, laneWidth, useUnicode),
-      detailLines(view.selectedLane, detailWidth),
+      panelBody(view, middlePanel, detailWidth, useUnicode),
       authorityLines(view.selectedLane, authorityWidth)
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
@@ -549,10 +579,9 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
   const detailWidth = terminal.columns - separatorWidth - laneWidth;
   const widths = [laneWidth, detailWidth];
   const bodyHeight = Math.max(4, terminal.rows - 7);
-  const rightTitle = view.panel === "authority" ? "AUTHORITY" : "LANE DETAIL";
-  const rightLines = view.panel === "authority"
-    ? authorityLines(view.selectedLane, detailWidth)
-    : detailLines(view.selectedLane, detailWidth);
+  const rightPanel = view.panel === "lanes" ? "detail" : view.panel;
+  const rightTitle = rightPanel.toUpperCase();
+  const rightLines = panelBody(view, rightPanel, detailWidth, useUnicode);
   const mark = renderCompactMark(view, preferences);
   const runtime = `RUNTIME ${view.runtime.health.toUpperCase()}`;
   return [
@@ -561,9 +590,14 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
       mark,
       terminal.columns
     ),
-    `${summary(view)}  ${runtime}`,
+    `${summary(view)}  ${runtime}  MOTION ${
+      preferences.motion === false || preferences.reducedMotion === true ? "PAUSED" : "ENABLED"
+    }`,
     signalLine(view, terminal.columns, border, useUnicode),
-    sectionHeader([`LANES  ${view.lanes.length}`, rightTitle], widths, border),
+    sectionHeader([
+      `${panelLabel("LANES", "lanes", view.panel)}  ${view.lanes.length}`,
+      panelLabel(rightTitle, rightPanel, view.panel)
+    ], widths, border),
     divider(widths, border),
     ...joinPanels([
       laneLines(view, laneWidth, useUnicode),

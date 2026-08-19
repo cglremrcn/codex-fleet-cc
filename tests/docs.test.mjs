@@ -28,3 +28,23 @@ test("README marks unfinished installation and platform support truthfully", asy
   assert.match(readme, /macOS[^\n]*(CI|release gate)/i);
   assert.match(readme, /Linux[^\n]*(CI|release gate)/i);
 });
+
+test("README explains Fleet navigation, same-task continuation, and GPT Image 2 lanes", async () => {
+  const readme = await read("README.md");
+
+  assert.match(readme, /↓ to manage.*Claude/is);
+  assert.match(readme, /Ctrl\+G.*Fleet/is);
+  assert.match(readme, /same Codex (task|thread)/i);
+  assert.match(readme, /redundant.*approval/is);
+  assert.match(readme, /GPT Image 2/i);
+  assert.match(readme, /image\.generate.*image\.edit/is);
+});
+
+test("troubleshooting keeps broker ownership refusals safe and actionable", async () => {
+  const guide = await read("docs/TROUBLESHOOTING.md");
+
+  assert.match(guide, /ownership-mismatch/i);
+  assert.match(guide, /Fleet did not terminate/i);
+  assert.match(guide, /PID/i);
+  assert.match(guide, /do not.*kill.*name/is);
+});

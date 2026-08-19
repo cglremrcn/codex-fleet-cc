@@ -4,7 +4,6 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { normalizeAuthority } from "./authority.mjs";
 import { isTerminalStatus } from "./domain.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
@@ -22,6 +21,10 @@ import {
   ensureSupervisor,
   requestSupervisor
 } from "./supervisor-protocol.mjs";
+import {
+  StartContractValidationError,
+  validateStartContract
+} from "./start-contract.mjs";
 
 export const EXIT_CODES = Object.freeze({
   success: 0,
@@ -63,42 +66,6 @@ const COMMAND_FLAGS = Object.freeze({
   export: new Set(["--json", "--workspace", "--output", "--confirm-token"]),
   setup: new Set(["--json", "--workspace", "--confirm-token"]),
   uninstall: new Set(["--json", "--workspace", "--confirm-token"])
-});
-const ROOT_START_PROPERTIES = new Set([
-  "schemaVersion",
-  "workspacePath",
-  "lanes",
-  "limits",
-  "confirmationRef"
-]);
-const LANE_PROPERTIES = new Set([
-  "id",
-  "role",
-  "label",
-  "model",
-  "effort",
-  "prompt",
-  "ephemeral",
-  "authority",
-  "checkoutKey",
-  "priority",
-  "retryOf",
-  "reconciliationRef"
-]);
-const AUTHORITY_PROPERTIES = new Set([
-  "sandbox",
-  "network",
-  "browser",
-  "process",
-  "database",
-  "externalEffects",
-  "retry"
-]);
-const AUTHORITY_NESTED_PROPERTIES = Object.freeze({
-  browser: new Set(["inspect", "mutate"]),
-  process: new Set(["start", "stopOwned"]),
-  database: new Set(["read", "write"]),
-  externalEffects: new Set(["send", "payment", "deploy", "delete"])
 });
 
 class CliError extends Error {
@@ -252,106 +219,6 @@ async function readContract(parsed, io) {
   } catch (error) {
     throw new InvalidInputError(`Contract must contain one valid JSON object: ${error.message}`);
   }
-}
-
-function validateAuthorityShape(authority) {
-  assertPlainObject(authority, "Lane authority");
-  rejectUnknownProperties(authority, AUTHORITY_PROPERTIES, "authority");
-  for (const [name, allowed] of Object.entries(AUTHORITY_NESTED_PROPERTIES)) {
-    if (authority[name] === undefined) {
-      continue;
-    }
-    assertPlainObject(authority[name], `authority.${name}`);
-    rejectUnknownProperties(authority[name], allowed, `authority.${name}`);
-  }
-  try {
-    return normalizeAuthority(authority);
-  } catch (error) {
-    throw new InvalidInputError(error.message);
-  }
-}
-
-function validateLimits(limits) {
-  if (limits === undefined) {
-    return undefined;
-  }
-  assertPlainObject(limits, "Fleet limits");
-  rejectUnknownProperties(
-    limits,
-    new Set(["maxActive", "maxWritersPerCheckout", "staggerMs"]),
-    "limits"
-  );
-  return limits;
-}
-
-function requiredConfirmationActions(authority) {
-  const actions = [];
-  if (authority.sandbox === "workspace-write") {
-    actions.push("filesystem.write");
-  }
-  if (authority.browser.mutate) {
-    actions.push("browser.submit");
-  }
-  const externalMapping = {
-    send: "send.message",
-    payment: "payment.execute",
-    deploy: "deploy.production",
-    delete: "delete.resource"
-  };
-  for (const [capability, action] of Object.entries(externalMapping)) {
-    if (authority.externalEffects[capability]) {
-      actions.push(action);
-    }
-  }
-  return actions;
-}
-
-function validateStartContract(value) {
-  assertPlainObject(value, "Start contract");
-  rejectUnknownProperties(value, ROOT_START_PROPERTIES, "contract");
-  if (value.schemaVersion !== 1) {
-    throw new InvalidInputError("Start contract schemaVersion must be 1.");
-  }
-  const workspacePath = path.resolve(
-    boundedText(value.workspacePath, "workspacePath", 4096)
-  );
-  if (!Array.isArray(value.lanes) || value.lanes.length === 0 || value.lanes.length > 256) {
-    throw new InvalidInputError("Start contract must contain between 1 and 256 lanes.");
-  }
-  const confirmationRef = value.confirmationRef === undefined
-    ? null
-    : boundedText(value.confirmationRef, "confirmationRef", 512);
-
-  const lanes = value.lanes.map((lane, index) => {
-    assertPlainObject(lane, `Lane ${index + 1}`);
-    rejectUnknownProperties(lane, LANE_PROPERTIES, "lane");
-    boundedText(lane.prompt, `Lane ${index + 1} prompt`, MAX_CONTRACT_BYTES);
-    if (lane.ephemeral !== undefined && typeof lane.ephemeral !== "boolean") {
-      throw new InvalidInputError(`Lane ${index + 1} ephemeral must be a boolean.`);
-    }
-    const authority = validateAuthorityShape(lane.authority);
-    if (!authority.process.start) {
-      throw new AuthorityDeniedError(
-        `Lane ${lane.id ?? index + 1} lacks process start authority.`
-      );
-    }
-    const actions = requiredConfirmationActions(authority);
-    if (actions.length > 0 && !confirmationRef) {
-      throw new AuthorityDeniedError(
-        `Lane ${lane.id ?? index + 1} requires a confirmation reference for: `
-        + `${actions.join(", ")}.`
-      );
-    }
-    return { ...lane, authority };
-  });
-
-  return {
-    schemaVersion: 1,
-    workspacePath,
-    lanes,
-    limits: validateLimits(value.limits),
-    confirmationRef
-  };
 }
 
 function validateSimpleContract(value, command, confirmed) {
@@ -768,6 +635,15 @@ async function execute(parsed, io, dependencies) {
 
 function humanSummary(command, payload) {
   if (command === "doctor") {
+    const broker = payload.checks.find((check) => check.id === "broker");
+    if (broker?.diagnostic?.action === "not_stopped") {
+      return [
+        `Fleet doctor: ${payload.overall}.`,
+        `Broker PID ${String(broker.diagnostic.pid ?? "unknown")}: Fleet did not stop `
+          + `the process (${broker.diagnostic.reasonCode}).`,
+        broker.diagnostic.remediation
+      ].join("\n");
+    }
     return `Fleet doctor: ${payload.overall}.`;
   }
   if (command === "status") {
@@ -806,9 +682,13 @@ export async function runCli(argv, options = {}) {
     io.stdout(`${output}\n`);
     return result.exitCode;
   } catch (error) {
-    const exitCode = error instanceof CliError
-      ? error.exitCode
-      : EXIT_CODES.runtimeUnavailable;
+    const exitCode = error instanceof StartContractValidationError
+      ? error.category === "invalidInput"
+        ? EXIT_CODES.invalidInput
+        : EXIT_CODES.authorityDenied
+      : error instanceof CliError
+        ? error.exitCode
+        : EXIT_CODES.runtimeUnavailable;
     io.stderr(`${error.message}\n`);
     return exitCode;
   }

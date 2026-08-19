@@ -19,12 +19,15 @@ export const BROKER_PROTOCOL_VERSION = 1;
 const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_GRACEFUL_CLOSE_MS = 1_000;
 const WINDOWS_UNSAFE_BATCH_PATH = /[%!^&|<>\"]/;
+const OWNERSHIP_REMEDIATION =
+  "Re-run doctor; inspect the process through normal OS or app controls.";
 
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.1.2"
+  version: "0.1.3"
 });
 
 const CAPABILITIES = Object.freeze({
@@ -47,6 +50,31 @@ function safeProtocolName(value) {
 function safeProtocolKeys(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   return Object.keys(value).filter((key) => safeProtocolName(key)).sort().slice(0, 16);
+}
+
+function currentIdentityState(reason) {
+  if (reason === "ownership-mismatch") return "different";
+  if (reason === "permission-denied" || reason === "stop-failed") return "same";
+  if (reason === "not-running") return "missing";
+  return "unknown";
+}
+
+function ownershipRefusalError(record, reason) {
+  const pid = Number.isSafeInteger(record?.pid) && record.pid > 0 ? record.pid : null;
+  const error = new Error(
+    `Fleet did not stop app-server PID ${String(pid ?? "unknown")}: ${reason}.`
+  );
+  error.code = "FLEET_BROKER_OWNERSHIP_REFUSED";
+  error.diagnostic = Object.freeze({
+    reasonCode: reason,
+    action: "not_stopped",
+    pid,
+    recordedIdentityPresent: typeof record?.recordedStart === "string"
+      && record.recordedStart.length > 0,
+    currentIdentity: currentIdentityState(reason),
+    remediation: OWNERSHIP_REMEDIATION
+  });
+  return error;
 }
 
 export function summarizeProtocolMessage(message) {
@@ -346,34 +374,66 @@ class AppServerBroker {
   }
 
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
-      return;
-    }
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.lines?.close();
-    if (!this.exited && Number.isFinite(this.child?.pid)) {
-      const outcome = await this.stopOwnedProcessTree(this.ownedProcess, {
-        env: this.options.env,
-        cwd: this.options.cwd,
-        platform: process.platform
-      });
-      if (!outcome.cancelled && outcome.reason !== "not-running") {
-        throw new Error(`Refused to stop an unverified app-server process: ${outcome.reason}.`);
-      }
-    }
-    this.child?.stdin?.destroy();
+    this.closePromise = this.closeBroker();
+    return this.closePromise;
+  }
 
-    let exitTimeout;
+  async closeBroker() {
+    this.lines?.close();
+    this.child?.stdin?.end();
+    const gracefulExit = await this.waitForExit(
+      this.options.gracefulCloseMs ?? DEFAULT_GRACEFUL_CLOSE_MS
+    );
+    let refusal = null;
+    try {
+      if (!gracefulExit && !this.exited && Number.isFinite(this.child?.pid)) {
+        const outcome = await this.stopOwnedProcessTree(this.ownedProcess, {
+          env: this.options.env,
+          cwd: this.options.cwd,
+          platform: process.platform
+        });
+        if (!outcome.cancelled && outcome.reason !== "not-running") {
+          refusal = ownershipRefusalError(this.ownedProcess, outcome.reason);
+        }
+      }
+    } catch (error) {
+      refusal = error?.code === "FLEET_BROKER_OWNERSHIP_REFUSED"
+        ? error
+        : ownershipRefusalError(this.ownedProcess, "stop-failed");
+    } finally {
+      this.child?.stdin?.destroy();
+    }
+
+    if (refusal) {
+      this.child?.stdout?.destroy();
+      this.child?.stderr?.destroy();
+      this.child?.unref?.();
+      throw refusal;
+    }
+
+    const exited = gracefulExit || await this.waitForExit(5_000);
+    this.child?.stdout?.destroy();
+    this.child?.stderr?.destroy();
+    if (!exited) {
+      this.child?.unref?.();
+      throw new Error("Owned Codex app-server did not exit after termination.");
+    }
+  }
+
+  async waitForExit(timeoutMs) {
+    if (this.exited) return true;
+    let timeout;
     const exited = await Promise.race([
       this.exitPromise.then(() => true),
       new Promise((resolve) => {
-        exitTimeout = setTimeout(() => resolve(false), 5_000);
-        exitTimeout.unref?.();
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+        timeout.unref?.();
       })
     ]);
-    clearTimeout(exitTimeout);
-    if (!exited) throw new Error("Owned Codex app-server did not exit after termination.");
+    clearTimeout(timeout);
+    return exited;
   }
 }
 

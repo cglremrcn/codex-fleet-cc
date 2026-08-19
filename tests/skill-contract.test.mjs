@@ -62,6 +62,31 @@ test("lane contract requires bounded work, authority, evidence, and cleanup", as
   }
   assert.match(contract, /immutable/i);
   assert.match(contract, /prompt.*128 KiB/i);
+  assert.match(contract, /"confirmationRef": null/);
+  assert.match(contract, /"priority": "normal"/);
+  assert.match(contract, /"image": \{ "generate": false, "edit": false \}/);
+});
+
+test("orchestrator safely continues redundant approval gates in the same Codex task", async () => {
+  const skill = await read("SKILL.md");
+
+  assert.match(skill, /same Codex (task|thread)/i);
+  assert.match(skill, /redundant.*approval/is);
+  assert.match(skill, /already-granted authority/i);
+  assert.match(skill, /at most two.*follow-up/is);
+  assert.match(skill, /new (scope|authority|user choice).*stop/is);
+  assert.match(skill, /Ctrl\+G/i);
+});
+
+test("image lanes use Codex built-in GPT Image 2 routing and workspace artifacts", async () => {
+  const routing = await read("references/capability-routing.md");
+
+  assert.match(routing, /\$imagegen/);
+  assert.match(routing, /GPT Image 2/i);
+  assert.match(routing, /built-in.*preferred/is);
+  assert.match(routing, /generated_images/is);
+  assert.match(routing, /copy.*workspace/is);
+  assert.match(routing, /image\.generate.*image\.edit/is);
 });
 
 test("browser and external effects fail closed without silent substitution", async () => {

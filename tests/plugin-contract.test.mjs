@@ -15,6 +15,7 @@ const SKILLS = [
   "open",
   "cancel",
   "result",
+  "follow-up",
   "export",
   "uninstall"
 ];
@@ -151,9 +152,24 @@ test("Codex lane agent accepts one immutable contract and only calls Fleet CLI",
   assert.match(source, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/fleet\.mjs/);
   assert.match(source, /Do not invoke Codex directly/i);
   assert.match(source, /background admission/i);
+  assert.match(source, /start.*status.*result.*follow-up.*cancel/is);
+  assert.match(source, /same Codex thread/i);
+  assert.match(source, /already-granted authority/i);
+  assert.match(source, /Ctrl\+G/i);
   assert.match(source, /poll.*status.*result/is);
   assert.match(source, /complete.*verified.*blocked.*failed.*cancelled.*outcome_unknown/is);
   assert.doesNotMatch(source, /curl|Invoke-WebRequest|Start-Process/);
+});
+
+test("follow-up skill resumes one existing lane without widening authority", async () => {
+  const source = await read("plugins/fleet/skills/follow-up/SKILL.md");
+  const metadata = frontmatter(source);
+
+  assert.equal(metadata.name, "follow-up");
+  assert.match(source, /same Codex thread/i);
+  assert.match(source, /already-granted authority/i);
+  assert.match(source, /new (scope|authority).*stop/is);
+  assert.match(source, /fleet\.mjs" follow-up --stdin --json/i);
 });
 
 test("SessionStart hook reconciles status but never starts a lane", async () => {

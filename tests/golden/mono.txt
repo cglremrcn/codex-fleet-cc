@@ -1,7 +1,7 @@
 FLEET//OPS  codex-fleet-cc@main                                                           [= o o =]R
-01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY
+01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY  MOTION ENABLED
 > SIGNAL 02/04  console-build · RUNNING · renderer =================================================
-LANES  4                              | LANE DETAIL
+[LANES]  4                            | DETAIL
 ----------------------------------------------------------------------------------------------------
   01 C COMPLETE        runtime-audit  | Build the responsive operator console
      investigator · gpt-5.6-sol/high  |

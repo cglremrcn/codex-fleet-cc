@@ -11,8 +11,9 @@ recognizable in a terminal recording.
 Fleet Console now uses one motion system: KITE, an original terminal-native fleet navigator tied
 to the selected lane's real state. Its five-line silhouette combines an expressive face, wing-like
 signal rails, orbiting lane nodes, and a status core. Running work looks, blinks, and pulses at a
-capped four frames per second. Verified work smiles and locks into place. Blocked, failed, and
-unknown outcomes use distinct non-celebratory eyes, core, and posture. The compact layout reduces
+capped four frames per second. Completed work keeps a subtle orbit while awaiting independent
+verification; verified work smiles and locks into place. Blocked, failed, and unknown outcomes use
+distinct non-celebratory eyes, core, and posture. The compact layout reduces
 the same face and core to a recognizable signal sigil rather than introducing a second visual
 language.
 

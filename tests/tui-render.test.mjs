@@ -166,6 +166,39 @@ test("Fleet Formation moves only when motion is enabled", () => {
   assert.ok(movingA.every((line) => displayWidth(line) === 21));
 });
 
+test("complete awaits verification with motion while verified remains locked", () => {
+  const completeView = viewFixture({
+    selection: "runtime-audit",
+    snapshot: { lanes: [lane({ status: "complete" })] }
+  });
+  const verifiedView = viewFixture({
+    selection: "release-proof",
+    snapshot: { lanes: [lane({ id: "release-proof", status: "verified" })] }
+  });
+
+  assert.notDeepEqual(
+    renderFleetMark(completeView, { frame: 0, unicode: true }),
+    renderFleetMark(completeView, { frame: 1, unicode: true })
+  );
+  assert.deepEqual(
+    renderFleetMark(verifiedView, { frame: 0, unicode: true }),
+    renderFleetMark(verifiedView, { frame: 1, unicode: true })
+  );
+});
+
+test("wide and compact layouts render every focused panel visibly", () => {
+  for (const columns of [160, 100]) {
+    for (const panel of ["lanes", "detail", "evidence", "authority", "controls"]) {
+      const output = stripAnsi(renderScreen(
+        viewFixture({ panel }),
+        { columns, rows: 28 },
+        plainPreferences()
+      ));
+      assert.match(output, new RegExp(`\\[${panel.toUpperCase()}\\]`, "u"));
+    }
+  }
+});
+
 test("KITE has a recognizable face and truthful state posture", () => {
   const running = renderFleetMark(viewFixture(), { frame: 0, unicode: true });
   const verified = renderFleetMark(viewFixture({

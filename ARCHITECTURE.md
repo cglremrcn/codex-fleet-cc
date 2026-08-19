@@ -31,7 +31,8 @@ it exists only to verify the terminal handoff.
    evidence.
 2. Each lane receives an immutable contract: objective, exclusions, authority, capability
    evidence, deliverable, verification and cleanup.
-3. The CLI validates the contract before opening the runtime.
+3. The CLI and supervisor use one shared admission validator that returns every input and authority
+   issue before opening the runtime.
 4. The scheduler caps active lanes and serializes writers that share a checkout.
 5. The runtime adapter maps the stable Fleet operations to Codex app-server threads and turns.
 6. Sanitized lane metadata is written atomically outside the repository.
@@ -41,8 +42,8 @@ it exists only to verify the terminal handoff.
 ## Authority model
 
 Role names are descriptive. They grant nothing. Filesystem writes, network, browser inspection,
-browser mutation, process control, database access, send, payment, deployment and deletion are
-independent capabilities. Unknown capabilities deny by default.
+browser mutation, process control, database access, GPT Image generation/editing, send, payment,
+deployment and deletion are independent capabilities. Unknown capabilities deny by default.
 
 Operations with an external effect require confirmation bound to that exact action. If the effect
 may have happened but cannot be proven, the lane becomes `OUTCOME_UNKNOWN`; automatic retry stops
@@ -51,6 +52,9 @@ until reconciliation evidence exists.
 Process cancellation uses both PID and process-start identity. This prevents a recycled PID from
 targeting an unrelated process. Codex thread interruption remains the preferred control when a lane
 has an active owned turn.
+
+Claude controls lanes only through Fleet's start, status, result, follow-up and cancellation-preview
+surface. A follow-up resumes the persisted Codex thread without changing its admitted authority.
 
 ## State and privacy
 
@@ -78,6 +82,8 @@ draft file.
 
 The renderer is pure. Wide, compact, narrow, monochrome, reduced-motion and screen-reader modes
 share one view model. KITE motion is derived from lane state and capped at four frames per second.
+`COMPLETE` remains subtly active while awaiting independent verification; `VERIFIED` and attention
+states are locked. Panel focus and motion changes always produce visible text feedback.
 
 ## Verification boundary
 

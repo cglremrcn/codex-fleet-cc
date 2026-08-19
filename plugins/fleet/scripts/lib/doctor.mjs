@@ -25,6 +25,22 @@ function boundedDetail(value) {
   return redactText(String(value)).slice(0, 512);
 }
 
+function safeDiagnostic(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const pid = Number.isSafeInteger(value.pid) && value.pid > 0 ? value.pid : null;
+  const currentIdentity = ["missing", "different", "same", "unknown"].includes(
+    value.currentIdentity
+  ) ? value.currentIdentity : "unknown";
+  return Object.freeze({
+    reasonCode: boundedDetail(value.reasonCode),
+    action: value.action === "not_stopped" ? "not_stopped" : "unknown",
+    pid,
+    recordedIdentityPresent: value.recordedIdentityPresent === true,
+    currentIdentity,
+    remediation: boundedDetail(value.remediation)
+  });
+}
+
 function capabilityState(result) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return "unknown";
@@ -37,15 +53,19 @@ function capabilityState(result) {
   return "unknown";
 }
 
-function spawnProbe(command, args, options = {}) {
+export function probeCommand(command, args, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
+    let timedOut = false;
     let stdout = "";
     let stderr = "";
     let child;
+    let timer = null;
+    let killGraceTimer = null;
 
     try {
-      child = spawn(command, args, {
+      const spawnProcess = options.spawnProcess ?? spawn;
+      child = spawnProcess(command, args, {
         cwd: options.cwd,
         env: options.env ?? process.env,
         shell: false,
@@ -57,15 +77,26 @@ function spawnProbe(command, args, options = {}) {
       return;
     }
 
-    const finish = (result) => {
+    const finish = (result, detach = false) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killGraceTimer);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      if (detach) child.unref?.();
       resolve(result);
     };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish({ unknown: true, detail: `${command} probe timed out` });
+    timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {
+        // The close/error events or the bounded grace timer finish cleanup.
+      }
+      killGraceTimer = setTimeout(() => {
+        finish({ unknown: true, detail: `${command} probe timed out` }, true);
+      }, options.killGraceMs ?? 1_000);
     }, options.timeoutMs ?? 4_000);
 
     child.stdout.on("data", (chunk) => {
@@ -74,8 +105,12 @@ function spawnProbe(command, args, options = {}) {
     child.stderr.on("data", (chunk) => {
       stderr = `${stderr}${chunk}`.slice(0, 1_024);
     });
-    child.once("error", (error) => finish({ unknown: true, detail: error.message }));
+    child.once("error", (error) => finish({ unknown: true, detail: error.message }, true));
     child.once("close", (code) => {
+      if (timedOut) {
+        finish({ unknown: true, detail: `${command} probe timed out` });
+        return;
+      }
       const detail = (stdout.trim() || stderr.trim()).split(/\r?\n/u)[0] ?? null;
       finish(code === 0
         ? { available: true, version: detail, detail }
@@ -88,11 +123,11 @@ async function defaultCommandProbe(name, context) {
   if (name === "node") {
     return { available: true, version: process.version, detail: process.version };
   }
-  return spawnProbe(name, COMMAND_ARGUMENTS[name] ?? ["--version"], context);
+  return probeCommand(name, COMMAND_ARGUMENTS[name] ?? ["--version"], context);
 }
 
 async function defaultAuthProbe(context) {
-  const result = await spawnProbe("codex", ["login", "status"], context);
+  const result = await probeCommand("codex", ["login", "status"], context);
   if (result.available) {
     return { configured: true, detail: result.detail };
   }
@@ -106,6 +141,7 @@ async function unknownProbe(label) {
 async function collectCheck(id, probe, context) {
   try {
     const result = await probe(context);
+    const diagnostic = safeDiagnostic(result?.diagnostic);
     return Object.freeze({
       id,
       state: capabilityState(result),
@@ -116,14 +152,17 @@ async function collectCheck(id, probe, context) {
         unicode: result?.unicode === true,
         color: result?.color === true,
         shortcut: boundedDetail(result?.shortcut)
-      })
+      }),
+      ...(diagnostic ? { diagnostic } : {})
     });
   } catch (error) {
+    const diagnostic = safeDiagnostic(error?.diagnostic);
     return Object.freeze({
       id,
       state: "unknown",
       detail: boundedDetail(error?.message ?? error),
-      evidence: Object.freeze({})
+      evidence: Object.freeze({}),
+      ...(diagnostic ? { diagnostic } : {})
     });
   }
 }

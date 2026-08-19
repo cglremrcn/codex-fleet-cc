@@ -9,6 +9,7 @@ import {
   buildEnv,
   installFakeCodex
 } from "./upstream/fake-codex-fixture.mjs";
+import { runCli } from "../plugins/fleet/scripts/lib/cli.mjs";
 import { workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -192,6 +193,38 @@ test("doctor reports runtime unavailable with its dedicated exit code", (t) => {
   assert.equal(payload.checks.find((check) => check.id === "browser").state, "unknown");
 });
 
+test("human doctor output explains a broker ownership refusal without guessing its owner", async (t) => {
+  const scope = fixture(t);
+  const stdout = [];
+  const refusal = new Error("Refused to stop an unverified app-server process.");
+  refusal.code = "FLEET_BROKER_OWNERSHIP_REFUSED";
+  refusal.diagnostic = {
+    reasonCode: "ownership-mismatch",
+    action: "not_stopped",
+    pid: 4242,
+    recordedIdentityPresent: true,
+    currentIdentity: "different",
+    remediation: "Re-run doctor; inspect the process through normal OS or app controls."
+  };
+  const code = await runCli(["doctor", "--workspace", scope.workspace], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope, { PATH: "" }),
+    home: scope.root,
+    stdout: (text) => stdout.push(text),
+    stderr: () => undefined,
+    dependencies: {
+      createRuntime: async () => ({
+        close: async () => { throw refusal; }
+      })
+    }
+  });
+
+  assert.equal(code, 4);
+  assert.match(stdout.join(""), /PID 4242/iu);
+  assert.match(stdout.join(""), /Fleet did not stop/iu);
+  assert.doesNotMatch(stdout.join(""), /ChatGPT Desktop/iu);
+});
+
 test("export previews without writing and accepts only its exact confirmation token", (t) => {
   const scope = fixture(t);
   const output = path.join(scope.root, "support.json");
@@ -259,6 +292,229 @@ test("authority-bearing commands require an explicit confirmation reference", (t
 
   assert.equal(run.code, 3);
   assert.match(run.stderr, /confirmation reference/i);
+});
+
+test("start reports every contract validation issue before contacting the supervisor", async (t) => {
+  const scope = fixture(t);
+  const stdout = [];
+  const stderr = [];
+  let supervisorRequests = 0;
+  const code = await runCli(["start", "--stdin", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      workspacePath: scope.workspace,
+      confirmationRef: 42,
+      lanes: [{
+        id: "bad id",
+        role: "wizard",
+        label: "",
+        model: "",
+        effort: "",
+        prompt: "Reject this malformed contract before admission.",
+        priority: 0,
+        authority: {
+          sandbox: "read-only",
+          network: "off",
+          process: { start: true, stopOwned: true }
+        }
+      }]
+    })),
+    stdout: (text) => stdout.push(text),
+    stderr: (text) => stderr.push(text),
+    dependencies: {
+      ensureSupervisor: async () => ({ address: "unused", token: "unused" }),
+      requestSupervisor: async () => {
+        supervisorRequests += 1;
+        throw new Error("supervisor must not be contacted");
+      }
+    }
+  });
+
+  assert.equal(code, 2);
+  assert.equal(stdout.join(""), "");
+  assert.match(stderr.join(""), /confirmationRef/iu);
+  assert.match(stderr.join(""), /lanes\[0\]\.id/iu);
+  assert.match(stderr.join(""), /lanes\[0\]\.role/iu);
+  assert.match(stderr.join(""), /lanes\[0\]\.label/iu);
+  assert.match(stderr.join(""), /lanes\[0\]\.model/iu);
+  assert.match(stderr.join(""), /lanes\[0\]\.effort/iu);
+  assert.match(stderr.join(""), /priority/iu);
+  assert.equal(supervisorRequests, 0);
+});
+
+test("start rejects every duplicate lane id before partial admission", async (t) => {
+  const scope = fixture(t);
+  const stderr = [];
+  let supervisorRequests = 0;
+  const lane = {
+    id: "duplicate-lane",
+    role: "investigator",
+    label: "Inspect a bounded surface",
+    model: "gpt-5.6-sol",
+    effort: "medium",
+    prompt: "Inspect without changing files.",
+    priority: "normal",
+    authority: {
+      sandbox: "read-only",
+      network: "off",
+      process: { start: true, stopOwned: true }
+    }
+  };
+  const code = await runCli(["start", "--stdin", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      workspacePath: scope.workspace,
+      lanes: [lane, { ...lane }]
+    })),
+    stdout: () => undefined,
+    stderr: (text) => stderr.push(text),
+    dependencies: {
+      ensureSupervisor: async () => ({ address: "unused", token: "unused" }),
+      requestSupervisor: async () => {
+        supervisorRequests += 1;
+        return { schemaVersion: 1, background: true, lanes: [] };
+      }
+    }
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /lanes\[1\]\.id.*duplicate/isu);
+  assert.equal(supervisorRequests, 0);
+});
+
+test("read-only start accepts a null confirmation reference", async (t) => {
+  const scope = fixture(t);
+  const stdout = [];
+  const stderr = [];
+  const code = await runCli(["start", "--stdin", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      workspacePath: scope.workspace,
+      confirmationRef: null,
+      lanes: [{
+        id: "nullable-ref",
+        role: "investigator",
+        label: "Accept a read-only contract",
+        model: "gpt-5.6-sol",
+        effort: "medium",
+        prompt: "Inspect without external effects.",
+        priority: "normal",
+        authority: {
+          sandbox: "read-only",
+          network: "off",
+          process: { start: true, stopOwned: true }
+        }
+      }]
+    })),
+    stdout: (text) => stdout.push(text),
+    stderr: (text) => stderr.push(text),
+    dependencies: {
+      ensureSupervisor: async () => ({ address: "memory", token: "token" }),
+      requestSupervisor: async () => ({
+        schemaVersion: 1,
+        background: true,
+        lanes: [{ id: "nullable-ref", status: "running" }]
+      })
+    }
+  });
+
+  assert.equal(code, 0, stderr.join(""));
+  assert.equal(JSON.parse(stdout.join("")).background, true);
+});
+
+test("database write authority requires confirmation before supervisor admission", async (t) => {
+  const scope = fixture(t);
+  const stderr = [];
+  let supervisorRequests = 0;
+  const code = await runCli(["start", "--stdin", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      workspacePath: scope.workspace,
+      lanes: [{
+        id: "database-writer",
+        role: "implementer",
+        label: "Write one database record",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        prompt: "Write the approved database record.",
+        priority: "high",
+        authority: {
+          sandbox: "read-only",
+          network: "live",
+          process: { start: true, stopOwned: true },
+          database: { read: true, write: true }
+        }
+      }]
+    })),
+    stdout: () => undefined,
+    stderr: (text) => stderr.push(text),
+    dependencies: {
+      ensureSupervisor: async () => ({ address: "unused", token: "unused" }),
+      requestSupervisor: async () => {
+        supervisorRequests += 1;
+        return { schemaVersion: 1, background: true, lanes: [] };
+      }
+    }
+  });
+
+  assert.equal(code, 3);
+  assert.match(stderr.join(""), /database\.write/iu);
+  assert.equal(supervisorRequests, 0);
+});
+
+test("image generation authority requires confirmation before supervisor admission", async (t) => {
+  const scope = fixture(t);
+  const stderr = [];
+  let supervisorRequests = 0;
+  const code = await runCli(["start", "--stdin", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      workspacePath: scope.workspace,
+      lanes: [{
+        id: "image-generator",
+        role: "visual-analyst",
+        label: "Generate a project visual",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        prompt: "Use $imagegen and save the approved visual in the workspace.",
+        priority: "normal",
+        authority: {
+          sandbox: "workspace-write",
+          network: "off",
+          process: { start: true, stopOwned: true },
+          image: { generate: true, edit: false }
+        }
+      }]
+    })),
+    stdout: () => undefined,
+    stderr: (text) => stderr.push(text),
+    dependencies: {
+      ensureSupervisor: async () => ({ address: "unused", token: "unused" }),
+      requestSupervisor: async () => {
+        supervisorRequests += 1;
+        return { schemaVersion: 1, background: true, lanes: [] };
+      }
+    }
+  });
+
+  assert.equal(code, 3);
+  assert.match(stderr.join(""), /image\.generate/iu);
+  assert.equal(supervisorRequests, 0);
 });
 
 test("start and follow-up use one background Fleet supervisor contract", async (t) => {

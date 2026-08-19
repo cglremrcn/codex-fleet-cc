@@ -165,6 +165,57 @@ test("formation advances only for active lanes and pauses without polling faster
   assert.equal(controller.state().motion, false);
 });
 
+test("complete lanes keep a subtle awaiting-verification motion until paused", async () => {
+  const writes = [];
+  const complete = snapshot({ lanes: [lane({ status: "complete", phase: "complete" })] });
+  const controller = createConsoleController({
+    snapshot: complete,
+    readSnapshot: async () => complete,
+    write: (value) => writes.push(value),
+    terminal: { columns: 160, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.render();
+  await controller.dispatch({ type: "tick" });
+  assert.equal(writes.length, 2);
+
+  await controller.dispatch({ type: "toggleMotion" });
+  assert.match(controller.state().notice, /MOTION PAUSED/iu);
+  const pausedWrites = writes.length;
+  await controller.dispatch({ type: "tick" });
+  assert.equal(writes.length, pausedWrites);
+});
+
+test("wide panel navigation changes visible focus instead of only internal state", async () => {
+  const writes = [];
+  const controller = createConsoleController({
+    snapshot: snapshot(),
+    write: (value) => writes.push(value),
+    terminal: { columns: 160, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.render();
+  await controller.dispatch({ type: "activate" });
+  assert.match(writes.at(-1), /\[DETAIL\]/u);
+  await controller.dispatch({ type: "help" });
+  assert.match(writes.at(-1), /\[CONTROLS\]/u);
+});
+
+test("single-lane movement reports why selection did not change", async () => {
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [lane()] }),
+    terminal: { columns: 100, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "move", delta: 1 });
+
+  assert.equal(controller.state().selectedIndex, 0);
+  assert.match(controller.state().notice, /ONLY 1 LANE/iu);
+});
+
 test("denied cancellation shows the authority reason and never calls runtime", async () => {
   const writes = [];
   const runtime = recordingRuntime();
@@ -239,6 +290,20 @@ test("message opens a bounded composer and submits text without triggering short
   assert.equal(runtime.calls[0][1].id, "lane-a");
   assert.equal(runtime.calls[0][2], "j");
   assert.match(writes.join("\n"), /FOLLOW-UP/i);
+  assert.match(controller.state().notice, /EXISTING CODEX THREAD/iu);
+});
+
+test("completed lanes refuse misleading cancellation previews", async () => {
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [lane({ status: "complete", phase: "complete" })] }),
+    terminal: { columns: 100, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "cancel" });
+
+  assert.equal(controller.state().confirmation, null);
+  assert.match(controller.state().notice, /ALREADY COMPLETE|NOTHING TO CANCEL/iu);
 });
 
 test("composer Escape discards text without invoking the runtime", async () => {

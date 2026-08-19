@@ -45,6 +45,7 @@ private logs.
         "browser": { "inspect": false, "mutate": false },
         "process": { "start": true, "stopOwned": false },
         "database": { "read": false, "write": false },
+        "image": { "generate": false, "edit": false },
         "externalEffects": {
           "send": false,
           "payment": false,
@@ -54,7 +55,7 @@ private logs.
         "retry": false
       },
       "checkoutKey": "shared-checkout",
-      "priority": 0
+      "priority": "normal"
     }
   ]
 }
@@ -62,7 +63,9 @@ private logs.
 
 Use the platform's absolute workspace path; never hardcode a user's home path in reusable guidance.
 `process.start` authorizes Fleet to start that Codex lane, not arbitrary child processes inside the
-task. A write or external-effect grant requires the root `confirmationRef` from the exact visible plan.
+task. `confirmationRef` may be omitted or `null` for a safe read-only contract. A filesystem write,
+image generation/edit, browser mutation, database write, or external-effect grant requires a non-empty
+root `confirmationRef` from the exact visible plan.
 
 ## Immutability and follow-ups
 

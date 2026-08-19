@@ -58,6 +58,18 @@ test("allowed external mutations still require explicit confirmation", () => {
   assert.equal(authorizeAction(authority, "deploy.production", {}).confirmationRequired, true);
 });
 
+test("GPT Image generation and editing are explicit confirmed capabilities", () => {
+  const authority = normalizeAuthority({ image: { generate: true, edit: false } });
+
+  assert.deepEqual(authorizeAction(authority, "image.generate", {}), {
+    allowed: true,
+    reason: "image-generation-authorized",
+    confirmationRequired: true
+  });
+  assert.equal(authorizeAction(authority, "image.edit", {}).allowed, false);
+  assert.equal(Object.isFrozen(authority.image), true);
+});
+
 test("owned process cancellation cannot target an unrelated process", () => {
   const authority = normalizeAuthority({ process: { start: true, stopOwned: true } });
 
@@ -107,9 +119,12 @@ test("unknown actions deny instead of inheriting a nearby capability", () => {
 
 test("confirmation classification is explicit and stable", () => {
   for (const action of [
+    "filesystem.write",
     "browser.submit",
     "process.stop",
     "database.write",
+    "image.generate",
+    "image.edit",
     "send.message",
     "payment.execute",
     "deploy.production",

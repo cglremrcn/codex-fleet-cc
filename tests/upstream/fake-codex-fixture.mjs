@@ -281,6 +281,9 @@ bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
 saveState(bootState);
 
 const rl = readline.createInterface({ input: process.stdin });
+if (BEHAVIOR === "stubborn-stdin-close") {
+  setInterval(() => undefined, 60_000);
+}
 rl.on("line", (line) => {
   if (!line.trim()) {
     return;

@@ -12,7 +12,7 @@ independent evidence surfaces.
 ## Non-negotiable invariants
 
 - Roles do not grant authority. Declare every lane's filesystem, network, browser, process,
-  database, retry, and external-effect authority explicitly; omitted authority is denied.
+  database, image, retry, and external-effect authority explicitly; omitted authority is denied.
 - A lane completion is a claim, not proof. Use a fresh independent verifier after implementation or
   any other consequential claim. A lane never verifies its own work.
 - Run implementers and verifiers in separate waves. The verifier receives the requested outcome and
@@ -95,9 +95,10 @@ Create one immutable contract per lane using [contracts.md](references/contracts
 inputs, exclusions, authority, capability evidence, deliverable, verification, stop conditions, and
 cleanup. Do not put secrets, cookies, tokens, personal data, or hidden reasoning in the contract.
 
-### 5. Dispatch through Fleet only
+### 5. Dispatch and control through Fleet only
 
-Pass the complete root contract to the `fleet:codex-lane` agent. That bridge calls only:
+Pass `start`, `status`, `result`, `follow-up`, and cancellation-preview control requests to the
+`fleet:codex-lane` agent. For a start, pass the complete root contract. The bridge admits it with:
 
 ```sh
 node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" start --stdin --json
@@ -105,6 +106,16 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" start --stdin --json
 
 Do not invoke Codex through an ad-hoc shell command or bypass Fleet's authority and scheduling gates.
 Do not edit an admitted lane contract. A new requirement is a new follow-up contract or a new lane.
+After admission, mention once that `Ctrl+G` opens Fleet Console; Claude Code's down-arrow background
+agent control is a separate interface.
+
+When a `complete` result has not satisfied the objective and asks only for a redundant approval such
+as “say continue,” compare the request with the original contract. If it stays wholly inside the
+already-granted authority, send a precise bounded follow-up to the same Codex task/thread and require
+the worker to execute and verify the approved objective. Allow at most two automatic follow-up turns
+for this redundant gate. If the request needs new scope, new authority, a new external effect, an
+unresolved user choice, or a third continuation, stop and ask the user. Never interpret `complete` as
+successful work when the requested artifact or evidence is absent.
 
 ### 6. Observe without narrating noise
 
