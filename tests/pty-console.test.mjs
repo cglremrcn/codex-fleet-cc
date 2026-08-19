@@ -54,6 +54,9 @@ test("real PTY CLI exits after returning to the Claude host", async () => {
   assert.equal(result.terminalRestored, true);
   assert.equal(result.installedLauncherChecked, true);
   assert.equal(result.installedLauncherHandoff, true);
+  assert.equal(result.sessionOpened, true);
+  assert.equal(result.sameThreadMessageSent, true);
+  assert.equal(result.returnedFromSession, true);
   assert.equal(result.uninstallRestored, true);
   assert.equal(result.ownedChildrenAfterExit, 0);
 });

@@ -239,7 +239,7 @@ test("invalid mutation after terminal work does not suppress idle shutdown", asy
   await assert.rejects(request(scope, "followUp", {
     laneId: "missing-terminal-lane",
     message: "This must fail without keeping the supervisor alive."
-  }), /not a completed resumable lane/iu);
+  }), /not a resumable completed or controller-blocked lane/iu);
 
   await waitForSupervisorExit(scope.manifest.manifestPath);
 });

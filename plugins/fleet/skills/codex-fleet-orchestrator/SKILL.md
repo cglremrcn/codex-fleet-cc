@@ -100,7 +100,9 @@ reference before dispatch.
 
 Create one immutable contract per lane using [contracts.md](references/contracts.md). Include objective,
 inputs, exclusions, authority, capability evidence, deliverable, verification, stop conditions, and
-cleanup. Do not put secrets, cookies, tokens, personal data, or hidden reasoning in the contract.
+cleanup. Include the execution posture: an admitted Fleet contract is authorization to execute and
+verify now, not to stop at a plan or ask for redundant approval. Do not put secrets, cookies, tokens,
+personal data, or hidden reasoning in the contract.
 
 ### 5. Dispatch and control through Fleet only
 
@@ -113,18 +115,22 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" start --stdin --json
 
 Do not invoke Codex through an ad-hoc shell command or bypass Fleet's authority and scheduling gates.
 Do not edit an admitted lane contract. A new requirement is a new follow-up contract or a new lane.
-After admission, mention once that `Ctrl+G` opens Fleet Console; Claude Code's down-arrow background
-agent control is a separate interface. Inside Fleet Console, `Enter` or `m` opens the selected real Codex
+Immediately after dispatching `start`, before waiting for admission or a terminal result, mention once
+that `Ctrl+G` opens Fleet Console; Claude Code's down-arrow background-agent control is a separate
+interface and does not enter Fleet. After admission, report the lane ID without repeating the hint.
+Inside Fleet Console, `Enter` or `m` opens the selected real Codex
 thread, `Enter` sends a message, and `Ctrl+G` returns to the Fleet dashboard before `q`/`Esc` returns to
 Claude Code.
 
-When a `complete` result has not satisfied the objective and asks only for a redundant approval such
-as “say continue,” compare the request with the original contract. If it stays wholly inside the
-already-granted authority, send a precise bounded follow-up to the same Codex task/thread and require
-the worker to execute and verify the approved objective. Allow at most two automatic follow-up turns
-for this redundant gate. If the request needs new scope, new authority, a new external effect, an
-unresolved user choice, or a third continuation, stop and ask the user. Never interpret `complete` as
-successful work when the requested artifact or evidence is absent.
+Fleet requires a structured lane outcome and automatically handles a plan-only answer, malformed
+result, incomplete work, or redundant approval request as `continue_within_authority`. It sends a
+precise bounded follow-up to the same Codex task/thread, preserves the already-granted authority, and
+allows at most two automatic follow-up turns. Claude observes the resulting transition instead of
+manually duplicating the continuation. New scope, new authority, a new external effect, missing input,
+an unresolved user choice, or a third continuation becomes `needs_controller`: Claude resolves what
+it can inside its own authority and asks the human only when a material human decision or confirmation
+is genuinely required. Never interpret `complete` as successful work when requested work or
+verification evidence is absent.
 
 For every returned image artifact, the parent Claude must resolve the workspace-relative path inside
 the approved workspace and open the file with its Read tool before presenting or approving

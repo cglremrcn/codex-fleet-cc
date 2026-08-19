@@ -6,6 +6,12 @@ import {
 } from "../app-server-broker.mjs";
 import { normalizeAuthority } from "./authority.mjs";
 import { createLane } from "./domain.mjs";
+import {
+  LANE_OUTCOME_SCHEMA,
+  MAX_AUTOMATIC_CONTINUATIONS,
+  buildExecutionPrompt,
+  decideLaneOutcome
+} from "./lane-outcome.mjs";
 import { redactText } from "./redaction.mjs";
 
 const MAX_PROMPT_LENGTH = 128 * 1024;
@@ -40,6 +46,22 @@ function assertRuntimeId(value, label) {
   return value;
 }
 
+function isAcceptanceUnknown(error) {
+  return error?.requestAcceptance === "unknown";
+}
+
+function runtimeBlocker(error) {
+  const message = redactText(error?.message ?? "Codex turn acceptance is unknown.");
+  return {
+    exitReason: message,
+    controllerRequest: Object.freeze({
+      kind: "runtime_blocker",
+      question: message
+    }),
+    stopReason: message
+  };
+}
+
 function copyLane(lane) {
   return Object.freeze({
     id: lane.id,
@@ -56,7 +78,15 @@ function copyLane(lane) {
     threadId: lane.threadId,
     turnId: lane.turnId,
     lastMessage: lane.lastMessage,
-    exitReason: lane.exitReason
+    exitReason: lane.exitReason,
+    outcome: lane.outcome,
+    workPerformed: lane.workPerformed,
+    evidenceRefs: lane.evidenceRefs,
+    verification: lane.verification,
+    artifactRefs: lane.artifactRefs,
+    controllerRequest: lane.controllerRequest,
+    stopReason: lane.stopReason,
+    automaticContinuations: lane.automaticContinuations
   });
 }
 
@@ -315,7 +345,10 @@ class FleetRuntime {
       case "turn/started":
         this.updateLane(
           lane,
-          { status: "running", phase: "running" },
+          {
+            status: "running",
+            phase: lane.phase.startsWith("recovering ") ? lane.phase : "running"
+          },
           "turn.started",
           { threadId: lane.threadId, turnId: lane.turnId }
         );
@@ -350,11 +383,74 @@ class FleetRuntime {
         break;
       case "turn/completed": {
         const turnStatus = message.params?.turn?.status;
-        const status = turnStatus === "completed"
-          ? "complete"
-          : turnStatus === "interrupted"
-            ? "cancelled"
-            : "failed";
+        if (turnStatus === "completed") {
+          const decision = decideLaneOutcome(
+            lane.lastMessage ?? "",
+            lane.automaticContinuations,
+            { authority: lane.authority }
+          );
+          if (decision.action === "complete") {
+            const result = decision.result;
+            this.updateLane(
+              lane,
+              {
+                status: "complete",
+                phase: "complete",
+                exitReason: null,
+                outcome: result.outcome,
+                lastMessage: result.summary,
+                workPerformed: result.workPerformed,
+                evidenceRefs: result.evidenceRefs,
+                verification: result.verification,
+                artifactRefs: result.artifactRefs,
+                controllerRequest: null,
+                stopReason: result.stopReason
+              },
+              "turn.complete",
+              { threadId: lane.threadId, turnId: lane.turnId }
+            );
+          } else if (decision.action === "continue") {
+            void this.beginAutomaticContinuation(lane, decision.prompt);
+          } else if (decision.action === "outcome-unknown") {
+            this.updateLane(
+              lane,
+              {
+                status: "outcome_unknown",
+                phase: "outcome_unknown",
+                exitReason: redactText(decision.reason),
+                outcome: decision.result?.outcome ?? null,
+                workPerformed: decision.result?.workPerformed ?? Object.freeze([]),
+                evidenceRefs: decision.result?.evidenceRefs ?? Object.freeze([]),
+                verification: decision.result?.verification ?? Object.freeze([]),
+                artifactRefs: decision.result?.artifactRefs ?? Object.freeze([]),
+                controllerRequest: decision.result?.controllerRequest ?? null,
+                stopReason: decision.result?.stopReason ?? redactText(decision.reason)
+              },
+              "turn.outcome-unknown",
+              { threadId: lane.threadId, turnId: lane.turnId }
+            );
+          } else {
+            const controllerRequest = decision.result?.controllerRequest ?? Object.freeze({
+              kind: "runtime_blocker",
+              question: redactText(decision.reason)
+            });
+            this.updateLane(
+              lane,
+              {
+                status: "blocked",
+                phase: "needs-controller",
+                exitReason: redactText(decision.reason),
+                outcome: decision.result?.outcome ?? null,
+                controllerRequest,
+                stopReason: decision.result?.stopReason ?? redactText(decision.reason)
+              },
+              "turn.blocked",
+              { threadId: lane.threadId, turnId: lane.turnId }
+            );
+          }
+          break;
+        }
+        const status = turnStatus === "interrupted" ? "cancelled" : "failed";
         this.updateLane(
           lane,
           {
@@ -395,7 +491,15 @@ class FleetRuntime {
       threadId: null,
       turnId: null,
       lastMessage: null,
-      exitReason: null
+      exitReason: null,
+      outcome: null,
+      workPerformed: Object.freeze([]),
+      evidenceRefs: Object.freeze([]),
+      verification: Object.freeze([]),
+      artifactRefs: Object.freeze([]),
+      controllerRequest: null,
+      stopReason: null,
+      automaticContinuations: 0
     };
     this.lanes.set(lane.id, lane);
     this.emit(lane.id, "lane.queued", {});
@@ -428,21 +532,69 @@ class FleetRuntime {
       );
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
-        input: [{ type: "text", text: prompt, text_elements: [] }],
+        input: [{ type: "text", text: buildExecutionPrompt(prompt), text_elements: [] }],
         model: lane.model,
         effort: lane.effort,
-        outputSchema: null
+        outputSchema: LANE_OUTCOME_SCHEMA
       });
       if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
       return copyLane(lane);
     } catch (error) {
+      const unknown = isAcceptanceUnknown(error);
       this.updateLane(
         lane,
-        { status: "failed", phase: "failed", exitReason: redactText(error.message) },
-        "lane.failed",
+        unknown
+          ? { status: "outcome_unknown", phase: "outcome_unknown", ...runtimeBlocker(error) }
+          : { status: "failed", phase: "failed", exitReason: redactText(error.message) },
+        unknown ? "lane.outcome-unknown" : "lane.failed",
         { message: lane.exitReason }
       );
       throw error;
+    }
+  }
+
+  async beginAutomaticContinuation(lane, prompt) {
+    const attempt = lane.automaticContinuations + 1;
+    this.unbindTurn(lane);
+    this.updateLane(
+      lane,
+      {
+        status: "running",
+        phase: `recovering ${attempt}/${MAX_AUTOMATIC_CONTINUATIONS}`,
+        exitReason: null,
+        lastMessage: null,
+        automaticContinuations: attempt
+      },
+      "lane.auto-continuing",
+      { threadId: lane.threadId, attempt }
+    );
+    try {
+      const turn = await this.broker.request("turn/start", {
+        threadId: lane.threadId,
+        input: [{ type: "text", text: buildExecutionPrompt(prompt), text_elements: [] }],
+        model: lane.model,
+        effort: lane.effort,
+        outputSchema: LANE_OUTCOME_SCHEMA
+      });
+      if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
+    } catch (error) {
+      const unknown = isAcceptanceUnknown(error);
+      this.updateLane(
+        lane,
+        unknown
+          ? {
+            status: "outcome_unknown",
+            phase: "outcome_unknown",
+            ...runtimeBlocker(error)
+          }
+          : {
+            status: "blocked",
+            phase: "needs-controller",
+            ...runtimeBlocker(error)
+          },
+        unknown ? "lane.outcome-unknown" : "lane.auto-continuation-failed",
+        { threadId: lane.threadId, attempt }
+      );
     }
   }
 
@@ -453,30 +605,58 @@ class FleetRuntime {
       turnId: lane.turnId,
       lastMessage: lane.lastMessage,
       exitReason: lane.exitReason,
+      outcome: lane.outcome,
+      workPerformed: lane.workPerformed,
+      evidenceRefs: lane.evidenceRefs,
+      verification: lane.verification,
+      artifactRefs: lane.artifactRefs,
+      controllerRequest: lane.controllerRequest,
+      stopReason: lane.stopReason,
+      automaticContinuations: lane.automaticContinuations,
       updatedAt: lane.updatedAt
     };
     this.unbindTurn(lane);
     this.updateLane(
       lane,
-      { status: "running", phase: "continuing", exitReason: null },
+      {
+        status: "running",
+        phase: "continuing",
+        exitReason: null,
+        lastMessage: null,
+        outcome: null,
+        workPerformed: Object.freeze([]),
+        evidenceRefs: Object.freeze([]),
+        verification: Object.freeze([]),
+        artifactRefs: Object.freeze([]),
+        controllerRequest: null,
+        stopReason: null,
+        automaticContinuations: 0
+      },
       "lane.continued",
       { threadId: lane.threadId }
     );
     try {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
-        input: [{ type: "text", text: prompt, text_elements: [] }],
+        input: [{ type: "text", text: buildExecutionPrompt(prompt), text_elements: [] }],
         model: lane.model,
         effort: lane.effort,
-        outputSchema: null
+        outputSchema: LANE_OUTCOME_SCHEMA
       });
       if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
       return copyLane(lane);
     } catch (error) {
       this.unbindTurn(lane);
-      Object.assign(lane, previous);
-      if (previous.turnId) this.turnToLane.set(previous.turnId, lane.id);
-      this.emit(lane.id, "lane.continuation-rejected", {
+      const unknown = isAcceptanceUnknown(error);
+      Object.assign(
+        lane,
+        previous,
+        unknown
+          ? { status: "outcome_unknown", phase: "outcome_unknown", ...runtimeBlocker(error) }
+          : {}
+      );
+      if (previous.turnId && !unknown) this.turnToLane.set(previous.turnId, lane.id);
+      this.emit(lane.id, unknown ? "lane.outcome-unknown" : "lane.continuation-rejected", {
         message: transcriptText(error?.message ?? "Continuation was rejected.")
       });
       throw error;
@@ -489,8 +669,10 @@ class FleetRuntime {
     if (!lane) {
       throw new Error(`Unknown lane: ${id}.`);
     }
-    if (lane.status !== "complete") {
-      throw new Error(`Lane ${id} can only continue after a completed turn.`);
+    const resumable = lane.status === "complete"
+      || (lane.status === "blocked" && lane.phase === "needs-controller");
+    if (!resumable) {
+      throw new Error(`Lane ${id} can only continue after completion or controller attention.`);
     }
     return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
   }
@@ -500,8 +682,12 @@ class FleetRuntime {
     if (!record || typeof record !== "object" || Array.isArray(record)) {
       throw new TypeError("Persisted lane record must be an object.");
     }
-    if (record.status !== "complete") {
-      throw new Error(`Lane ${String(record.id)} can only resume after a completed turn.`);
+    const resumable = record.status === "complete"
+      || (record.status === "blocked" && record.phase === "needs-controller");
+    if (!resumable) {
+      throw new Error(
+        `Lane ${String(record.id)} can only resume after completion or controller attention.`
+      );
     }
     if (!path.isAbsolute(workspacePath ?? "")) {
       throw new TypeError("Lane workspacePath must be absolute.");
@@ -516,12 +702,20 @@ class FleetRuntime {
       ...validated,
       authority,
       workspacePath: path.resolve(workspacePath),
-      status: "complete",
-      phase: "complete",
+      status: record.status,
+      phase: record.phase,
       threadId: assertRuntimeId(record.threadId, "Persisted Codex thread id"),
       turnId: record.turnId ?? null,
       lastMessage: record.lastMessage ? redactText(record.lastMessage) : null,
-      exitReason: null
+      exitReason: null,
+      outcome: record.outcome ?? null,
+      workPerformed: Object.freeze(record.workPerformed ?? []),
+      evidenceRefs: Object.freeze(record.evidenceRefs ?? []),
+      verification: Object.freeze(record.verification ?? []),
+      artifactRefs: Object.freeze(record.artifactRefs ?? []),
+      controllerRequest: record.controllerRequest ?? null,
+      stopReason: record.stopReason ?? null,
+      automaticContinuations: 0
     };
     this.lanes.set(lane.id, lane);
     this.bindThread(lane, lane.threadId);

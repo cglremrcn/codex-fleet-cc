@@ -35,21 +35,43 @@ async function inspectOwnership(candidate) {
   try {
     const metadata = await fs.lstat(candidate);
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_OWNERSHIP_BYTES) {
-      return "invalid";
+      return { state: "invalid", version: null };
     }
     const payload = JSON.parse(await fs.readFile(candidate, "utf8"));
-    return payload?.schemaVersion === 1 && payload?.status === "applied"
-      ? "applied"
-      : "invalid";
+    return payload?.schemaVersion === 1
+      && payload?.status === "applied"
+      && typeof payload.version === "string"
+      ? { state: "applied", version: payload.version }
+      : { state: "invalid", version: null };
   } catch (error) {
-    return error?.code === "ENOENT" ? "missing" : "invalid";
+    return {
+      state: error?.code === "ENOENT" ? "missing" : "invalid",
+      version: null
+    };
   }
 }
 
+async function installedPluginVersion() {
+  const manifest = JSON.parse(
+    await fs.readFile(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8")
+  );
+  if (typeof manifest.version !== "string" || !manifest.version) {
+    throw new Error("Fleet plugin version is unavailable.");
+  }
+  return manifest.version;
+}
+
 async function setupContext() {
-  const states = await Promise.all(ownershipCandidates().map(inspectOwnership));
-  if (states.includes("applied")) return null;
-  if (states.includes("invalid")) {
+  const installedVersion = await installedPluginVersion();
+  const inspections = await Promise.all(ownershipCandidates().map(inspectOwnership));
+  const applied = inspections.find((inspection) => inspection.state === "applied");
+  if (applied?.version === installedVersion) return null;
+  if (applied) {
+    return `Fleet Ctrl+G integration runtime ${applied.version} does not match installed plugin `
+      + `${installedVersion}. Invoke Fleet setup to preview an ownership-verified upgrade; do not `
+      + "edit Claude settings or the launcher manually.";
+  }
+  if (inspections.some((inspection) => inspection.state === "invalid")) {
     return "Fleet integration ownership is unreadable or incomplete. Use /fleet:doctor before setup; do not overwrite settings or ownership state.";
   }
   return "Fleet is installed but Ctrl+G Fleet Console is not configured. Ask the user exactly one plain confirmation question: \"Enable Ctrl+G Fleet Console now?\" Wait for an explicit yes. If the user explicitly agrees, invoke the Fleet setup skill, keep its preview token internal, and apply only the exact preview. Never ask the user to copy or paste a token. This SessionStart hook is read-only and must not modify settings.";

@@ -49,9 +49,10 @@ type, dimensions, and lane status to the parent. Explicitly instruct the parent 
 path inside the approved workspace and open it with Claude Code's `Read` tool. A text description or
 path alone does not prove that Claude saw the generated image.
 
-After a successful admission, tell the parent once that the user can press `Ctrl+G` to open Fleet
-Console. Claude Code's own “down arrow to manage” text controls Claude background agents; it is not
-Fleet navigation.
+Immediately after the `start` dispatch begins, tell the parent once that the user can press `Ctrl+G` to
+open Fleet Console while the bridge waits. Do not wait for the terminal result to surface this hint.
+Claude Code's own “down arrow to manage” text controls Claude background agents; it is not Fleet
+navigation. After successful admission, return the exact lane ID without repeating the hint.
 
 Do not invoke Codex directly. Do not construct an alternate shell command, bypass Fleet's scheduler,
 or imitate a successful result. Return the Fleet CLI exit code and structured output to the parent.

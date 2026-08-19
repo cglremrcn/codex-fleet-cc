@@ -179,6 +179,41 @@ function normalizeLane(value, index) {
     evidenceRefs: Array.isArray(value?.evidenceRefs)
       ? value.evidenceRefs.filter((item) => typeof item === "string").slice(0, 32)
       : [],
+    outcome: typeof value?.outcome === "string" ? boundedText(value.outcome, "unknown", 64) : null,
+    workPerformed: Array.isArray(value?.workPerformed)
+      ? value.workPerformed.filter((item) => typeof item === "string").slice(0, 32)
+      : [],
+    verification: Array.isArray(value?.verification)
+      ? value.verification.filter((item) => typeof item === "string").slice(0, 32)
+      : [],
+    artifactRefs: Array.isArray(value?.artifactRefs)
+      ? value.artifactRefs.filter((item) => typeof item === "string").slice(0, 64)
+      : [],
+    controllerRequest: value?.controllerRequest && typeof value.controllerRequest === "object"
+      ? {
+        kind: boundedText(value.controllerRequest.kind, "runtime_blocker", 64),
+        question: boundedText(
+          value.controllerRequest.question,
+          "Controller attention required",
+          512
+        )
+      }
+      : null,
+    stopReason: typeof value?.stopReason === "string"
+      ? boundedText(value.stopReason, "Lane stopped", 512)
+      : null,
+    pendingContinuation: value?.pendingContinuation
+      && typeof value.pendingContinuation === "object"
+      ? {
+        state: boundedText(value.pendingContinuation.state, "outcome_unknown", 64),
+        previousTurnId: typeof value.pendingContinuation.previousTurnId === "string"
+          ? boundedText(value.pendingContinuation.previousTurnId, "unknown", 128)
+          : null
+      }
+      : null,
+    automaticContinuations: Number.isSafeInteger(value?.automaticContinuations)
+      ? Math.max(0, value.automaticContinuations)
+      : 0,
     events: Array.isArray(value?.events)
       ? value.events.filter((item) => typeof item === "string").slice(-8)
       : [],
@@ -270,13 +305,32 @@ function detailLines(lane, width) {
     "",
     ...wrap(STATUS_EXPLANATIONS[lane.status], width),
     usageText(lane.tokenUsage),
+  ];
+  if (lane.phase.startsWith("recovering ")) {
+    lines.push("", `AUTO RECOVERY ${lane.phase.slice("recovering ".length)}`);
+  }
+  if (lane.controllerRequest) {
+    lines.push(
+      "",
+      `CONTROLLER REQUEST · ${lane.controllerRequest.kind}`,
+      lane.controllerRequest.question
+    );
+  }
+  if (lane.pendingContinuation) {
+    lines.push(
+      "",
+      `CONTINUATION ${lane.pendingContinuation.state.toUpperCase()}`,
+      "The previous terminal record is preserved until this continuation is reconciled."
+    );
+  }
+  lines.push(
     "",
     "RESULT",
     lane.resultRef ?? "No result reference recorded",
     "",
     "SAFE EVENTS",
     ...(lane.events.length > 0 ? lane.events : ["No safe events recorded"])
-  ];
+  );
   return lines.flatMap((line) => wrap(line, width));
 }
 
@@ -284,11 +338,23 @@ function evidenceLines(lane, width) {
   if (!lane) return ["No lane selected"];
   const lines = [
     `STATUS   ${STATUS_PRESENTATION[lane.status].label}`,
+    ...(lane.outcome ? [`OUTCOME  ${lane.outcome}`] : []),
     `RESULT   ${lane.resultRef ?? "not recorded"}`,
-    `VERIFIER ${lane.verifierLaneId ?? "not recorded"}`,
-    "",
-    "EVIDENCE"
+    `VERIFIER ${lane.verifierLaneId ?? "not recorded"}`
   ];
+  if (lane.workPerformed.length > 0) {
+    lines.push("", "WORK PERFORMED");
+    lane.workPerformed.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  }
+  if (lane.verification.length > 0) {
+    lines.push("", "VERIFICATION");
+    lane.verification.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  }
+  if (lane.artifactRefs.length > 0) {
+    lines.push("", "ARTIFACT REFS");
+    lane.artifactRefs.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  }
+  lines.push("", "EVIDENCE");
   if (lane.evidenceRefs.length === 0) lines.push("No evidence references recorded");
   else lane.evidenceRefs.forEach((reference, index) => lines.push(`${index + 1}. ${reference}`));
   return lines.flatMap((line) => wrap(line, width));
@@ -473,6 +539,11 @@ function placeRight(left, right, columns) {
   return `${clippedLeft}${" ".repeat(gap)}${visibleRight}`;
 }
 
+function versionLabel(preferences) {
+  const value = typeof preferences.version === "string" ? preferences.version.trim() : "";
+  return value && value !== "unknown" ? `v${truncate(value, 24)}  ` : "";
+}
+
 function wideMasthead(view, columns, preferences) {
   const mark = renderFleetMark(view, preferences);
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
@@ -481,7 +552,7 @@ function wideMasthead(view, columns, preferences) {
   const panelIndex = ["lanes", "detail", "evidence", "authority", "controls"].indexOf(view.panel);
   return [
     placeRight(
-      `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
+      `FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
       mark[0],
       columns
     ),
@@ -594,7 +665,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
   const runtime = `RUNTIME ${view.runtime.health.toUpperCase()}`;
   return [
     placeRight(
-      `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}`,
+      `FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}@${view.workspace.branch}`,
       mark,
       terminal.columns
     ),
@@ -634,7 +705,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
   const bodyHeight = Math.max(3, terminal.rows - 7);
   const mark = renderCompactMark(view, preferences);
   return [
-    placeRight(`FLEET//OPS  ${view.workspace.name}`, mark, terminal.columns),
+    placeRight(`FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}`, mark, terminal.columns),
     signalLine(view, terminal.columns, border, useUnicode),
     title,
     border.horizontal.repeat(terminal.columns),
@@ -705,7 +776,9 @@ function renderCodexSession(view, terminal, border, preferences) {
   const composerValue = preferences.composer?.value ?? "";
   const composer = composerValue
     ? `MESSAGE > ${composerValue}`
-    : "MESSAGE > type directly…";
+    : preferences.notice
+      ? boundedText(preferences.notice, "MESSAGE STATUS UNAVAILABLE", terminal.columns)
+      : "MESSAGE > type directly…";
   return [
     truncate(`FLEET//CODEX SESSION  ${session.laneId}`, terminal.columns),
     truncate(
@@ -753,7 +826,7 @@ export function renderScreen(viewModel, terminalInput, preferences = {}) {
   }
   if (terminal.columns < 32 || terminal.rows < 8) {
     return [
-      truncate("FLEET//OPS", terminal.columns),
+      truncate(`FLEET//OPS ${versionLabel(preferences).trim()}`.trimEnd(), terminal.columns),
       truncate("Terminal too small", terminal.columns),
       truncate("Resize to at least 32x8", terminal.columns)
     ].slice(0, terminal.rows).join("\n");

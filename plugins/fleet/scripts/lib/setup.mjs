@@ -31,6 +31,44 @@ function hashValue(value) {
   return hashBytes(JSON.stringify(value));
 }
 
+function compareSemanticVersions(left, right) {
+  const parse = (value) => {
+    const [withoutBuild] = String(value).split("+");
+    const [core, prerelease = null] = withoutBuild.split("-", 2);
+    return {
+      core: core.split(".").map((part) => Number.parseInt(part, 10)),
+      prerelease: prerelease?.split(".") ?? null
+    };
+  };
+  const leftVersion = parse(left);
+  const rightVersion = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftVersion.core[index] !== rightVersion.core[index]) {
+      return leftVersion.core[index] < rightVersion.core[index] ? -1 : 1;
+    }
+  }
+  if (leftVersion.prerelease === null || rightVersion.prerelease === null) {
+    if (leftVersion.prerelease === rightVersion.prerelease) return 0;
+    return leftVersion.prerelease === null ? 1 : -1;
+  }
+  const length = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftVersion.prerelease[index];
+    const rightPart = rightVersion.prerelease[index];
+    if (leftPart === rightPart) continue;
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) {
+      return Number(leftPart) < Number(rightPart) ? -1 : 1;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
+}
+
 function stableObject(value) {
   if (Array.isArray(value)) {
     return value.map(stableObject);
@@ -46,8 +84,10 @@ function stableObject(value) {
 function confirmationPayload(plan) {
   return stableObject({
     schemaVersion: plan.schemaVersion,
+    mode: plan.mode,
     platform: plan.platform,
     version: plan.version,
+    previousVersion: plan.previousVersion,
     settingsPath: plan.settingsPath,
     pluginDataDir: plan.pluginDataDir,
     runtimeSourceDir: plan.runtimeSourceDir,
@@ -61,6 +101,10 @@ function confirmationPayload(plan) {
     originalValues: plan.originalValues,
     originalEditor: plan.originalEditor,
     originalEditorCommand: plan.originalEditorCommand,
+    ownershipSourceHash: plan.ownershipSourceHash,
+    previousRuntimeTargetDir: plan.previousRuntimeTargetDir,
+    previousRuntimeHash: plan.previousRuntimeHash,
+    previousLauncherHash: plan.previousLauncherHash,
     changes: plan.changes,
     restartRequired: plan.restartRequired,
     keybindingsModified: plan.keybindingsModified
@@ -164,7 +208,14 @@ function parseEditorCommand(value) {
   return command;
 }
 
-function renderLauncher(template, platform, nodeExecutable, consolePath, originalEditorCommand) {
+function renderLauncher(
+  template,
+  platform,
+  nodeExecutable,
+  consolePath,
+  originalEditorCommand,
+  version
+) {
   const originalEditorJson = JSON.stringify(originalEditorCommand);
   if (platform === "win32") {
     if (
@@ -179,12 +230,14 @@ function renderLauncher(template, platform, nodeExecutable, consolePath, origina
     return template
       .replaceAll("__FLEET_NODE__", nodeExecutable)
       .replaceAll("__FLEET_CONSOLE__", consolePath)
-      .replaceAll("__FLEET_ORIGINAL_EDITOR_JSON__", originalEditorJson);
+      .replaceAll("__FLEET_ORIGINAL_EDITOR_JSON__", originalEditorJson)
+      .replaceAll("__FLEET_INTEGRATION_VERSION__", version);
   }
   return template
     .replace("'__FLEET_NODE__'", shellQuote(nodeExecutable))
     .replace("'__FLEET_CONSOLE__'", shellQuote(consolePath))
-    .replace("'__FLEET_ORIGINAL_EDITOR_JSON__'", shellQuote(originalEditorJson));
+    .replace("'__FLEET_ORIGINAL_EDITOR_JSON__'", shellQuote(originalEditorJson))
+    .replace("'__FLEET_INTEGRATION_VERSION__'", shellQuote(version));
 }
 
 async function readLauncherTemplate(platform) {
@@ -286,6 +339,73 @@ async function pathExists(filePath) {
   }
 }
 
+async function readOwnershipSource(ownershipPath) {
+  const metadata = await fs.lstat(ownershipPath);
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error("Fleet ownership manifest must be a regular, non-symbolic-link file.");
+  }
+  const raw = await fs.readFile(ownershipPath);
+  let ownership;
+  try {
+    ownership = JSON.parse(raw.toString("utf8"));
+  } catch (error) {
+    throw new Error(`Fleet ownership manifest contains invalid JSON: ${error.message}`);
+  }
+  assertPlainObject(ownership, "Fleet ownership manifest");
+  if (ownership.schemaVersion !== 1 || ownership.status !== "applied") {
+    throw new Error("Fleet setup ownership manifest is incomplete or unsupported.");
+  }
+  return { ownership, raw, hash: hashBytes(raw) };
+}
+
+function requireOwnedPath(pluginDataDir, value, label) {
+  const absolute = requireAbsolute(value, label);
+  const resolved = resolveOwnedPath(pluginDataDir, path.relative(pluginDataDir, absolute));
+  if (resolved !== absolute) {
+    throw new Error(`${label} is outside the Fleet-owned integration root.`);
+  }
+  return resolved;
+}
+
+async function verifyOwnedInstallation(options) {
+  const { ownership, pluginDataDir, settingsPath, launcherPath, platform, settings } = options;
+  if (ownership.platform !== platform || path.resolve(ownership.settingsPath) !== settingsPath) {
+    throw new Error("Fleet ownership does not match this platform or Claude settings file.");
+  }
+  const ownedLauncher = requireOwnedPath(pluginDataDir, ownership.launcherPath, "Owned launcher");
+  if (ownedLauncher !== launcherPath) {
+    throw new Error("Fleet ownership launcher path does not match the integration launcher.");
+  }
+  const ownedRuntime = requireOwnedPath(
+    pluginDataDir,
+    ownership.runtimeTargetDir,
+    "Owned runtime"
+  );
+  const env = settings.env && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : {};
+  for (const key of ["EDITOR", "VISUAL"]) {
+    if (hashValue(env[key]) !== ownership.writtenHashes?.[key]) {
+      throw new Error(`Claude env.${key} is no longer owned by Fleet; setup upgrade was refused.`);
+    }
+  }
+  const launcherMetadata = await fs.lstat(ownedLauncher);
+  if (launcherMetadata.isSymbolicLink() || !launcherMetadata.isFile()) {
+    throw new Error("Fleet-owned launcher is no longer a regular file.");
+  }
+  if (hashBytes(await fs.readFile(ownedLauncher)) !== ownership.launcherHash) {
+    throw new Error("Fleet launcher is no longer owned; setup upgrade was refused.");
+  }
+  const runtimeMetadata = await fs.lstat(ownedRuntime);
+  if (runtimeMetadata.isSymbolicLink() || !runtimeMetadata.isDirectory()) {
+    throw new Error("Fleet-owned runtime is no longer a regular directory.");
+  }
+  if (await hashTree(ownedRuntime) !== ownership.runtimeHash) {
+    throw new Error("Fleet runtime is no longer owned; setup upgrade was refused.");
+  }
+  return { launcherPath: ownedLauncher, runtimeTargetDir: ownedRuntime };
+}
+
 export async function previewSetup(options = {}) {
   const settingsPath = requireAbsolute(options.settingsPath, "settingsPath");
   const pluginDataDir = requireAbsolute(options.pluginDataDir, "pluginDataDir");
@@ -310,34 +430,60 @@ export async function previewSetup(options = {}) {
   const consolePath = resolveOwnedPath(runtimeTargetDir, "fleet-console.mjs");
   const launcherName = platform === "win32" ? "fleet-editor.cmd" : "fleet-editor.sh";
   const launcherPath = resolveOwnedPath(pluginDataDir, "bin", launcherName);
+  const ownershipPath = resolveOwnedPath(pluginDataDir, OWNERSHIP_FILE);
+  let prior = null;
+  if (await pathExists(ownershipPath)) {
+    prior = await readOwnershipSource(ownershipPath);
+    await verifyOwnedInstallation({
+      ownership: prior.ownership,
+      pluginDataDir,
+      settingsPath,
+      launcherPath,
+      platform,
+      settings: source.settings
+    });
+    if (compareSemanticVersions(version, prior.ownership.version) < 0) {
+      throw new Error(
+        `Fleet setup downgrade from ${prior.ownership.version} to ${version} was refused.`
+      );
+    }
+  }
+  const mode = prior ? prior.ownership.version === version ? "current" : "upgrade" : "fresh";
   const template = await readLauncherTemplate(platform);
   const editorCommand = platform === "win32"
     ? `"${launcherPath}"`
     : shellQuote(launcherPath);
-  const originalValues = {
+  const originalValues = prior?.ownership.originalValues ?? {
     EDITOR: originalSetting(settingsAfter.env, "EDITOR"),
     VISUAL: originalSetting(settingsAfter.env, "VISUAL")
   };
-  const originalEditor = originalValues.VISUAL.existed
-    ? originalValues.VISUAL.value
-    : originalValues.EDITOR.existed
-      ? originalValues.EDITOR.value
-      : null;
-  const originalEditorCommand = parseEditorCommand(originalEditor);
+  const originalEditor = prior
+    ? prior.ownership.originalEditor
+    : originalValues.VISUAL.existed
+      ? originalValues.VISUAL.value
+      : originalValues.EDITOR.existed
+        ? originalValues.EDITOR.value
+        : null;
+  const originalEditorCommand = prior
+    ? prior.ownership.originalEditorCommand
+    : parseEditorCommand(originalEditor);
   const launcherContent = renderLauncher(
     template,
     platform,
     nodeExecutable,
     consolePath,
-    originalEditorCommand
+    originalEditorCommand,
+    version
   );
   settingsAfter.env.EDITOR = editorCommand;
   settingsAfter.env.VISUAL = editorCommand;
 
   const plan = {
     schemaVersion: 1,
+    mode,
     platform,
     version,
+    previousVersion: prior?.ownership.version ?? null,
     settingsPath,
     pluginDataDir,
     runtimeSourceDir,
@@ -351,10 +497,18 @@ export async function previewSetup(options = {}) {
     originalValues,
     originalEditor,
     originalEditorCommand,
-    changes: [
+    ownershipSourceHash: prior?.hash ?? null,
+    previousRuntimeTargetDir: prior?.ownership.runtimeTargetDir ?? null,
+    previousRuntimeHash: prior?.ownership.runtimeHash ?? null,
+    previousLauncherHash: prior?.ownership.launcherHash ?? null,
+    changes: mode === "fresh" ? [
       { path: "env.EDITOR", before: originalValues.EDITOR, after: editorCommand },
       { path: "env.VISUAL", before: originalValues.VISUAL, after: editorCommand }
-    ],
+    ] : mode === "upgrade" ? [{
+      path: "integration.runtime",
+      before: prior.ownership.version,
+      after: version
+    }] : [],
     restartRequired: true,
     keybindingsModified: false
   };
@@ -373,10 +527,157 @@ export async function applySetup(plan = {}, dependencies = {}) {
   if (current.hash !== plan.settingsSourceHash || current.existed !== plan.settingsExisted) {
     throw new Error("Claude settings changed since preview; generate a new setup preview.");
   }
+  const ownershipPath = resolveOwnedPath(plan.pluginDataDir, OWNERSHIP_FILE);
+  if (plan.mode === "current") {
+    const prior = await readOwnershipSource(ownershipPath);
+    if (prior.hash !== plan.ownershipSourceHash) {
+      throw new Error("Fleet ownership changed since preview; generate a new setup preview.");
+    }
+    await verifyOwnedInstallation({
+      ownership: prior.ownership,
+      pluginDataDir: plan.pluginDataDir,
+      settingsPath: plan.settingsPath,
+      launcherPath: plan.launcherPath,
+      platform: plan.platform,
+      settings: current.settings
+    });
+    return {
+      applied: false,
+      mode: "current",
+      launcherPath: plan.launcherPath,
+      runtimeTargetDir: plan.runtimeTargetDir,
+      restartRequired: false
+    };
+  }
   if (await pathExists(plan.runtimeTargetDir)) {
     throw new Error(`Versioned Fleet runtime already exists: ${plan.runtimeTargetDir}`);
   }
-  const ownershipPath = resolveOwnedPath(plan.pluginDataDir, OWNERSHIP_FILE);
+  if (plan.mode === "upgrade") {
+    const prior = await readOwnershipSource(ownershipPath);
+    if (prior.hash !== plan.ownershipSourceHash) {
+      throw new Error("Fleet ownership changed since preview; generate a new setup preview.");
+    }
+    await verifyOwnedInstallation({
+      ownership: prior.ownership,
+      pluginDataDir: plan.pluginDataDir,
+      settingsPath: plan.settingsPath,
+      launcherPath: plan.launcherPath,
+      platform: plan.platform,
+      settings: current.settings
+    });
+    const stagingDir = resolveOwnedPath(
+      plan.pluginDataDir,
+      "runtime",
+      `.staging-${plan.version}-${crypto.randomUUID()}`
+    );
+    const previousLauncher = await fs.readFile(plan.launcherPath);
+    const writeFile = dependencies.atomicWrite ?? atomicWrite;
+    const writeJson = dependencies.atomicWriteJson ?? atomicWriteJson;
+    const previousLauncherHash = hashBytes(previousLauncher);
+    const nextLauncherHash = hashBytes(Buffer.from(plan.launcherContent, "utf8"));
+    let nextOwnershipHash = null;
+    try {
+      await copyTreeSafe(plan.runtimeSourceDir, stagingDir);
+      await fs.rename(stagingDir, plan.runtimeTargetDir);
+      await writeFile(
+        plan.launcherPath,
+        plan.launcherContent,
+        plan.platform === "win32" ? 0o600 : 0o700
+      );
+      const latestSettings = await readSettingsSource(plan.settingsPath);
+      const latestOwnership = await readOwnershipSource(ownershipPath);
+      if (
+        latestSettings.hash !== current.hash
+        || latestSettings.existed !== current.existed
+        || latestOwnership.hash !== prior.hash
+      ) {
+        throw new Error("Fleet ownership or Claude settings changed while upgrade was prepared.");
+      }
+      const supersededRuntimes = [
+        ...(Array.isArray(prior.ownership.supersededRuntimes)
+          ? prior.ownership.supersededRuntimes
+          : []),
+        {
+          path: prior.ownership.runtimeTargetDir,
+          hash: prior.ownership.runtimeHash
+        }
+      ];
+      const ownership = {
+        ...prior.ownership,
+        status: "applied",
+        version: plan.version,
+        runtimeTargetDir: plan.runtimeTargetDir,
+        runtimeHash: await hashTree(plan.runtimeTargetDir),
+        launcherHash: hashBytes(Buffer.from(plan.launcherContent, "utf8")),
+        supersededRuntimes,
+        restartRequired: true,
+        upgradedAt: new Date(Number.isFinite(plan.now?.()) ? plan.now() : Date.now()).toISOString()
+      };
+      nextOwnershipHash = hashBytes(Buffer.from(`${JSON.stringify(ownership, null, 2)}\n`, "utf8"));
+      await writeJson(ownershipPath, ownership);
+    } catch (error) {
+      const rollbackProblems = [];
+      let launcherRestored = false;
+      let ownershipRestored = false;
+      try {
+        const currentLauncherHash = hashBytes(await fs.readFile(plan.launcherPath));
+        if (currentLauncherHash === previousLauncherHash) {
+          launcherRestored = true;
+        } else if (currentLauncherHash === nextLauncherHash) {
+          await writeFile(
+            plan.launcherPath,
+            previousLauncher,
+            plan.platform === "win32" ? 0o600 : 0o700
+          );
+          launcherRestored = hashBytes(await fs.readFile(plan.launcherPath)) === previousLauncherHash;
+          if (!launcherRestored) rollbackProblems.push("launcher restore verification failed");
+        } else {
+          rollbackProblems.push("launcher changed concurrently");
+        }
+      } catch (rollbackError) {
+        rollbackProblems.push(`launcher restore failed: ${rollbackError.message}`);
+      }
+      try {
+        const currentOwnershipHash = hashBytes(await fs.readFile(ownershipPath));
+        if (currentOwnershipHash === prior.hash) {
+          ownershipRestored = true;
+        } else if (nextOwnershipHash && currentOwnershipHash === nextOwnershipHash) {
+          await atomicWrite(ownershipPath, prior.raw);
+          ownershipRestored = hashBytes(await fs.readFile(ownershipPath)) === prior.hash;
+          if (!ownershipRestored) rollbackProblems.push("ownership restore verification failed");
+        } else {
+          rollbackProblems.push("ownership changed concurrently");
+        }
+      } catch (rollbackError) {
+        rollbackProblems.push(`ownership restore failed: ${rollbackError.message}`);
+      }
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch((rollbackError) => {
+        rollbackProblems.push(`staging cleanup failed: ${rollbackError.message}`);
+      });
+      if (launcherRestored && ownershipRestored) {
+        await fs.rm(plan.runtimeTargetDir, { recursive: true, force: true }).catch(
+          (rollbackError) => rollbackProblems.push(
+            `new runtime cleanup failed: ${rollbackError.message}`
+          )
+        );
+      }
+      if (rollbackProblems.length > 0) {
+        throw new Error(
+          `Fleet setup upgrade failed. Rollback incomplete: ${rollbackProblems.join("; ")}. `
+          + "Recovery artifacts were retained.",
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+    return {
+      applied: true,
+      mode: "upgrade",
+      launcherPath: plan.launcherPath,
+      runtimeTargetDir: plan.runtimeTargetDir,
+      restartRequired: true
+    };
+  }
   if (await pathExists(plan.launcherPath) || await pathExists(ownershipPath)) {
     throw new Error("Fleet setup already owns a launcher or manifest; uninstall it first.");
   }
@@ -483,6 +784,7 @@ export async function applySetup(plan = {}, dependencies = {}) {
 
   return {
     applied: true,
+    mode: "fresh",
     launcherPath: plan.launcherPath,
     runtimeTargetDir: plan.runtimeTargetDir,
     restartRequired: true
@@ -547,15 +849,26 @@ export async function uninstallSetup(options = {}) {
       retained.push(launcherPath);
     }
   }
-  const runtimeTargetDir = resolveOwnedPath(
-    pluginDataDir,
-    path.relative(pluginDataDir, ownership.runtimeTargetDir)
-  );
-  if (await pathExists(runtimeTargetDir)) {
-    if (await hashTree(runtimeTargetDir) === ownership.runtimeHash) {
-      await fs.rm(runtimeTargetDir, { recursive: true, force: false });
-    } else {
-      retained.push(runtimeTargetDir);
+  const runtimeRecords = [
+    { path: ownership.runtimeTargetDir, hash: ownership.runtimeHash },
+    ...(Array.isArray(ownership.supersededRuntimes) ? ownership.supersededRuntimes : [])
+  ];
+  const visitedRuntimePaths = new Set();
+  for (const record of runtimeRecords) {
+    assertPlainObject(record, "Fleet-owned runtime record");
+    const runtimeTargetDir = requireOwnedPath(
+      pluginDataDir,
+      record.path,
+      "Owned runtime"
+    );
+    if (visitedRuntimePaths.has(runtimeTargetDir)) continue;
+    visitedRuntimePaths.add(runtimeTargetDir);
+    if (await pathExists(runtimeTargetDir)) {
+      if (await hashTree(runtimeTargetDir) === record.hash) {
+        await fs.rm(runtimeTargetDir, { recursive: true, force: false });
+      } else {
+        retained.push(runtimeTargetDir);
+      }
     }
   }
   await fs.unlink(ownership.backupPath).catch((error) => {
@@ -594,6 +907,15 @@ export async function previewUninstallSetup(options = {}) {
       throw new Error(`Claude env.${key} is no longer owned by Fleet; uninstall will not overwrite it.`);
     }
   }
+  const runtimePaths = [
+    ownership.runtimeTargetDir,
+    ...(Array.isArray(ownership.supersededRuntimes)
+      ? ownership.supersededRuntimes.map((record) => record?.path)
+      : [])
+  ].filter((value, index, values) => typeof value === "string" && values.indexOf(value) === index);
+  for (const runtimePath of runtimePaths) {
+    requireOwnedPath(pluginDataDir, runtimePath, "Owned runtime");
+  }
   const payload = stableObject({
     schemaVersion: 1,
     pluginDataDir,
@@ -601,7 +923,7 @@ export async function previewUninstallSetup(options = {}) {
     settingsPath: ownership.settingsPath,
     settingsSourceHash: current.hash,
     restore: ownership.originalValues,
-    remove: [ownership.launcherPath, ownership.runtimeTargetDir],
+    remove: [ownership.launcherPath, ...runtimePaths],
     restartRequired: true
   });
   return Object.freeze({

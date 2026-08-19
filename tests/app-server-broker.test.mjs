@@ -106,3 +106,38 @@ test("broker refusal releases local handles and reports safe ownership metadata"
   process.kill(ownedPid, "SIGTERM");
   await broker.exitPromise;
 });
+
+test("broker marks a timed-out post-send request as acceptance unknown", async (t) => {
+  const fake = startFakeCodex(t, "accept-turn-without-response");
+  const broker = await createAppServerBroker({
+    codexCommand: fake.command,
+    cwd: fake.workspace,
+    env: fake.env,
+    requestTimeoutMs: 50
+  });
+  try {
+    const thread = await broker.request("thread/start", {
+      cwd: fake.workspace,
+      model: "gpt-5.6-sol",
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      serviceName: "codex_fleet_cc",
+      ephemeral: true
+    });
+
+    await assert.rejects(
+      broker.request("turn/start", {
+        threadId: thread.thread.id,
+        input: [{ type: "text", text: "Run once.", text_elements: [] }]
+      }),
+      (error) => {
+        assert.equal(error.requestAcceptance, "unknown");
+        assert.match(error.message, /timed out.*turn\/start/iu);
+        return true;
+      }
+    );
+    assert.equal(fake.readState().threads[0].turns.length, 1);
+  } finally {
+    await broker.close();
+  }
+});

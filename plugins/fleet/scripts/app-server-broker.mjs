@@ -27,7 +27,7 @@ const OWNERSHIP_REMEDIATION =
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.1.4"
+  version: "0.1.6"
 });
 
 const CAPABILITIES = Object.freeze({
@@ -74,6 +74,13 @@ function ownershipRefusalError(record, reason) {
     currentIdentity: currentIdentityState(reason),
     remediation: OWNERSHIP_REMEDIATION
   });
+  return error;
+}
+
+function requestFailure(method, message, requestAcceptance, cause = undefined) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.requestMethod = method;
+  error.requestAcceptance = requestAcceptance;
   return error;
 }
 
@@ -277,7 +284,11 @@ class AppServerBroker {
 
   request(method, params, options = {}) {
     if (this.closed || !this.child?.stdin?.writable) {
-      return Promise.reject(new Error("Codex app-server broker is closed."));
+      return Promise.reject(requestFailure(
+        method,
+        "Codex app-server broker is closed.",
+        "not_sent"
+      ));
     }
     const id = this.nextRequestId;
     this.nextRequestId += 1;
@@ -285,13 +296,31 @@ class AppServerBroker {
       ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
     return new Promise((resolve, reject) => {
+      const pending = { resolve, reject, timeout: null, method, sent: false };
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Codex app-server request timed out: ${method}.`));
+        reject(requestFailure(
+          method,
+          `Codex app-server request timed out: ${method}.`,
+          pending.sent ? "unknown" : "not_sent"
+        ));
       }, timeoutMs);
       timeout.unref?.();
-      this.pending.set(id, { resolve, reject, timeout, method });
-      this.send({ id, method, params });
+      pending.timeout = timeout;
+      this.pending.set(id, pending);
+      try {
+        this.send({ id, method, params });
+        pending.sent = true;
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timeout);
+        reject(requestFailure(
+          method,
+          `Codex app-server request was not sent: ${method}.`,
+          "not_sent",
+          error
+        ));
+      }
     });
   }
 
@@ -347,6 +376,8 @@ class AppServerBroker {
         const error = new Error(message.error.message ?? `${pending.method} failed.`);
         error.rpcCode = message.error.code;
         error.data = message.error.data;
+        error.requestMethod = pending.method;
+        error.requestAcceptance = "rejected";
         pending.reject(error);
       } else {
         pending.resolve(message.result ?? {});
@@ -367,7 +398,12 @@ class AppServerBroker {
     this.exitError = error ?? null;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
-      pending.reject(error ?? new Error("Codex app-server broker exited."));
+      pending.reject(requestFailure(
+        pending.method,
+        error?.message ?? "Codex app-server broker exited.",
+        pending.sent ? "unknown" : "not_sent",
+        error ?? undefined
+      ));
     }
     this.pending.clear();
     this.resolveExit?.();

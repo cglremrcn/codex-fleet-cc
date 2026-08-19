@@ -100,7 +100,8 @@ test("fleet shares one broker, follows up, verifies, renders, and preserves the 
 
   await runtime.continueLane("inspect", "Bounded follow up: report the evidence reference.");
   const followedUp = await waitForRuntime(runtime, "inspect", "complete");
-  assert.match(followedUp.lastMessage, /Follow-up prompt accepted/u);
+  assert.equal(followedUp.outcome, "accomplished");
+  assert.match(followedUp.lastMessage, /handled the requested task/iu);
 
   await scheduler.enqueue(contract(
     "verify",

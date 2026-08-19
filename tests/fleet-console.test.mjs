@@ -35,6 +35,28 @@ test("entry rejects unknown flags without opening a terminal", async () => {
   assert.match(errors.join(""), /Unknown Fleet Console argument/);
 });
 
+test("entry exposes the loaded integration version to the console", async () => {
+  let receivedPreferences;
+  const exitCode = await runEntry([], {
+    env: {
+      FLEET_INTEGRATION_VERSION: "0.1.6",
+      FLEET_ORIGINAL_EDITOR_JSON: "null"
+    },
+    runtime: {},
+    readSnapshot: async () => ({
+      workspace: { name: "repo", branch: "main" },
+      runtime: { health: "ok", protocol: "v1", activeLimit: 4 },
+      lanes: []
+    }),
+    runConsole: async ({ preferences }) => {
+      receivedPreferences = preferences;
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(receivedPreferences.version, "0.1.6");
+});
+
 test("a launcher without a prior editor disables editor handoff", () => {
   assert.equal(createOriginalEditor({ FLEET_ORIGINAL_EDITOR_JSON: "null" }), undefined);
 });

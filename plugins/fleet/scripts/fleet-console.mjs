@@ -261,7 +261,8 @@ export async function runEntry(argv, dependencies = {}) {
       preferences: {
         color: parsed.plain !== true && env.NO_COLOR === undefined,
         unicode: env.FLEET_ASCII !== "1",
-        reducedMotion: env.FLEET_REDUCED_MOTION === "1"
+        reducedMotion: env.FLEET_REDUCED_MOTION === "1",
+        version: env.FLEET_INTEGRATION_VERSION ?? "unknown"
       }
     });
     return EXIT_SUCCESS;

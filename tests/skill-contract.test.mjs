@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { scoreCase } from "../scripts/run-skill-evals.mjs";
+import {
+  buildStartContractTemplate,
+  listContractTemplates
+} from "../plugins/fleet/scripts/lib/contract-templates.mjs";
 
 const skillRoot = new URL(
   "../plugins/fleet/skills/codex-fleet-orchestrator/",
@@ -56,7 +60,8 @@ test("lane contract requires bounded work, authority, evidence, and cleanup", as
     "Deliverable",
     "Verification",
     "Stop conditions",
-    "Cleanup"
+    "Cleanup",
+    "Execution posture"
   ]) {
     assert.match(contract, new RegExp(term, "i"));
   }
@@ -65,6 +70,36 @@ test("lane contract requires bounded work, authority, evidence, and cleanup", as
   assert.match(contract, /"confirmationRef": null/);
   assert.match(contract, /"priority": "normal"/);
   assert.match(contract, /"image": \{ "generate": false, "edit": false \}/);
+  assert.match(contract, /admitted.*contract.*authorization/is);
+  assert.match(contract, /do not.*redundant approval/is);
+  assert.match(contract, /continue_within_authority/);
+  assert.match(contract, /needs_controller/);
+  for (const field of [
+    "evidenceRefs",
+    "artifactRefs",
+    "controllerRequest",
+    "stopReason"
+  ]) {
+    assert.match(contract, new RegExp(`\\b${field}\\b`));
+  }
+  assert.match(contract, /mutable.*malformed.*outcome_unknown/is);
+});
+
+test("every init template executes immediately without a redundant approval gate", () => {
+  for (const definition of listContractTemplates()) {
+    const contract = buildStartContractTemplate({
+      name: definition.name,
+      objective: "Perform and verify the bounded objective.",
+      workspacePath: process.cwd(),
+      confirmationRef: definition.confirmationRequired ? "user-request" : null
+    });
+    const prompt = contract.lanes[0].prompt;
+
+    assert.match(prompt, /Execution posture:/i, definition.name);
+    assert.match(prompt, /admitted Fleet contract is authorization/i, definition.name);
+    assert.match(prompt, /do not.*redundant approval/is, definition.name);
+    assert.match(prompt, /never widen authority/i, definition.name);
+  }
 });
 
 test("orchestrator safely continues redundant approval gates in the same Codex task", async () => {
@@ -76,6 +111,8 @@ test("orchestrator safely continues redundant approval gates in the same Codex t
   assert.match(skill, /at most two.*follow-up/is);
   assert.match(skill, /new (scope|authority|user choice).*stop/is);
   assert.match(skill, /Ctrl\+G/i);
+  assert.match(skill, /immediately after dispatching.*before waiting/is);
+  assert.match(skill, /down-arrow.*separate\s+interface/is);
 });
 
 test("image lanes use Codex built-in GPT Image 2 routing and workspace artifacts", async () => {

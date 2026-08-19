@@ -29,6 +29,10 @@ const DEFINITIONS = Object.freeze([
 
 const BY_NAME = new Map(DEFINITIONS.map((definition) => [definition.name, definition]));
 
+const EXECUTION_POSTURE = "Execution posture: The admitted Fleet contract is authorization to execute "
+  + "and verify this objective now; do not stop at a plan or ask for redundant approval. Never widen "
+  + "authority; report genuine missing authority or input to the controller.";
+
 function authority({ writable = false, imageGenerate = false } = {}) {
   return {
     sandbox: writable ? "workspace-write" : "read-only",
@@ -53,7 +57,8 @@ function promptFor(name, objective) {
       "Deliverable: Return a concise verdict followed by project-relative evidence references.",
       "Verification: Re-open the cited evidence and distinguish observed facts from inference.",
       "Stop conditions: Stop on missing inputs, conflicting evidence, or any need for wider authority.",
-      "Cleanup: Remove only lane-owned temporary resources; preserve the workspace unchanged."
+      "Cleanup: Remove only lane-owned temporary resources; preserve the workspace unchanged.",
+      EXECUTION_POSTURE
     ].join("\n");
   }
   if (name === "implementation") {
@@ -66,7 +71,8 @@ function promptFor(name, objective) {
       "Deliverable: Implement the objective and return changed project-relative paths.",
       "Verification: Run the smallest environment-relevant checks and report their exact outcome.",
       "Stop conditions: Stop on unrelated dirty changes, ambiguity, denied authority, or unsafe mutation.",
-      "Cleanup: Remove only lane-owned temporary files and processes."
+      "Cleanup: Remove only lane-owned temporary files and processes.",
+      EXECUTION_POSTURE
     ].join("\n");
   }
   if (name === "verification") {
@@ -79,7 +85,8 @@ function promptFor(name, objective) {
       "Deliverable: Return pass, fail, or blocked with project-relative evidence references.",
       "Verification: Re-run the relevant checks and attempt to falsify the worker claim.",
       "Stop conditions: Stop when evidence is missing, ambiguous, environment-mismatched, or out of authority.",
-      "Cleanup: Preserve all inspected artifacts and remove only verifier-owned temporary resources."
+      "Cleanup: Preserve all inspected artifacts and remove only verifier-owned temporary resources.",
+      EXECUTION_POSTURE
     ].join("\n");
   }
   return [
@@ -91,7 +98,8 @@ function promptFor(name, objective) {
     "Deliverable: Copy the selected result from generated_images to a new workspace path and return that workspace-relative path.",
     "Verification: Verify file existence, type, dimensions, and visual fit. The parent Claude must open the returned image with its Read tool before presenting it.",
     "Stop conditions: Stop on missing artifact, wrong provider, denied tool, ambiguous composition, or any need for broader authority.",
-    "Cleanup: Preserve the delivered image and source images; remove only lane-owned intermediate files."
+    "Cleanup: Preserve the delivered image and source images; remove only lane-owned intermediate files.",
+    EXECUTION_POSTURE
   ].join("\n");
 }
 

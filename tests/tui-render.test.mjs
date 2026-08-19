@@ -109,6 +109,16 @@ for (const [name, columns] of [["wide", 160], ["compact", 100], ["narrow", 72]])
   });
 }
 
+test("masthead identifies the integration runtime that is actually loaded", () => {
+  const output = stripAnsi(renderScreen(
+    viewFixture(),
+    { columns: 120, rows: 28 },
+    plainPreferences({ version: "0.1.6" })
+  ));
+
+  assert.match(output, /FLEET\/\/OPS\s+v0\.1\.6/);
+});
+
 test("renderer never invents token or verification data", () => {
   const output = stripAnsi(renderScreen(
     viewFixture({
@@ -166,6 +176,68 @@ test("Fleet Formation moves only when motion is enabled", () => {
   assert.ok(movingA.every((line) => displayWidth(line) === 21));
 });
 
+test("runtime recovery and controller requests are visible without opening logs", () => {
+  const recovering = stripAnsi(renderScreen(
+    viewFixture({
+      snapshot: {
+        lanes: [lane({
+          status: "running",
+          phase: "recovering 1/2",
+          automaticContinuations: 1
+        })]
+      }
+    }),
+    { columns: 160, rows: 28 },
+    plainPreferences()
+  ));
+  assert.match(recovering, /AUTO RECOVERY\s+1\/2/iu);
+
+  const blocked = stripAnsi(renderScreen(
+    viewFixture({
+      snapshot: {
+        lanes: [lane({
+          status: "blocked",
+          phase: "needs-controller",
+          controllerRequest: {
+            kind: "new_authority",
+            question: "Production deployment authority is required."
+          }
+        })]
+      }
+    }),
+    { columns: 160, rows: 28 },
+    plainPreferences()
+  ));
+  assert.match(blocked, /CONTROLLER REQUEST/iu);
+  assert.match(blocked, /Production deployment authority/iu);
+});
+
+test("structured work, verification, and artifacts appear in the evidence panel", () => {
+  const output = stripAnsi(renderScreen(
+    viewFixture({
+      panel: "evidence",
+      snapshot: {
+        lanes: [lane({
+          status: "complete",
+          outcome: "accomplished",
+          workPerformed: ["Updated the runtime adapter."],
+          verification: ["Focused tests passed."],
+          artifactRefs: ["src/runtime.mjs"]
+        })]
+      }
+    }),
+    { columns: 100, rows: 28 },
+    plainPreferences()
+  ));
+
+  assert.match(output, /WORK PERFORMED/iu);
+  assert.match(output, /Updated the runtime adapter/iu);
+  assert.match(output, /VERIFICATION/iu);
+  assert.match(output, /Focused tests passed/iu);
+  assert.match(output, /ARTIFACT REFS/iu);
+  assert.match(output, /src\/runtime\.mjs/iu);
+});
+
 test("complete awaits verification with motion while verified remains locked", () => {
   const completeView = viewFixture({
     selection: "runtime-audit",
@@ -210,7 +282,8 @@ test("embedded Codex session renders real transcript, provenance, and composer",
         ],
         scroll: 0
       },
-      composer: { laneId: "runtime-audit", value: "Ask a follow-up" }
+      composer: { laneId: "runtime-audit", value: "" },
+      notice: "MESSAGE SENT · runtime-audit · SAME CODEX THREAD"
     })
   ));
 
@@ -222,7 +295,7 @@ test("embedded Codex session renders real transcript, provenance, and composer",
   assert.match(output, /\[YOU\].*Check the exact source claim\./u);
   assert.match(output, /\[CODEX\].*narrower claim\./u);
   assert.match(output, /\[ACTIVITY\].*WEB SEARCH/u);
-  assert.match(output, /MESSAGE > Ask a follow-up/u);
+  assert.match(output, /MESSAGE SENT · runtime-audit · SAME CODEX THREAD/u);
   assert.match(output, /Enter send.*Esc\/Ctrl\+G dashboard/iu);
 });
 

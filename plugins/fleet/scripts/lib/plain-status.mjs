@@ -30,6 +30,26 @@ export function renderPlainStatus(snapshot = {}) {
         `Lane ${index + 1} of ${total}: ${field(lane?.id)}, ${field(lane?.status)}, `
         + `${field(lane?.role)}, ${field(lane?.label)}`
       );
+      if (
+        lane?.status === "running"
+        && typeof lane?.phase === "string"
+        && /^recovering \d+\/\d+$/u.test(lane.phase)
+      ) {
+        lines.push(`  RECOVERING ${field(lane.phase.slice("recovering ".length))}`);
+      }
+      if (lane?.controllerRequest && typeof lane.controllerRequest === "object") {
+        lines.push(
+          `  CLAUDE ACTION [${field(lane.controllerRequest.kind, "runtime_blocker")}]: `
+          + field(lane.controllerRequest.question, "Controller attention required")
+        );
+      }
+      if (lane?.pendingContinuation && typeof lane.pendingContinuation === "object") {
+        lines.push(
+          `  CONTINUATION ${field(lane.pendingContinuation.state, "outcome_unknown")}`
+            .toUpperCase()
+            .replaceAll("_", " ")
+        );
+      }
     });
     if (total > lanes.length) {
       lines.push(`${total - lanes.length} additional lanes omitted from plain status.`);

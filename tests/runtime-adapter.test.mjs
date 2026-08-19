@@ -64,6 +64,211 @@ test("one adapter reuses one broker for two read-only lanes", async (t) => {
   ]);
 });
 
+test("runtime requires a structured evidence-bearing outcome", async (t) => {
+  const fixture = startFakeCodex(t);
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-structured"));
+  const completed = await waitFor(
+    () => runtime.inspectLane("lane-structured")?.status === "complete"
+      ? runtime.inspectLane("lane-structured")
+      : null,
+    "structured lane completion"
+  );
+
+  assert.equal(fixture.readState().lastTurnStart.structuredOutcome, true);
+  assert.equal(completed.outcome, "accomplished");
+  assert.match(completed.lastMessage, /handled the requested task/iu);
+});
+
+test("redundant plan approval is recovered on the same Codex thread", async (t) => {
+  const fixture = startFakeCodex(t, "plan-then-execute");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  const started = await runtime.startLane(readOnlyContract(fixture, "lane-auto-continue"));
+  const completed = await waitFor(
+    () => runtime.inspectLane("lane-auto-continue")?.status === "complete"
+      ? runtime.inspectLane("lane-auto-continue")
+      : null,
+    "automatic same-thread continuation"
+  );
+  const thread = fixture.readState().threads.find((item) => item.id === started.threadId);
+
+  assert.equal(thread.turns.length, 2);
+  assert.equal(completed.threadId, started.threadId);
+  assert.equal(completed.automaticContinuations, 1);
+  assert.match(fixture.readState().lastTurnStart.prompt, /already authorizes/iu);
+});
+
+test("a genuine authority request blocks for the controller without widening scope", async (t) => {
+  const fixture = startFakeCodex(t, "needs-new-authority");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-needs-controller"));
+  const blocked = await waitFor(
+    () => runtime.inspectLane("lane-needs-controller")?.status === "blocked"
+      ? runtime.inspectLane("lane-needs-controller")
+      : null,
+    "controller attention outcome"
+  );
+
+  assert.equal(blocked.phase, "needs-controller");
+  assert.equal(blocked.automaticContinuations, 0);
+  assert.match(blocked.exitReason, /deployment authority/iu);
+  assert.equal(fixture.readState().threads[0].turns.length, 1);
+});
+
+test("malformed output from a mutable lane becomes outcome unknown without another turn", async (t) => {
+  const fixture = startFakeCodex(t, "invalid-lane-outcome");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-mutable-unknown", {
+    authority: {
+      sandbox: "workspace-write",
+      network: "off",
+      process: { start: true, stopOwned: true }
+    }
+  }));
+  const unknown = await waitFor(
+    () => runtime.inspectLane("lane-mutable-unknown")?.status === "outcome_unknown"
+      ? runtime.inspectLane("lane-mutable-unknown")
+      : null,
+    "mutable unknown outcome"
+  );
+
+  assert.equal(unknown.phase, "outcome_unknown");
+  assert.equal(unknown.automaticContinuations, 0);
+  assert.equal(fixture.readState().threads[0].turns.length, 1);
+});
+
+test("an accepted initial turn with a lost response becomes outcome unknown", async (t) => {
+  const fixture = startFakeCodex(t, "accept-turn-without-response");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env,
+    requestTimeoutMs: 50
+  });
+  t.after(() => runtime.close());
+
+  await assert.rejects(
+    runtime.startLane(readOnlyContract(fixture, "lane-initial-acceptance-unknown")),
+    (error) => error.requestAcceptance === "unknown"
+  );
+  const lane = runtime.inspectLane("lane-initial-acceptance-unknown");
+  assert.equal(lane.status, "outcome_unknown");
+  assert.equal(lane.phase, "outcome_unknown");
+  assert.equal(fixture.readState().threads[0].turns.length, 1);
+});
+
+test("an automatic continuation with a lost response is never repeated", async (t) => {
+  const fixture = startFakeCodex(t, "plan-then-accept-without-response");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env,
+    requestTimeoutMs: 50
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-auto-acceptance-unknown"));
+  const unknown = await waitFor(
+    () => runtime.inspectLane("lane-auto-acceptance-unknown")?.status === "outcome_unknown"
+      ? runtime.inspectLane("lane-auto-acceptance-unknown")
+      : null,
+    "automatic continuation acceptance uncertainty"
+  );
+
+  assert.equal(unknown.automaticContinuations, 1);
+  assert.equal(fixture.readState().threads[0].turns.length, 2);
+});
+
+test("a manual continuation with a lost response locks the runtime lane unknown", async (t) => {
+  const fixture = startFakeCodex(t, "accept-follow-up-without-response");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env,
+    requestTimeoutMs: 50
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-follow-up-acceptance-unknown"));
+  await waitFor(
+    () => runtime.inspectLane("lane-follow-up-acceptance-unknown")?.status === "complete",
+    "initial terminal result"
+  );
+  await assert.rejects(
+    runtime.continueLane("lane-follow-up-acceptance-unknown", "Continue exactly once."),
+    (error) => error.requestAcceptance === "unknown"
+  );
+
+  const lane = runtime.inspectLane("lane-follow-up-acceptance-unknown");
+  assert.equal(lane.status, "outcome_unknown");
+  assert.equal(fixture.readState().threads[0].turns.length, 2);
+  await assert.rejects(
+    runtime.continueLane("lane-follow-up-acceptance-unknown", "Do not duplicate it."),
+    /only continue after completion/iu
+  );
+});
+
+test("a fresh runtime resumes a controller-blocked lane on the same thread", async (t) => {
+  const fixture = startFakeCodex(t, "needs-new-authority");
+  const firstRuntime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  await firstRuntime.startLane(readOnlyContract(fixture, "lane-controller-resume"));
+  const blocked = await waitFor(
+    () => firstRuntime.inspectLane("lane-controller-resume")?.status === "blocked"
+      ? firstRuntime.inspectLane("lane-controller-resume")
+      : null,
+    "first controller block"
+  );
+  await firstRuntime.close();
+
+  const secondRuntime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => secondRuntime.close());
+  await secondRuntime.resumeLane(
+    blocked,
+    fixture.workspace,
+    "The controller supplied the missing bounded decision."
+  );
+  const resumed = await waitFor(
+    () => fixture.readState().threads
+      .find((thread) => thread.id === blocked.threadId)?.turns.length === 2,
+    "controller-blocked same-thread resume"
+  );
+
+  assert.equal(resumed, true);
+  assert.equal(secondRuntime.inspectLane("lane-controller-resume").threadId, blocked.threadId);
+});
+
 test("runtime events are lane-scoped, monotonic, and omit reasoning deltas", async (t) => {
   const fixture = startFakeCodex(t, "with-reasoning");
   const events = [];

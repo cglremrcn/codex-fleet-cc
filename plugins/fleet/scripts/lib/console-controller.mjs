@@ -159,7 +159,8 @@ export function createConsoleController(options = {}) {
       reducedMotion: preferences.reducedMotion === true || ui.motion === false,
       frame,
       session: ui.session,
-      composer: ui.composer
+      composer: ui.composer,
+      notice: ui.notice
     }), ui, terminal.columns);
     if (screen === previousScreen) return false;
     previousScreen = screen;
@@ -353,6 +354,7 @@ export function createConsoleController(options = {}) {
       ui.notice = null;
     } else if (event.type === "text" && ui.composer) {
       ui.composer.value = `${ui.composer.value}${event.value}`.slice(0, MAX_COMPOSER_LENGTH);
+      ui.notice = null;
     } else if (event.type === "text" && ui.filterEditing) {
       ui.filterQuery = `${ui.filterQuery}${event.value}`.slice(0, MAX_FILTER_LENGTH);
       ui.selectedIndex = 0;
@@ -446,8 +448,12 @@ export function createConsoleController(options = {}) {
       ui = { ...ui, ...reduceInput(ui, event) };
       setNotice(`PANEL ${PANELS[ui.panelIndex].toUpperCase()} · ${ui.panelIndex + 1}/${PANELS.length}`);
     } else if (event.type === "toggleMotion") {
-      ui = { ...ui, ...reduceInput(ui, event) };
-      setNotice(ui.motion ? "KITE MOTION RESUMED" : "KITE MOTION PAUSED");
+      if (preferences.reducedMotion === true) {
+        setNotice("KITE MOTION LOCKED · REDUCED MOTION");
+      } else {
+        ui = { ...ui, ...reduceInput(ui, event) };
+        setNotice(ui.motion ? "KITE MOTION RESUMED" : "KITE MOTION PAUSED");
+      }
     } else {
       ui = { ...ui, ...reduceInput(ui, event) };
     }

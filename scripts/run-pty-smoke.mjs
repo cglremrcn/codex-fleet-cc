@@ -15,6 +15,7 @@ import {
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HOST = path.join(ROOT, "tests", "fixtures", "fake-claude-editor-host.mjs");
+const SESSION_HOST = path.join(ROOT, "tests", "fixtures", "fake-fleet-console-host.mjs");
 const RUNTIME_SOURCE = path.join(ROOT, "plugins", "fleet", "scripts");
 
 function parseArguments(argv) {
@@ -81,6 +82,70 @@ async function verifyInstalledLauncher(launcherPath) {
       }
     });
   });
+}
+
+async function verifyEmbeddedSession(root, options = {}) {
+  const recordPath = path.join(root, "session-message.json");
+  let output = "";
+  let enterSent = false;
+  let messageSent = false;
+  let returnSent = false;
+  let quitSent = false;
+  const terminal = pty.spawn(process.execPath, [SESSION_HOST, recordPath], {
+    name: "xterm-256color",
+    cols: options.columns ?? 140,
+    rows: options.rows ?? 34,
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      TERM: "xterm-256color",
+      NO_COLOR: "1"
+    },
+    useConpty: process.platform === "win32",
+    useConptyDll: process.platform === "win32"
+  });
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      terminal.kill();
+      reject(new Error(`Embedded session PTY smoke timed out.\n${output.slice(-8192)}`));
+    }, options.timeoutMs ?? 20_000);
+    const dataSubscription = terminal.onData((chunk) => {
+      output = `${output}${chunk}`.slice(-256 * 1024);
+      if (!enterSent && /FLEET\/\/OPS/u.test(output)) {
+        enterSent = true;
+        terminal.write("\r");
+      }
+      if (enterSent && !messageSent && /FLEET\/\/CODEX SESSION/u.test(output)) {
+        messageSent = true;
+        terminal.write("continue inside authority\r");
+      }
+      if (messageSent && !returnSent && /MESSAGE SENT/u.test(output)) {
+        returnSent = true;
+        terminal.write("\u0007");
+      }
+      if (returnSent && !quitSent && /RETURNED TO FLEET DASHBOARD/u.test(output)) {
+        quitSent = true;
+        terminal.write("q");
+      }
+    });
+    const exitSubscription = terminal.onExit(({ exitCode, signal }) => {
+      clearTimeout(timer);
+      dataSubscription.dispose();
+      queueMicrotask(() => exitSubscription.dispose());
+      if (exitCode === 0) resolve();
+      else reject(new Error(`Embedded session PTY exited with ${signal ?? exitCode}.`));
+    });
+  });
+
+  const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+  return {
+    sessionOpened: output.includes("FLEET//CODEX SESSION"),
+    sameThreadMessageSent: record.laneId === "pty-session-lane"
+      && record.threadId === record.originalThreadId
+      && record.message === "continue inside authority",
+    returnedFromSession: output.includes("RETURNED TO FLEET DASHBOARD")
+  };
 }
 
 export async function runPtySmoke(options = {}) {
@@ -165,6 +230,7 @@ export async function runPtySmoke(options = {}) {
       });
     });
     await exit;
+    const sessionProof = await verifyEmbeddedSession(root, options);
 
     const unchanged = draftBefore.equals(fs.readFileSync(draftPath));
     const restored = output.includes("CLAUDE_HOST:AFTER:");
@@ -195,6 +261,7 @@ export async function runPtySmoke(options = {}) {
       terminalRestored,
       installedLauncherChecked,
       installedLauncherHandoff: restored && output.includes("CONSOLE=0"),
+      ...sessionProof,
       uninstallRestored,
       ownedChildrenAfterExit: isProcessAlive(ownedPid) ? 1 : 0
     };

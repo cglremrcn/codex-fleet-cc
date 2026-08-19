@@ -32,3 +32,58 @@ test("plain status bounds hostile fields and remains useful with no lanes", () =
   assert.doesNotMatch(output, /\u001b\[/);
   assert.match(output, /No Fleet lanes recorded/);
 });
+
+test("plain status exposes recovery, controller action, and uncertain continuations", () => {
+  const output = renderPlainStatus({
+    workspace: { name: "fleet-demo", branch: "main" },
+    runtime: { health: "ready", protocol: "compatible" },
+    lanes: [
+      {
+        id: "recovering",
+        role: "implementer",
+        status: "running",
+        phase: "recovering 1/2",
+        label: "Continue safe work",
+        automaticContinuations: 1
+      },
+      {
+        id: "authority",
+        role: "implementer",
+        status: "blocked",
+        label: "Deploy release",
+        controllerRequest: {
+          kind: "new_authority",
+          question: "Deployment authority is required."
+        }
+      },
+      {
+        id: "uncertain",
+        role: "implementer",
+        status: "complete",
+        label: "Preserve terminal result",
+        pendingContinuation: { state: "outcome_unknown", previousTurnId: "turn-1" }
+      }
+    ]
+  });
+
+  assert.match(output, /RECOVERING 1\/2/iu);
+  assert.match(output, /CLAUDE ACTION \[new_authority\]: Deployment authority is required\./iu);
+  assert.match(output, /CONTINUATION OUTCOME UNKNOWN/iu);
+});
+
+test("plain status does not label a completed recovery attempt as currently recovering", () => {
+  const output = renderPlainStatus({
+    workspace: { name: "fleet-demo", branch: "main" },
+    runtime: { health: "ready", protocol: "compatible" },
+    lanes: [{
+      id: "done-after-recovery",
+      role: "implementer",
+      status: "complete",
+      phase: "complete",
+      label: "Completed after one bounded recovery",
+      automaticContinuations: 1
+    }]
+  });
+
+  assert.doesNotMatch(output, /RECOVERING/iu);
+});

@@ -40,6 +40,7 @@ function recordingRuntime() {
   const lanes = new Map();
   const starts = [];
   const resumes = [];
+  const resumeRecords = [];
   const interrupts = [];
   let active = 0;
   let peak = 0;
@@ -68,6 +69,7 @@ function recordingRuntime() {
       return { ...state };
     },
     async resumeLane(record, workspacePath, message) {
+      resumeRecords.push(structuredClone(record));
       const state = {
         ...record,
         workspacePath,
@@ -120,6 +122,7 @@ function recordingRuntime() {
     },
     starts,
     resumes,
+    resumeRecords,
     interrupts
   };
 }
@@ -338,6 +341,132 @@ test("failed follow-up persistence restores terminal state and writer capacity",
   await replacement;
 });
 
+test("controller-blocked lanes resume on the same persisted Codex thread", async () => {
+  const runtime = recordingRuntime();
+  const scheduler = createScheduler({
+    runtime,
+    store: memoryStore(),
+    limits: { staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{
+      ...reader("controller-blocked", "persisted"),
+      status: "blocked",
+      phase: "needs-controller",
+      threadId: "thread-controller-blocked",
+      turnId: "turn-controller-blocked",
+      controllerRequest: {
+        kind: "new_authority",
+        question: "A controller decision is required."
+      },
+      stopReason: null,
+      automaticContinuations: 2,
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z",
+      finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+
+  const continued = await scheduler.continue(
+    "controller-blocked",
+    "The controller supplied the missing bounded input."
+  );
+
+  assert.equal(continued.status, "running");
+  assert.equal(runtime.resumeRecords[0].status, "blocked");
+  assert.equal(runtime.resumeRecords[0].phase, "needs-controller");
+  assert.equal(runtime.resumeRecords[0].threadId, "thread-controller-blocked");
+});
+
+test("structured outcome evidence survives scheduler recovery", () => {
+  const recovered = recoverPersistedRecords([{
+    ...reader("structured-history", "persisted"),
+    status: "complete",
+    phase: "complete",
+    outcome: "accomplished",
+    workPerformed: ["Updated the implementation."],
+    evidenceRefs: ["tests/runtime.test.mjs"],
+    verification: ["Focused tests passed."],
+    artifactRefs: ["src/runtime.mjs"],
+    controllerRequest: null,
+    stopReason: null,
+    automaticContinuations: 1,
+    threadId: "thread-structured-history",
+    turnId: "turn-structured-history",
+    enqueuedAt: "2026-08-19T10:00:00.000Z",
+    startedAt: "2026-08-19T10:00:01.000Z",
+    finishedAt: "2026-08-19T10:00:02.000Z"
+  }])[0];
+
+  assert.equal(recovered.outcome, "accomplished");
+  assert.deepEqual(recovered.workPerformed, ["Updated the implementation."]);
+  assert.deepEqual(recovered.evidenceRefs, ["tests/runtime.test.mjs"]);
+  assert.deepEqual(recovered.verification, ["Focused tests passed."]);
+  assert.deepEqual(recovered.artifactRefs, ["src/runtime.mjs"]);
+  assert.equal(recovered.automaticContinuations, 1);
+});
+
+test("a crash-window snapshot preserves the immutable terminal result and pending attempt", async () => {
+  const runtime = recordingRuntime();
+  let acceptContinuation;
+  runtime.resumeLane = (...args) => new Promise((resolve) => {
+    acceptContinuation = () => resolve({
+      ...args[0],
+      status: "running",
+      phase: "continuing",
+      turnId: "turn-after-acceptance"
+    });
+  });
+  const store = memoryStore();
+  const scheduler = createScheduler({
+    runtime,
+    store,
+    limits: { staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{
+      ...reader("crash-safe-terminal", "shared"),
+      status: "complete",
+      phase: "complete",
+      threadId: "thread-crash-safe-terminal",
+      turnId: "turn-original",
+      lastMessage: "Original completed result remains available.",
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z",
+      finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+
+  const continuing = scheduler.continue("crash-safe-terminal", "Continue the bounded task.");
+  await nextTurn();
+  const crashWindow = store.writes.at(-1).history[0];
+
+  assert.equal(crashWindow.status, "complete");
+  assert.equal(crashWindow.turnId, "turn-original");
+  assert.equal(crashWindow.lastMessage, "Original completed result remains available.");
+  assert.equal(crashWindow.pendingContinuation.state, "starting");
+
+  const recovered = createScheduler({
+    runtime: recordingRuntime(),
+    store: memoryStore(),
+    limits: { staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [crashWindow]
+  });
+  const retained = recovered.snapshot().history[0];
+  assert.equal(retained.status, "complete");
+  assert.equal(retained.turnId, "turn-original");
+  assert.equal(retained.pendingContinuation.state, "outcome_unknown");
+  await assert.rejects(
+    recovered.continue("crash-safe-terminal", "Do not duplicate the uncertain turn."),
+    /pending continuation.*reconciliation/iu
+  );
+
+  acceptContinuation();
+  await continuing;
+});
+
 test("a rejected runtime continuation preserves the previous terminal record", async () => {
   const runtime = recordingRuntime();
   runtime.resumeLane = async () => {
@@ -375,6 +504,85 @@ test("a rejected runtime continuation preserves the previous terminal record", a
   assert.equal(restored.exitReason, null);
   assert.equal(restored.finishedAt, "2026-08-19T10:00:02.000Z");
   assert.deepEqual(scheduler.snapshot().active, []);
+});
+
+test("an acceptance-unknown continuation preserves the terminal record and reconciliation lock", async () => {
+  const runtime = recordingRuntime();
+  runtime.resumeLane = async () => {
+    const error = new Error("turn/start response was lost");
+    error.requestAcceptance = "unknown";
+    throw error;
+  };
+  const store = memoryStore();
+  const scheduler = createScheduler({
+    runtime,
+    store,
+    limits: { staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{
+      ...reader("uncertain-follow-up", "shared"),
+      status: "complete",
+      phase: "complete",
+      threadId: "thread-uncertain-follow-up",
+      turnId: "turn-original",
+      lastMessage: "Original terminal evidence.",
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z",
+      finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+
+  await assert.rejects(
+    scheduler.continue("uncertain-follow-up", "Perform the bounded continuation once."),
+    /response was lost/iu
+  );
+  const retained = scheduler.snapshot().history[0];
+  assert.equal(retained.status, "complete");
+  assert.equal(retained.turnId, "turn-original");
+  assert.equal(retained.lastMessage, "Original terminal evidence.");
+  assert.equal(retained.pendingContinuation.state, "outcome_unknown");
+  assert.equal(store.writes.at(-1).history[0].pendingContinuation.state, "outcome_unknown");
+  await assert.rejects(
+    scheduler.continue("uncertain-follow-up", "Never repeat without reconciliation."),
+    /requires reconciliation/iu
+  );
+});
+
+test("an acceptance-unknown initial turn is persisted as unknown instead of failed", async () => {
+  const runtime = recordingRuntime();
+  runtime.startLane = async () => {
+    const error = new Error("initial turn/start response was lost");
+    error.requestAcceptance = "unknown";
+    throw error;
+  };
+  runtime.inspectLane = (id) => id === "uncertain-initial"
+    ? {
+      id,
+      status: "outcome_unknown",
+      phase: "outcome_unknown",
+      threadId: "thread-uncertain-initial",
+      turnId: null,
+      exitReason: "initial turn/start response was lost"
+    }
+    : null;
+  const store = memoryStore();
+  const scheduler = createScheduler({
+    runtime,
+    store,
+    limits: { staggerMs: 0 },
+    clock: deterministicClock()
+  });
+
+  await assert.rejects(
+    scheduler.enqueue(reader("uncertain-initial", "shared")),
+    /response was lost/iu
+  );
+  const retained = scheduler.snapshot().history[0];
+  assert.equal(retained.status, "outcome_unknown");
+  assert.equal(retained.phase, "outcome_unknown");
+  assert.equal(retained.threadId, "thread-uncertain-initial");
+  assert.equal(store.writes.at(-1).history[0].status, "outcome_unknown");
 });
 
 test("cancel refuses a stale caller-pinned turn identity", async () => {

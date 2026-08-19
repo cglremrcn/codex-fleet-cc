@@ -25,7 +25,9 @@ const readline = require("node:readline");
 	}
 
 function saveState(state) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  const temporaryPath = STATE_PATH + ".tmp-" + process.pid;
+  fs.writeFileSync(temporaryPath, JSON.stringify(state, null, 2));
+  fs.renameSync(temporaryPath, STATE_PATH);
 }
 
 function requiresExperimental(field, message, state) {
@@ -264,6 +266,55 @@ function structuredReviewPayload(prompt) {
     summary: "No material issues found.",
     findings: [],
     next_steps: []
+  });
+}
+
+function structuredLanePayload(turnCount) {
+  if (BEHAVIOR === "invalid-lane-outcome") {
+    return "not valid json";
+  }
+  if (
+    (BEHAVIOR === "plan-then-execute" || BEHAVIOR === "plan-then-accept-without-response")
+    && turnCount === 1
+  ) {
+    return JSON.stringify({
+      outcome: "needs_controller",
+      summary: "Prepared a plan but did not edit files.",
+      workPerformed: [],
+      evidenceRefs: [],
+      verification: [],
+      artifactRefs: [],
+      controllerRequest: {
+        kind: "redundant_approval",
+        question: "Say continue before I implement the plan."
+      },
+      stopReason: null
+    });
+  }
+  if (BEHAVIOR === "needs-new-authority") {
+    return JSON.stringify({
+      outcome: "needs_controller",
+      summary: "The requested deployment is outside the admitted authority.",
+      workPerformed: [],
+      evidenceRefs: [],
+      verification: [],
+      artifactRefs: [],
+      controllerRequest: {
+        kind: "new_authority",
+        question: "Production deployment authority is required."
+      },
+      stopReason: null
+    });
+  }
+  return JSON.stringify({
+    outcome: "accomplished",
+    summary: "Handled the requested task and verified the result.",
+    workPerformed: ["Completed the bounded task."],
+    evidenceRefs: ["README.md"],
+    verification: ["Focused verification completed."],
+    artifactRefs: [],
+    controllerRequest: null,
+    stopReason: null
   });
 }
 
@@ -512,14 +563,31 @@ rl.on("line", (line) => {
 	          turnId,
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
-	          prompt
+	          prompt,
+	          structuredOutcome: Boolean(
+	            message.params.outputSchema
+	            && message.params.outputSchema.properties
+	            && message.params.outputSchema.properties.outcome
+	          )
 	        };
 	        saveState(state);
+	        const suppressResponse = BEHAVIOR === "accept-turn-without-response"
+	          || (BEHAVIOR === "accept-follow-up-without-response" && thread.turns.length > 1)
+	          || (BEHAVIOR === "plan-then-accept-without-response" && thread.turns.length > 1);
+	        if (suppressResponse) break;
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
-        const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
+        const outputProperties = message.params.outputSchema?.properties;
+        const payload = outputProperties?.verdict
           ? structuredReviewPayload(prompt)
-          : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
+          : outputProperties?.outcome
+            ? structuredLanePayload(thread.turns.length)
+            : taskPayload(
+                prompt,
+                thread.name
+                  && thread.name.startsWith("Codex Companion Task")
+                  && prompt.includes("Continue from the current thread state")
+              );
 
         if (
           BEHAVIOR === "with-subagent" ||

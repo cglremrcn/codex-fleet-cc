@@ -210,13 +210,51 @@ test("SessionStart stays silent when Fleet integration ownership is applied", as
   const pluginData = path.join(root, "plugin-data");
   await fs.mkdir(workspace, { recursive: true });
   await fs.mkdir(pluginData, { recursive: true });
+  const manifest = JSON.parse(await read("plugins/fleet/.claude-plugin/plugin.json"));
   await fs.writeFile(
     path.join(pluginData, "ownership.json"),
-    JSON.stringify({ schemaVersion: 1, status: "applied" }),
+    JSON.stringify({ schemaVersion: 1, status: "applied", version: manifest.version }),
     "utf8",
   );
 
   const response = runSessionHook({ workspace, pluginData });
 
   assert.equal(response.hookSpecificOutput?.additionalContext, undefined);
+});
+
+test("SessionStart reports an outdated Ctrl+G integration runtime to Claude", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-session-outdated-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = path.join(root, "workspace");
+  const pluginData = path.join(root, "plugin-data");
+  await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(pluginData, { recursive: true });
+  await fs.writeFile(
+    path.join(pluginData, "ownership.json"),
+    JSON.stringify({ schemaVersion: 1, status: "applied", version: "0.1.0" }),
+    "utf8"
+  );
+
+  const response = runSessionHook({ workspace, pluginData });
+  const context = response.hookSpecificOutput?.additionalContext ?? "";
+
+  assert.match(context, /integration runtime 0\.1\.0/iu);
+  assert.match(context, /installed plugin 0\.1\.6/iu);
+  assert.match(context, /Fleet setup.*upgrade/iu);
+  assert.equal((await fs.readdir(pluginData)).length, 1, "the hook must remain read-only");
+});
+
+test("SessionStart reports a non-file ownership candidate as invalid", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-session-invalid-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = path.join(root, "workspace");
+  const pluginData = path.join(root, "plugin-data");
+  await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(path.join(pluginData, "ownership.json"), { recursive: true });
+
+  const response = runSessionHook({ workspace, pluginData });
+  const context = response.hookSpecificOutput?.additionalContext ?? "";
+
+  assert.match(context, /ownership is unreadable or incomplete/iu);
+  assert.match(context, /doctor before setup/iu);
 });

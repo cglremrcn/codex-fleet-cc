@@ -16,6 +16,11 @@ answer yes and let Claude apply the exact preview. Run `/fleet:setup` only if th
 appear. Do not replace `VISUAL` or `EDITOR` manually. Fleet needs the ownership manifest to
 uninstall safely.
 
+The Fleet masthead shows the loaded integration version. If it is older than the installed plugin,
+reload plugins and accept the SessionStart upgrade offer, or run `/fleet:setup` to preview the same
+versioned upgrade. Fleet verifies the owned launcher/runtime, stages the target version, swaps it
+atomically, and restores the prior owned files if the apply fails. Do not copy runtime files by hand.
+
 If SessionStart reports unreadable or incomplete ownership, run `/fleet:doctor`. Do not rerun setup
 or delete the manifest until the report identifies the conflict.
 

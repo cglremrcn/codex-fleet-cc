@@ -54,6 +54,7 @@ Fleet Console                                            │
 Fleet Runtime
   ├─ one local Codex app-server broker
   ├─ bounded lane scheduler
+  ├─ structured outcomes and same-thread recovery
   ├─ fail-closed capability gates
   └─ private, redacted, atomic local state
 ```
@@ -72,7 +73,9 @@ formation at a capped four frames per second; completed work keeps a subtle awai
 motion; verified work locks it; blocked and failed work use distinct static postures. Wide terminals
 show lanes, selected evidence, controls, and authority with visible panel focus.
 Compact and narrow layouts progressively collapse KITE into a small signal sigil without hiding
-essential controls.
+essential controls. The masthead shows the loaded integration version; if that version differs from
+the installed plugin, SessionStart offers the deterministic upgrade instead of leaving an old launcher
+silently active.
 
 ![Fleet Console running four sanitized fixture lanes with KITE motion](docs/assets/fleet-console-kite-v3.gif)
 
@@ -127,9 +130,15 @@ Fleet Console's embedded session uses app-server `thread/read`, displays the rea
 and uses `turn/steer` for an active turn or a same-thread continuation for a terminal turn. It does not start
 a nested `codex` CLI. Each admission records a stable admission ID, source, and timestamp so the local Fleet
 acceptance can be tied to the real Codex thread without inventing a human identity.
-If a worker merely asks for a redundant “say continue” approval even though the original contract already
-granted the required authority, Claude sends a bounded follow-up and requires the actual work and evidence.
-New scope, new authority, external effects, or a genuine user choice still stop for confirmation.
+Every lane returns a schema-validated outcome: `accomplished`, `continue_within_authority`,
+`needs_controller`, or `blocked`. Fleet accepts `accomplished` only with non-empty work and verification
+evidence. A read-only worker that returns only a plan, malformed output, incomplete work, or a redundant
+“say continue” approval may be continued on the same Codex thread up to twice without widening authority.
+A mutable lane is continued automatically only when its structured outcome proves that no mutation was
+attempted; ambiguous mutable results become `outcome_unknown` and are never blindly repeated. New scope,
+authority, external effects, missing input, or a genuine user choice becomes `needs_controller`; Claude
+resolves what it can and involves the human only when a material human decision or confirmation is
+actually required.
 
 For generated images, the Codex lane returns a verified workspace-relative artifact path. Parent Claude
 then opens that file with Claude Code's `Read` tool and performs visual QA before presenting it; a path or
@@ -205,7 +214,7 @@ matrix.
 | Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Fleet Console | Real Codex transcript/session input, renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Available from the GitHub personal marketplace; not yet published to a central catalog |
-| Reversible settings setup | Preview/apply/uninstall, rollback and late-mutation refusal tested |
+| Reversible settings setup | Fresh install/version upgrade preview, atomic swap/rollback, uninstall and late-mutation refusal tested |
 | Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator and same-thread follow-up read separate random nonces, an independent verifier rechecks both, then exact cancellation completes |
 | Live cross-process follow-up/cancel | Passing through the authenticated local supervisor; `m` follows up and `x` previews then confirms exact cancellation |
 
@@ -228,11 +237,12 @@ Reload plugins or restart Claude Code:
 /reload-plugins
 ```
 
-On the first session without a Fleet ownership manifest, Claude asks one question: `Enable Ctrl+G
-Fleet Console now?` Answer yes and Claude previews and applies the reversible integration itself.
-There is no command or integrity token to copy. The SessionStart check is read-only; it cannot
-change settings before that explicit confirmation. Restart Claude Code once after setup, then press
-`Ctrl+G` to enter Fleet Console. Use `q` or `Esc` to return to the same Claude Code session.
+On the first session without a Fleet ownership manifest—or when the installed plugin is newer than
+the owned integration runtime—Claude offers setup or upgrade. Answer yes and Claude previews and applies
+the reversible integration itself. There is no command or integrity token to copy. The SessionStart
+check is read-only; it cannot change settings before that explicit confirmation. Restart Claude Code
+once after setup, then press `Ctrl+G` to enter Fleet Console. Confirm the target version in the Fleet
+masthead and use `q` or `Esc` to return to the same Claude Code session.
 
 Run `/fleet:doctor` when you want an explicit capability report. `/fleet:setup` remains available as
 a manual recovery path, but it is not part of normal first-run onboarding.
@@ -286,14 +296,14 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 /fleet:status     show a compact evidence-oriented status
 /fleet:open       show the configured Fleet shortcut
 /fleet:result     inspect a sanitized lane result
-/fleet:follow-up  continue a completed lane on its existing Codex thread
+/fleet:follow-up  continue a completed or needs-controller lane on its existing Codex thread
 /fleet:cancel     request confirmed cancellation
 /fleet:export     preview and create a redacted support bundle
 /fleet:uninstall restore only settings owned by Fleet
 ```
 
 Those commands are the public contract. Setup and uninstall use separate immutable previews and
-exact confirmation tokens. SessionStart only detects missing setup; after one plain user
+exact confirmation tokens. SessionStart detects missing or outdated setup; after one plain user
 confirmation, setup carries its token internally. Users never need to copy or paste it. Inside Fleet
 Console, `Enter` or `m` opens the selected real Codex thread; messages steer an active turn or continue a
 terminal turn on that same thread. `x` performs an immutable preview before cancelling only the pinned

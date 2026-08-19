@@ -100,6 +100,34 @@ function assertLaneMessage(message) {
   return message;
 }
 
+function persistedList(value, maximumItems = 64) {
+  if (!Array.isArray(value)) return Object.freeze([]);
+  return Object.freeze(value
+    .slice(0, maximumItems)
+    .filter((item) => typeof item === "string" && !CONTROL_CHARACTER.test(item))
+    .map((item) => item.slice(0, 512)));
+}
+
+function persistedControllerRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (typeof value.kind !== "string" || typeof value.question !== "string") return null;
+  return Object.freeze({
+    kind: value.kind.slice(0, 64),
+    question: value.question.slice(0, 2_000)
+  });
+}
+
+function persistedPendingContinuation(value, recovering = false) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return Object.freeze({
+    state: recovering ? "outcome_unknown" : "starting",
+    requestedAt: typeof value.requestedAt === "string" ? value.requestedAt : null,
+    previousStatus: typeof value.previousStatus === "string" ? value.previousStatus : null,
+    previousPhase: typeof value.previousPhase === "string" ? value.previousPhase : null,
+    previousTurnId: typeof value.previousTurnId === "string" ? value.previousTurnId : null
+  });
+}
+
 function publicRecord(item, status = item.status) {
   return Object.freeze({
     id: item.id,
@@ -124,6 +152,15 @@ function publicRecord(item, status = item.status) {
     turnId: item.turnId,
     lastMessage: item.lastMessage ?? null,
     exitReason: item.exitReason ?? null,
+    outcome: item.outcome ?? null,
+    workPerformed: item.workPerformed ?? Object.freeze([]),
+    evidenceRefs: item.evidenceRefs ?? Object.freeze([]),
+    verification: item.verification ?? Object.freeze([]),
+    artifactRefs: item.artifactRefs ?? Object.freeze([]),
+    controllerRequest: item.controllerRequest ?? null,
+    stopReason: item.stopReason ?? null,
+    automaticContinuations: item.automaticContinuations ?? 0,
+    pendingContinuation: item.pendingContinuation ?? null,
     enqueuedAt: item.enqueuedAt,
     startedAt: item.startedAt,
     finishedAt: item.finishedAt
@@ -170,7 +207,9 @@ function hydratePersistedRecord(record, sequence, clock) {
     ),
     admittedAt: record.admittedAt ?? record.enqueuedAt ?? validated.createdAt,
     status,
-    phase: status,
+    phase: originalStatus === status && typeof record.phase === "string"
+      ? record.phase.slice(0, 128)
+      : status,
     sequence,
     enqueuedAt: record.enqueuedAt ?? validated.createdAt,
     startedAt: record.startedAt ?? null,
@@ -178,6 +217,17 @@ function hydratePersistedRecord(record, sequence, clock) {
     threadId: record.threadId ?? null,
     turnId: record.turnId ?? null,
     lastMessage: record.lastMessage ?? null,
+    outcome: record.outcome ?? null,
+    workPerformed: persistedList(record.workPerformed, 32),
+    evidenceRefs: persistedList(record.evidenceRefs),
+    verification: persistedList(record.verification, 32),
+    artifactRefs: persistedList(record.artifactRefs),
+    controllerRequest: persistedControllerRequest(record.controllerRequest),
+    stopReason: typeof record.stopReason === "string" ? record.stopReason.slice(0, 2_000) : null,
+    automaticContinuations: Number.isSafeInteger(record.automaticContinuations)
+      ? Math.max(0, record.automaticContinuations)
+      : 0,
+    pendingContinuation: persistedPendingContinuation(record.pendingContinuation, true),
     exitReason: originalStatus === status
       ? record.exitReason ?? null
       : "Previous Fleet supervisor ended before the lane reached a terminal state.",
@@ -296,6 +346,15 @@ class FleetScheduler {
       turnId: null,
       lastMessage: null,
       exitReason: null,
+      outcome: null,
+      workPerformed: Object.freeze([]),
+      evidenceRefs: Object.freeze([]),
+      verification: Object.freeze([]),
+      artifactRefs: Object.freeze([]),
+      controllerRequest: null,
+      stopReason: null,
+      automaticContinuations: 0,
+      pendingContinuation: null,
       resolve: null,
       reject: null
     };
@@ -453,18 +512,42 @@ class FleetScheduler {
         item.phase = started.phase ?? item.status;
         item.threadId = started.threadId ?? null;
         item.turnId = started.turnId ?? null;
+        item.lastMessage = started.lastMessage ?? null;
+        item.exitReason = started.exitReason ?? null;
+        item.outcome = started.outcome ?? null;
+        item.workPerformed = started.workPerformed ?? Object.freeze([]);
+        item.evidenceRefs = started.evidenceRefs ?? Object.freeze([]);
+        item.verification = started.verification ?? Object.freeze([]);
+        item.artifactRefs = started.artifactRefs ?? Object.freeze([]);
+        item.controllerRequest = started.controllerRequest ?? null;
+        item.stopReason = started.stopReason ?? null;
+        item.automaticContinuations = started.automaticContinuations ?? 0;
         this.lastStartedAt = this.clock.now();
         await this.persist();
         item.resolve(publicRecord(item));
       } catch (error) {
-        this.release(item, "failed");
+        const current = this.runtime.inspectLane(item.id);
+        const acceptanceUnknown = error?.requestAcceptance === "unknown"
+          || current?.status === "outcome_unknown";
+        if (current) {
+          item.threadId = current.threadId ?? item.threadId;
+          item.turnId = current.turnId ?? item.turnId;
+          item.exitReason = current.exitReason ?? item.exitReason;
+          item.controllerRequest = current.controllerRequest ?? item.controllerRequest;
+          item.stopReason = current.stopReason ?? item.stopReason;
+        }
+        this.release(
+          item,
+          acceptanceUnknown ? "outcome_unknown" : "failed",
+          acceptanceUnknown ? "outcome_unknown" : "failed"
+        );
         await this.persist();
         item.reject(error);
       }
     }
   }
 
-  release(item, status) {
+  release(item, status, phase = status) {
     this.active.delete(item.id);
     if (item.authority.sandbox === "workspace-write") {
       const remaining = Math.max(0, (this.writerCounts.get(item.checkoutKey) ?? 1) - 1);
@@ -475,7 +558,7 @@ class FleetScheduler {
       }
     }
     item.status = status;
-    item.phase = status;
+    item.phase = phase;
     item.finishedAt = new Date(this.clock.now()).toISOString();
     this.history.set(item.id, item);
   }
@@ -486,35 +569,35 @@ class FleetScheduler {
       throw new Error("Scheduler workspace path is required for a persisted follow-up.");
     }
     const item = this.history.get(id);
-    if (!item || item.status !== "complete" || !item.threadId) {
-      throw new Error(`Lane ${id} is not a completed resumable lane.`);
+    const resumable = item?.status === "complete"
+      || (item?.status === "blocked" && item.phase === "needs-controller");
+    if (!item || !resumable || !item.threadId) {
+      throw new Error(`Lane ${id} is not a resumable completed or controller-blocked lane.`);
     }
-    const resumeRecord = { ...item, status: "complete", phase: "complete" };
-    const runtimeAlreadyOwnsLane = this.runtime.inspectLane(id) !== null;
-
-    this.history.delete(id);
-    item.status = "starting";
-    item.phase = "continuing";
-    item.finishedAt = null;
-    item.startedAt = new Date(this.clock.now()).toISOString();
-    this.active.set(id, item);
-    if (item.authority.sandbox === "workspace-write") {
-      this.writerCounts.set(
-        item.checkoutKey,
-        (this.writerCounts.get(item.checkoutKey) ?? 0) + 1
+    if (item.pendingContinuation) {
+      throw new Error(
+        `Lane ${id} has a pending continuation outcome that requires reconciliation.`
       );
     }
+    if (
+      item.authority.sandbox === "workspace-write"
+      && (this.writerCounts.get(item.checkoutKey) ?? 0) >= this.limits.maxWritersPerCheckout
+    ) {
+      throw new Error(`Lane ${id} cannot continue while its checkout already has an active writer.`);
+    }
+    const resumeRecord = { ...item };
+    const runtimeAlreadyOwnsLane = this.runtime.inspectLane(id) !== null;
+    item.pendingContinuation = Object.freeze({
+      state: "starting",
+      requestedAt: new Date(this.clock.now()).toISOString(),
+      previousStatus: item.status,
+      previousPhase: item.phase,
+      previousTurnId: item.turnId
+    });
     try {
       await this.persist();
     } catch (error) {
-      this.active.delete(id);
-      if (item.authority.sandbox === "workspace-write") {
-        const remaining = Math.max(0, (this.writerCounts.get(item.checkoutKey) ?? 1) - 1);
-        if (remaining === 0) this.writerCounts.delete(item.checkoutKey);
-        else this.writerCounts.set(item.checkoutKey, remaining);
-      }
-      Object.assign(item, resumeRecord);
-      this.history.set(id, item);
+      item.pendingContinuation = null;
       throw error;
     }
 
@@ -524,24 +607,38 @@ class FleetScheduler {
         ? await this.runtime.continueLane(id, validatedMessage)
         : await this.runtime.resumeLane(resumeRecord, this.workspacePath, validatedMessage);
     } catch (error) {
-      this.active.delete(id);
-      if (item.authority.sandbox === "workspace-write") {
-        const remaining = Math.max(0, (this.writerCounts.get(item.checkoutKey) ?? 1) - 1);
-        if (remaining === 0) this.writerCounts.delete(item.checkoutKey);
-        else this.writerCounts.set(item.checkoutKey, remaining);
-      }
-      Object.assign(item, resumeRecord);
-      this.history.set(id, item);
+      item.pendingContinuation = error?.requestAcceptance === "unknown"
+        ? Object.freeze({ ...item.pendingContinuation, state: "outcome_unknown" })
+        : null;
       await this.persist();
       throw error;
     }
 
+    this.history.delete(id);
     item.status = resumed.status ?? "running";
     item.phase = resumed.phase ?? item.status;
+    item.finishedAt = null;
+    item.startedAt = new Date(this.clock.now()).toISOString();
+    item.pendingContinuation = null;
+    this.active.set(id, item);
+    if (item.authority.sandbox === "workspace-write") {
+      this.writerCounts.set(
+        item.checkoutKey,
+        (this.writerCounts.get(item.checkoutKey) ?? 0) + 1
+      );
+    }
     item.threadId = resumed.threadId ?? item.threadId;
     item.turnId = resumed.turnId ?? null;
     item.lastMessage = resumed.lastMessage ?? item.lastMessage;
     item.exitReason = resumed.exitReason ?? null;
+    item.outcome = resumed.outcome ?? null;
+    item.workPerformed = resumed.workPerformed ?? Object.freeze([]);
+    item.evidenceRefs = resumed.evidenceRefs ?? Object.freeze([]);
+    item.verification = resumed.verification ?? Object.freeze([]);
+    item.artifactRefs = resumed.artifactRefs ?? Object.freeze([]);
+    item.controllerRequest = resumed.controllerRequest ?? null;
+    item.stopReason = resumed.stopReason ?? null;
+    item.automaticContinuations = resumed.automaticContinuations ?? 0;
     await this.persist();
     return publicRecord(item);
   }
@@ -649,8 +746,17 @@ class FleetScheduler {
       item.phase = current.phase ?? item.phase;
       item.lastMessage = current.lastMessage ?? item.lastMessage;
       item.exitReason = current.exitReason ?? item.exitReason;
+      item.outcome = current.outcome ?? item.outcome;
+      item.workPerformed = current.workPerformed ?? item.workPerformed;
+      item.evidenceRefs = current.evidenceRefs ?? item.evidenceRefs;
+      item.verification = current.verification ?? item.verification;
+      item.artifactRefs = current.artifactRefs ?? item.artifactRefs;
+      item.controllerRequest = current.controllerRequest ?? item.controllerRequest;
+      item.stopReason = current.stopReason ?? item.stopReason;
+      item.automaticContinuations = current.automaticContinuations
+        ?? item.automaticContinuations;
       if (TERMINAL_STATUSES.has(current.status)) {
-        this.release(item, current.status);
+        this.release(item, current.status, current.phase ?? current.status);
       }
     }
     await this.persist();

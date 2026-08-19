@@ -522,6 +522,9 @@ async function runSetupCommand(parsed, io) {
       payload: {
         schemaVersion: 1,
         writesPerformed: false,
+        mode: plan.mode,
+        previousVersion: plan.previousVersion,
+        version: plan.version,
         settingsPath: plan.settingsPath,
         pluginDataDir: plan.pluginDataDir,
         runtimeTargetDir: plan.runtimeTargetDir,

@@ -772,6 +772,8 @@ test("setup previews before applying and uninstall requires its own exact token"
   assert.equal(previewRun.code, 0, previewRun.stderr);
   const preview = JSON.parse(previewRun.stdout);
   assert.equal(preview.writesPerformed, false);
+  assert.equal(preview.mode, "fresh");
+  assert.equal(preview.previousVersion, null);
   assert.equal(fs.existsSync(path.join(pluginData, "ownership.json")), false);
 
   const appliedRun = runFleet(
@@ -781,6 +783,13 @@ test("setup previews before applying and uninstall requires its own exact token"
   assert.equal(appliedRun.code, 0, appliedRun.stderr);
   assert.equal(JSON.parse(appliedRun.stdout).applied, true);
   assert.equal(fs.existsSync(path.join(pluginData, "ownership.json")), true);
+
+  const currentRun = runFleet(["setup", "--json"], { env });
+  assert.equal(currentRun.code, 0, currentRun.stderr);
+  const current = JSON.parse(currentRun.stdout);
+  assert.equal(current.mode, "current");
+  assert.equal(current.previousVersion, "0.1.6");
+  assert.deepEqual(current.changes, []);
 
   const uninstallPreviewRun = runFleet(["uninstall", "--json"], { env });
   assert.equal(uninstallPreviewRun.code, 0, uninstallPreviewRun.stderr);

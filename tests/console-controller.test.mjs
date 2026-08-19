@@ -204,6 +204,21 @@ test("complete lanes keep a subtle awaiting-verification motion until paused", a
   assert.equal(writes.length, pausedWrites);
 });
 
+test("reduced-motion preference cannot be mislabeled as resumed", async () => {
+  const controller = createConsoleController({
+    snapshot: snapshot(),
+    readSnapshot: async () => snapshot(),
+    write: () => {},
+    terminal: { columns: 100, rows: 28 },
+    preferences: { color: false, unicode: true, reducedMotion: true }
+  });
+
+  await controller.dispatch({ type: "toggleMotion" });
+
+  assert.equal(controller.state().motion, false);
+  assert.match(controller.state().notice, /LOCKED.*REDUCED MOTION/iu);
+});
+
 test("wide panel navigation changes visible focus instead of only internal state", async () => {
   const writes = [];
   const controller = createConsoleController({
