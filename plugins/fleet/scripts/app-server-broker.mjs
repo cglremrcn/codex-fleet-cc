@@ -24,7 +24,7 @@ const WINDOWS_UNSAFE_BATCH_PATH = /[%!^&|<>\"]/;
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.1.0"
+  version: "0.1.1"
 });
 
 const CAPABILITIES = Object.freeze({

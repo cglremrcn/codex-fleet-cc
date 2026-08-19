@@ -74,13 +74,25 @@ test("marketplace points to the portable Fleet plugin", async () => {
 });
 
 test("user-only state changes cannot be invoked autonomously by the model", async () => {
-  for (const name of ["setup", "cancel", "export", "uninstall"]) {
+  for (const name of ["cancel", "export", "uninstall"]) {
     const source = await read(`plugins/fleet/skills/${name}/SKILL.md`);
     const metadata = frontmatter(source);
     assert.equal(metadata.name, name);
     assert.equal(metadata["disable-model-invocation"], "true");
     assert.match(source, /exact preview|explicit confirmation|preview token/i);
   }
+});
+
+test("setup keeps its preview token internal and asks the user for one plain confirmation", async () => {
+  const source = await read("plugins/fleet/skills/setup/SKILL.md");
+  const metadata = frontmatter(source);
+
+  assert.equal(metadata.name, "setup");
+  assert.equal(metadata["disable-model-invocation"], "true");
+  assert.match(source, /explicit(?: confirmation|ly confirms)/i);
+  assert.match(source, /keep.*token.*internal|never ask.*copy|do not ask.*paste/is);
+  assert.match(source, /--confirm-token.*confirmationToken/is);
+  assert.doesNotMatch(source, /using the exact preview token/i);
 });
 
 test("read-only commands stay deterministic and use portable plugin paths", async () => {

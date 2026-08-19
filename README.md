@@ -170,9 +170,10 @@ Restart Claude Code, then run the checks in this order:
 /fleet:setup
 ```
 
-`/fleet:setup` first shows an exact settings preview. Review it, apply it with the displayed
-confirmation token, then press `Ctrl+G` to enter Fleet Console. Use `q` or `Esc` to return to the
-same Claude Code session.
+`/fleet:setup` shows the settings it proposes to own and asks one plain confirmation question.
+Answer yes and Claude applies the exact preview; the integrity token stays internal, so there is
+nothing to copy or paste. Restart Claude Code once, then press `Ctrl+G` to enter Fleet Console. Use
+`q` or `Esc` to return to the same Claude Code session.
 
 ### Migrating from the legacy standalone skill
 
@@ -228,9 +229,10 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 ```
 
 Those commands are the public contract. Setup and uninstall use separate immutable previews and
-exact confirmation tokens. Inside Fleet Console, `m` continues the selected completed lane on its
-existing Codex thread and `x` performs an immutable preview before cancelling only the pinned
-owned thread and turn.
+exact confirmation tokens. Setup carries its token internally after one plain user confirmation;
+users never need to copy or paste it. Inside Fleet Console, `m` continues the selected completed
+lane on its existing Codex thread and `x` performs an immutable preview before cancelling only the
+pinned owned thread and turn.
 
 ## Safety decisions that should not be “simplified”
 
