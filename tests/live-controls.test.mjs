@@ -17,7 +17,7 @@ import {
 
 const SUPERVISOR = path.resolve("plugins", "fleet", "scripts", "fleet-supervisor.mjs");
 
-async function fixture(t, behavior) {
+async function fixture(t, behavior, envOverrides = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-live-controls-"));
   const workspacePath = path.join(root, "workspace");
   const dataDir = path.join(root, "data");
@@ -33,7 +33,7 @@ async function fixture(t, behavior) {
     workspacePath,
     scriptPath: SUPERVISOR,
     nodeExecutable: process.execPath,
-    env: buildEnv(binDir)
+    env: { ...buildEnv(binDir), ...envOverrides }
   };
   const manifest = await ensureSupervisor(options);
   const manifests = [manifest];
@@ -171,4 +171,35 @@ test("invalid mutation after terminal work does not suppress idle shutdown", asy
   }), /not a completed resumable lane/iu);
 
   await waitForSupervisorExit(scope.manifest.manifestPath);
+});
+
+test("bounded idle grace keeps one ephemeral broker alive for immediate follow-up", async (t) => {
+  const scope = await fixture(t, "slow-task", { FLEET_SUPERVISOR_IDLE_MS: "5000" });
+  const contract = startContract(scope, "ephemeral-follow-up");
+  contract.lanes[0].ephemeral = true;
+  await request(scope, "start", contract);
+  const first = await waitForLane(scope, "ephemeral-follow-up", "complete");
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+  const current = await ensureSupervisor(scope.options);
+  assert.equal(current.process.pid, scope.manifest.process.pid);
+  const continued = await request(scope, "followUp", {
+    laneId: "ephemeral-follow-up",
+    message: "Perform the bounded ephemeral follow-up."
+  });
+  assert.equal(continued.status, "running");
+  const second = await waitForLane(scope, "ephemeral-follow-up", "complete");
+  assert.equal(second.threadId, first.threadId);
+  assert.notEqual(second.turnId, first.turnId);
+});
+
+test("a new lane admitted at the previous idle boundary remains monitored", async (t) => {
+  const scope = await fixture(t, "slow-task", { FLEET_SUPERVISOR_IDLE_MS: "5000" });
+  await request(scope, "start", startContract(scope, "idle-boundary-first"));
+  await waitForLane(scope, "idle-boundary-first", "complete");
+
+  await request(scope, "start", startContract(scope, "idle-boundary-second"));
+  const second = await waitForLane(scope, "idle-boundary-second", "complete");
+
+  assert.equal(second.status, "complete");
 });

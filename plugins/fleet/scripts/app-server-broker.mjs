@@ -38,6 +38,24 @@ const CAPABILITIES = Object.freeze({
   ]
 });
 
+function safeProtocolName(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_./-]{1,120}$/u.test(value)
+    ? value
+    : null;
+}
+
+export function summarizeProtocolMessage(message) {
+  const serverRequest = message?.id !== undefined && Boolean(message?.method);
+  const notification = message?.id === undefined && Boolean(message?.method);
+  return Object.freeze({
+    kind: serverRequest ? "serverRequest" : notification ? "notification" : "response",
+    method: safeProtocolName(message?.method),
+    turnStatus: safeProtocolName(message?.params?.turn?.status),
+    itemType: safeProtocolName(message?.params?.item?.type),
+    hasError: Boolean(message?.error ?? message?.params?.turn?.error)
+  });
+}
+
 export async function stopOwnedProcessTree(record, options = {}) {
   const stopTree = options.terminateProcessTree ?? terminateProcessTree;
   return cancelOwnedProcess(record, {
@@ -269,6 +287,12 @@ class AppServerBroker {
       return;
     }
 
+    try {
+      this.options.onProtocolMessage?.(summarizeProtocolMessage(message));
+    } catch {
+      // Diagnostics cannot alter the broker state machine.
+    }
+
     if (message.id !== undefined && message.method) {
       this.send({
         id: message.id,
@@ -321,13 +345,7 @@ class AppServerBroker {
     }
     this.closed = true;
     this.lines?.close();
-    this.child?.stdin?.end();
-
-    const exited = await Promise.race([
-      this.exitPromise.then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), 500))
-    ]);
-    if (!exited && Number.isFinite(this.child?.pid)) {
+    if (!this.exited && Number.isFinite(this.child?.pid)) {
       const outcome = await this.stopOwnedProcessTree(this.ownedProcess, {
         env: this.options.env,
         cwd: this.options.cwd,
@@ -336,8 +354,19 @@ class AppServerBroker {
       if (!outcome.cancelled && outcome.reason !== "not-running") {
         throw new Error(`Refused to stop an unverified app-server process: ${outcome.reason}.`);
       }
-      await this.exitPromise;
     }
+    this.child?.stdin?.destroy();
+
+    let exitTimeout;
+    const exited = await Promise.race([
+      this.exitPromise.then(() => true),
+      new Promise((resolve) => {
+        exitTimeout = setTimeout(() => resolve(false), 5_000);
+        exitTimeout.unref?.();
+      })
+    ]);
+    clearTimeout(exitTimeout);
+    if (!exited) throw new Error("Owned Codex app-server did not exit after termination.");
   }
 }
 

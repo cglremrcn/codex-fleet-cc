@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -6,9 +7,28 @@ import test from "node:test";
 import {
   assertDisposableWorkspace,
   buildLiveSmokeContracts,
+  cleanupDisposableRun,
+  commandOutput,
   parseLiveSmokeArguments,
   sanitizeLiveEvidence
 } from "../scripts/run-live-smoke.mjs";
+import {
+  ensureSupervisor,
+  supervisorPaths
+} from "../plugins/fleet/scripts/lib/supervisor-protocol.mjs";
+import { workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
+import { makeTempDir } from "./helpers.mjs";
+
+test("successful CLI diagnostics may report status on stderr", () => {
+  assert.equal(
+    commandOutput({ stdout: "", stderr: "Logged in using ChatGPT\n" }),
+    "Logged in using ChatGPT"
+  );
+  assert.equal(
+    commandOutput({ stdout: "codex-cli 0.147.0\n", stderr: "ignored" }),
+    "codex-cli 0.147.0"
+  );
+});
 
 test("live smoke refuses to touch the real account without exact opt-in", () => {
   assert.throws(() => parseLiveSmokeArguments([]), /--confirm-live-account/u);
@@ -95,4 +115,34 @@ test("published live evidence cannot retain prompts, messages, credentials, or r
   assert.equal(evidence.followUp.threadReused, true);
   assert.equal(evidence.followUp.turnChanged, true);
   assert.equal(evidence.verifier.independentThread, true);
+});
+
+test("live cleanup stops the exact owned supervisor before removing its workspace", async () => {
+  const disposableRoot = makeTempDir("fleet-live-cleanup-");
+  const workspacePath = path.join(disposableRoot, "workspace");
+  const dataDir = path.join(disposableRoot, "state", "codex-fleet-cc");
+  await fs.mkdir(workspacePath, { recursive: true });
+  const key = await workspaceKey(workspacePath);
+  const supervisorOptions = {
+    dataDir,
+    workspaceKey: key,
+    workspacePath,
+    scriptPath: path.resolve("plugins", "fleet", "scripts", "fleet-supervisor.mjs"),
+    nodeExecutable: process.execPath,
+    env: process.env
+  };
+  const manifest = await ensureSupervisor(supervisorOptions);
+  const paths = supervisorPaths({ dataDir, workspaceKey: key });
+
+  await cleanupDisposableRun({
+    disposableRoot,
+    workspacePath,
+    dataDir,
+    workspaceKey: key,
+    manifest,
+    supervisorOptions
+  });
+
+  await assert.rejects(fs.access(disposableRoot), /ENOENT/u);
+  await assert.rejects(fs.access(paths.manifestPath), /ENOENT/u);
 });

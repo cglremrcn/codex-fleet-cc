@@ -21,6 +21,19 @@ import {
 const MAX_FOLLOW_UP_LENGTH = 128 * 1024;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 
+function idleShutdownDelay(env) {
+  const value = env.FLEET_SUPERVISOR_IDLE_MS;
+  if (value === undefined) return 750;
+  if (!/^\d{3,5}$/u.test(value)) {
+    throw new Error("FLEET_SUPERVISOR_IDLE_MS must be an integer between 750 and 60000.");
+  }
+  const milliseconds = Number(value);
+  if (milliseconds < 750 || milliseconds > 60_000) {
+    throw new Error("FLEET_SUPERVISOR_IDLE_MS must be an integer between 750 and 60000.");
+  }
+  return milliseconds;
+}
+
 function assertObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError(`${label} must be an object.`);
@@ -148,7 +161,8 @@ function createControlPlane(options) {
     if (reconcileTimer) return;
     reconcileTimer = setInterval(() => {
       void reconcile().then((snapshot) => {
-        if (snapshot && snapshot.queued.length === 0 && snapshot.active.length === 0) {
+        const current = scheduler?.snapshot() ?? snapshot;
+        if (current && current.queued.length === 0 && current.active.length === 0) {
           clearInterval(reconcileTimer);
           reconcileTimer = null;
           options.onIdle?.();
@@ -318,6 +332,7 @@ export async function runSupervisor(options = {}) {
   const paths = supervisorPaths({ dataDir, workspaceKey });
   const token = crypto.randomBytes(32).toString("hex");
   const ownedProcess = await captureOwnedProcess(process.pid, options);
+  const idleDelayMs = idleShutdownDelay(options.env ?? process.env);
   let closing = false;
   let idleTimer = null;
   let resolveStopped;
@@ -329,7 +344,7 @@ export async function runSupervisor(options = {}) {
     idleTimer = null;
   }
 
-  function scheduleIdleShutdown(delayMs = 750) {
+  function scheduleIdleShutdown(delayMs = idleDelayMs) {
     cancelIdleShutdown();
     idleTimer = setTimeout(() => void close(), delayMs);
   }
@@ -399,7 +414,7 @@ export async function runSupervisor(options = {}) {
   }
 
   await writeManifest(paths, manifest);
-  scheduleIdleShutdown(2_000);
+  scheduleIdleShutdown(Math.max(2_000, idleDelayMs));
   process.once("SIGINT", () => void close());
   process.once("SIGTERM", () => void close());
   await stopped;

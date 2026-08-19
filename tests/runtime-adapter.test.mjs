@@ -121,8 +121,29 @@ test("a completed lane can continue on its existing Codex thread", async (t) => 
   assert.match(fixture.readState().lastTurnStart.prompt, /remaining edge case/i);
 });
 
+test("official turn envelopes without threadId resolve through the turn index", async (t) => {
+  const fixture = startFakeCodex(t, "official-turn-envelope");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-official-envelope"));
+  const completed = await waitFor(
+    () => runtime.inspectLane("lane-official-envelope")?.status === "complete"
+      ? runtime.inspectLane("lane-official-envelope")
+      : null,
+    "official turn completion"
+  );
+
+  assert.equal(completed.status, "complete");
+  assert.match(completed.lastMessage, /handled the requested task/i);
+});
+
 test("an explicitly ephemeral lane is not retained by Codex", async (t) => {
-  const fixture = startFakeCodex(t);
+  const fixture = startFakeCodex(t, "ephemeral-name-rejected");
   const runtime = await createRuntime({
     codexCommand: fixture.command,
     dataDir: fixture.dataDir,

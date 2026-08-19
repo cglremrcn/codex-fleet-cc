@@ -92,7 +92,9 @@ class FleetRuntime {
     this.options = options;
     this.lanes = new Map();
     this.threadToLane = new Map();
+    this.turnToLane = new Map();
     this.pendingNotifications = new Map();
+    this.pendingTurnNotifications = new Map();
     this.nextSequence = 1;
     this.closed = false;
     this.connectedProtocolVersion = options.brokerProtocolVersion
@@ -144,20 +146,42 @@ class FleetRuntime {
     }
   }
 
+  unbindTurn(lane) {
+    if (lane.turnId && this.turnToLane.get(lane.turnId) === lane.id) {
+      this.turnToLane.delete(lane.turnId);
+    }
+    lane.turnId = null;
+  }
+
+  bindTurn(lane, turnId) {
+    const validated = assertRuntimeId(turnId, "Codex turn id");
+    this.unbindTurn(lane);
+    lane.turnId = validated;
+    this.turnToLane.set(validated, lane.id);
+    const buffered = this.pendingTurnNotifications.get(validated) ?? [];
+    this.pendingTurnNotifications.delete(validated);
+    for (const message of buffered) {
+      this.applyNotification(lane, message);
+    }
+  }
+
   handleNotification(message) {
     if (IGNORED_NOTIFICATION_METHODS.has(message.method)) {
       return;
     }
     const threadId = notificationThreadId(message);
-    if (!threadId) {
-      return;
-    }
-    const laneId = this.threadToLane.get(threadId);
+    const turnId = notificationTurnId(message);
+    const laneId = threadId
+      ? this.threadToLane.get(threadId)
+      : turnId ? this.turnToLane.get(turnId) : null;
     if (!laneId) {
-      const pending = this.pendingNotifications.get(threadId) ?? [];
+      const pending = threadId
+        ? this.pendingNotifications.get(threadId) ?? []
+        : turnId ? this.pendingTurnNotifications.get(turnId) ?? [] : [];
       if (pending.length < 64) {
         pending.push(message);
-        this.pendingNotifications.set(threadId, pending);
+        if (threadId) this.pendingNotifications.set(threadId, pending);
+        else if (turnId) this.pendingTurnNotifications.set(turnId, pending);
       }
       return;
     }
@@ -169,8 +193,10 @@ class FleetRuntime {
 
   applyNotification(lane, message) {
     const turnId = notificationTurnId(message);
-    if (turnId) {
+    if (turnId && lane.turnId !== turnId) {
+      this.unbindTurn(lane);
       lane.turnId = turnId;
+      this.turnToLane.set(turnId, lane.id);
     }
 
     switch (message.method) {
@@ -275,14 +301,16 @@ class FleetRuntime {
         ephemeral: lane.ephemeral
       });
       this.bindThread(lane, thread.thread.id);
-      await this.broker.request("thread/name/set", {
-        threadId: lane.threadId,
-        name: `Codex Fleet: ${lane.id} — ${lane.label}`
-      }).catch((error) => {
-        if (error?.rpcCode !== -32601 && !/unknown (variant|method)/i.test(error?.message ?? "")) {
-          throw error;
-        }
-      });
+      if (!lane.ephemeral) {
+        await this.broker.request("thread/name/set", {
+          threadId: lane.threadId,
+          name: `Codex Fleet: ${lane.id} — ${lane.label}`
+        }).catch((error) => {
+          if (error?.rpcCode !== -32601 && !/unknown (variant|method)/i.test(error?.message ?? "")) {
+            throw error;
+          }
+        });
+      }
       this.updateLane(
         lane,
         { status: "running", phase: "starting" },
@@ -296,7 +324,7 @@ class FleetRuntime {
         effort: lane.effort,
         outputSchema: null
       });
-      lane.turnId = turn.turn?.id ?? lane.turnId;
+      if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
       return copyLane(lane);
     } catch (error) {
       this.updateLane(
@@ -309,24 +337,8 @@ class FleetRuntime {
     }
   }
 
-  async continueLane(id, message) {
-    this.assertMutableProtocol();
-    const lane = this.lanes.get(id);
-    if (!lane) {
-      throw new Error(`Unknown lane: ${id}.`);
-    }
-    if (lane.status !== "complete") {
-      throw new Error(`Lane ${id} can only continue after a completed turn.`);
-    }
-    const prompt = assertPrompt(message, "Follow-up message");
-    await this.broker.request("thread/resume", {
-      threadId: lane.threadId,
-      cwd: lane.workspacePath,
-      model: lane.model,
-      approvalPolicy: "never",
-      sandbox: lane.authority.sandbox
-    });
-    lane.turnId = null;
+  async beginContinuation(lane, prompt) {
+    this.unbindTurn(lane);
     this.updateLane(
       lane,
       { status: "running", phase: "continuing", exitReason: null },
@@ -340,8 +352,20 @@ class FleetRuntime {
       effort: lane.effort,
       outputSchema: null
     });
-    lane.turnId = turn.turn?.id ?? lane.turnId;
+    if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
     return copyLane(lane);
+  }
+
+  async continueLane(id, message) {
+    this.assertMutableProtocol();
+    const lane = this.lanes.get(id);
+    if (!lane) {
+      throw new Error(`Unknown lane: ${id}.`);
+    }
+    if (lane.status !== "complete") {
+      throw new Error(`Lane ${id} can only continue after a completed turn.`);
+    }
+    return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
   }
 
   async resumeLane(record, workspacePath, message) {
@@ -374,7 +398,14 @@ class FleetRuntime {
     };
     this.lanes.set(lane.id, lane);
     this.bindThread(lane, lane.threadId);
-    return this.continueLane(lane.id, message);
+    await this.broker.request("thread/resume", {
+      threadId: lane.threadId,
+      cwd: lane.workspacePath,
+      model: lane.model,
+      approvalPolicy: "never",
+      sandbox: lane.authority.sandbox
+    });
+    return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
   }
 
   async interruptLane(id) {
