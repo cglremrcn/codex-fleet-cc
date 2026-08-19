@@ -38,6 +38,7 @@ export function createShutdownGuard() {
   let closing = false;
   let activeRequests = 0;
   let activityVersion = 0;
+  let drainWaiters = [];
   return Object.freeze({
     admit() {
       if (closing) throw new Error("Fleet supervisor is shutting down.");
@@ -48,6 +49,11 @@ export function createShutdownGuard() {
         if (released) return;
         released = true;
         activeRequests -= 1;
+        if (activeRequests === 0) {
+          const waiters = drainWaiters;
+          drainWaiters = [];
+          for (const resolve of waiters) resolve();
+        }
       };
     },
     armIdleClose() {
@@ -65,6 +71,10 @@ export function createShutdownGuard() {
     },
     isClosing() {
       return closing;
+    },
+    waitForDrained() {
+      if (activeRequests === 0) return Promise.resolve();
+      return new Promise((resolve) => drainWaiters.push(resolve));
     }
   });
 }
@@ -159,7 +169,7 @@ function secureDigestMatches(expected, received) {
   return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received, "hex"));
 }
 
-function createControlPlane(options) {
+export function createControlPlane(options) {
   const root = resolveOwnedPath(options.dataDir, "workspaces", options.workspaceKey);
   let runtime = null;
   let scheduler = null;
@@ -345,6 +355,7 @@ function createControlPlane(options) {
     async close() {
       if (reconcileTimer) clearInterval(reconcileTimer);
       reconcileTimer = null;
+      await schedulerInitialization?.catch(() => undefined);
       await reconcile().catch(() => undefined);
       await runtime?.close();
       runtime = null;
@@ -465,6 +476,7 @@ export async function runSupervisor(options = {}) {
       return stopped;
     }
     cancelIdleShutdown();
+    await shutdownGuard.waitForDrained();
     await control.close().catch(() => undefined);
     process.chdir(path.dirname(process.execPath));
     await server.close().catch(() => undefined);

@@ -222,6 +222,24 @@ test("shutdown guard rejects close across an admitted boundary request", () => {
   assert.throws(() => guard.admit(), /shutting down/iu);
 });
 
+test("force shutdown waits for an admitted runtime initialization to drain", async () => {
+  const guard = createShutdownGuard();
+  const releaseRequest = guard.admit();
+  assert.equal(guard.forceClose(), true);
+
+  let drained = false;
+  const waiting = guard.waitForDrained().then(() => {
+    drained = true;
+  });
+  await Promise.resolve();
+  assert.equal(drained, false);
+  assert.throws(() => guard.admit(), /shutting down/iu);
+
+  releaseRequest();
+  await waiting;
+  assert.equal(drained, true);
+});
+
 test("a lane admitted near the idle boundary remains monitored", async (t) => {
   const scope = await fixture(t, "slow-task", { FLEET_SUPERVISOR_IDLE_MS: "750" });
   await request(scope, "start", startContract(scope, "idle-boundary-first"));
