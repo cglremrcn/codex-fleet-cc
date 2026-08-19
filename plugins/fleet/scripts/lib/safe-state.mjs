@@ -9,6 +9,8 @@ export const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
 const STATE_FILE = "state.json";
 const LOCK_FILE = "state.lock";
+const WINDOWS_TRANSIENT_REPLACE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
+const MAX_WINDOWS_REPLACE_ATTEMPTS = 5;
 
 function emptyState() {
   return { schemaVersion: 1, lanes: [], updatedAt: null };
@@ -114,7 +116,26 @@ function serializeState(state) {
   return serialized;
 }
 
-export async function writeWorkspaceState(root, state) {
+async function replaceStateFile(source, destination, options) {
+  const rename = options.rename ?? fs.rename;
+  const sleep = options.sleep
+    ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const platform = options.platform ?? process.platform;
+  for (let attempt = 0; attempt < MAX_WINDOWS_REPLACE_ATTEMPTS; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      const retryable = platform === "win32"
+        && WINDOWS_TRANSIENT_REPLACE_ERRORS.has(error.code)
+        && attempt + 1 < MAX_WINDOWS_REPLACE_ATTEMPTS;
+      if (!retryable) throw error;
+      await sleep(10 * (2 ** attempt));
+    }
+  }
+}
+
+export async function writeWorkspaceState(root, state, options = {}) {
   await ensureSafeRoot(root);
   const serialized = serializeState(state);
   const lock = await acquireLock(root);
@@ -127,7 +148,7 @@ export async function writeWorkspaceState(root, state) {
     await temporaryHandle.sync();
     await temporaryHandle.close();
     temporaryHandle = undefined;
-    await fs.rename(temporaryPath, path.join(root, STATE_FILE));
+    await replaceStateFile(temporaryPath, path.join(root, STATE_FILE), options);
     await fs.chmod(path.join(root, STATE_FILE), 0o600).catch((error) => {
       if (process.platform !== "win32") {
         throw error;
