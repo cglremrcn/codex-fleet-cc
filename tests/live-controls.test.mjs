@@ -123,6 +123,20 @@ test("a second client follows up a completed supervisor-owned lane", async (t) =
   assert.notEqual(second.turnId, first.turnId);
 });
 
+test("a fresh supervisor reconciles an interrupted read-only lane", async (t) => {
+  const scope = await fixture(t, "interruptible-slow-task");
+  await request(scope, "start", startContract(scope, "crash-recovery"));
+  await waitForLane(scope, "crash-recovery", "running");
+
+  await stopSupervisor({ ...scope.options, manifest: scope.manifest });
+  scope.manifest = await ensureSupervisor(scope.options);
+  scope.manifests.push(scope.manifest);
+
+  const recovered = await request(scope, "result", { laneId: "crash-recovery" });
+  assert.equal(recovered.status, "failed");
+  assert.match(recovered.exitReason, /previous fleet supervisor ended/iu);
+});
+
 test("cancel requires an immutable preview and interrupts only its pinned turn", async (t) => {
   const scope = await fixture(t, "interruptible-slow-task");
   await request(scope, "start", startContract(scope, "cancel-owned"));

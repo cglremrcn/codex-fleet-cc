@@ -111,6 +111,69 @@ function publicRecord(item, status = item.status) {
   });
 }
 
+function hydratePersistedRecord(record, sequence, clock) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new TypeError("Persisted scheduler records must be objects.");
+  }
+  const authority = normalizeAuthority(record.authority);
+  const validated = createLane({
+    ...record,
+    authority,
+    createdAt: record.enqueuedAt ?? record.createdAt
+  });
+  const originalStatus = record.status;
+  const status = TERMINAL_STATUSES.has(originalStatus)
+    ? originalStatus
+    : hasExternalEffect(authority) ? "outcome_unknown" : "failed";
+  return {
+    id: validated.id,
+    role: validated.role,
+    label: validated.label,
+    workspaceKey: validated.workspaceKey,
+    checkoutKey: boundedIdentifier(
+      record.checkoutKey ?? record.workspaceKey,
+      "Persisted lane checkout key"
+    ),
+    model: validated.model,
+    effort: validated.effort,
+    authority,
+    priority: PRIORITY_ORDER.includes(record.priority) ? record.priority : "normal",
+    externalEffect: hasExternalEffect(authority),
+    retryOf: record.retryOf ?? null,
+    reconciliationRef: record.reconciliationRef ?? null,
+    status,
+    phase: status,
+    sequence,
+    enqueuedAt: record.enqueuedAt ?? validated.createdAt,
+    startedAt: record.startedAt ?? null,
+    finishedAt: record.finishedAt ?? new Date(clock.now()).toISOString(),
+    threadId: record.threadId ?? null,
+    turnId: record.turnId ?? null,
+    lastMessage: record.lastMessage ?? null,
+    exitReason: originalStatus === status
+      ? record.exitReason ?? null
+      : "Previous Fleet supervisor ended before the lane reached a terminal state.",
+    resolve: null,
+    reject: null
+  };
+}
+
+export function recoverPersistedRecords(records, options = {}) {
+  if (!Array.isArray(records)) {
+    throw new TypeError("Scheduler initial records must be an array.");
+  }
+  const clock = { now: options.now ?? Date.now };
+  const seen = new Set();
+  return Object.freeze(records.map((record, index) => {
+    const item = hydratePersistedRecord(record, index + 1, clock);
+    if (seen.has(item.id)) {
+      throw new Error(`Lane id is already known to the scheduler: ${item.id}.`);
+    }
+    seen.add(item.id);
+    return publicRecord(item);
+  }));
+}
+
 function sortQueue(left, right) {
   const priorityDifference = PRIORITY_ORDER.indexOf(left.priority)
     - PRIORITY_ORDER.indexOf(right.priority);
@@ -146,50 +209,7 @@ class FleetScheduler {
       throw new TypeError("Scheduler initial records must be an array.");
     }
     for (const record of records) {
-      if (!record || typeof record !== "object" || Array.isArray(record)) {
-        throw new TypeError("Persisted scheduler records must be objects.");
-      }
-      const authority = normalizeAuthority(record.authority);
-      const validated = createLane({
-        ...record,
-        authority,
-        createdAt: record.enqueuedAt ?? record.createdAt
-      });
-      const originalStatus = record.status;
-      const status = TERMINAL_STATUSES.has(originalStatus)
-        ? originalStatus
-        : hasExternalEffect(authority) ? "outcome_unknown" : "failed";
-      const item = {
-        id: validated.id,
-        role: validated.role,
-        label: validated.label,
-        workspaceKey: validated.workspaceKey,
-        checkoutKey: boundedIdentifier(
-          record.checkoutKey ?? record.workspaceKey,
-          "Persisted lane checkout key"
-        ),
-        model: validated.model,
-        effort: validated.effort,
-        authority,
-        priority: PRIORITY_ORDER.includes(record.priority) ? record.priority : "normal",
-        externalEffect: hasExternalEffect(authority),
-        retryOf: record.retryOf ?? null,
-        reconciliationRef: record.reconciliationRef ?? null,
-        status,
-        phase: status,
-        sequence: this.nextSequence,
-        enqueuedAt: record.enqueuedAt ?? validated.createdAt,
-        startedAt: record.startedAt ?? null,
-        finishedAt: record.finishedAt ?? new Date(this.clock.now()).toISOString(),
-        threadId: record.threadId ?? null,
-        turnId: record.turnId ?? null,
-        lastMessage: record.lastMessage ?? null,
-        exitReason: originalStatus === status
-          ? record.exitReason ?? null
-          : "Previous Fleet supervisor ended before the lane reached a terminal state.",
-        resolve: null,
-        reject: null
-      };
+      const item = hydratePersistedRecord(record, this.nextSequence, this.clock);
       this.nextSequence += 1;
       this.assertUnique(item.id);
       this.history.set(item.id, item);

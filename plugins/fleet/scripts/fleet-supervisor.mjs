@@ -11,7 +11,7 @@ import { resolveOwnedPath } from "./lib/paths.mjs";
 import { captureOwnedProcess } from "./lib/process-ownership.mjs";
 import { createRuntime } from "./lib/runtime-adapter.mjs";
 import { readWorkspaceState, writeWorkspaceState } from "./lib/safe-state.mjs";
-import { createScheduler } from "./lib/scheduler.mjs";
+import { createScheduler, recoverPersistedRecords } from "./lib/scheduler.mjs";
 import {
   SUPERVISOR_PROTOCOL_VERSION,
   createSupervisorServer,
@@ -163,24 +163,33 @@ function createControlPlane(options) {
   const root = resolveOwnedPath(options.dataDir, "workspaces", options.workspaceKey);
   let runtime = null;
   let scheduler = null;
+  let schedulerInitialization = null;
   let reconcileTimer = null;
   let reconciling = null;
+  let recoveringPersisted = null;
 
   async function ensureScheduler(limits) {
     if (scheduler) return scheduler;
-    const state = await readWorkspaceState(root);
-    runtime = await (options.createRuntime ?? createRuntime)({
-      cwd: options.workspacePath,
-      env: options.env ?? process.env
+    if (schedulerInitialization) return schedulerInitialization;
+    schedulerInitialization = (async () => {
+      if (recoveringPersisted) await recoveringPersisted;
+      const state = await readWorkspaceState(root);
+      runtime = await (options.createRuntime ?? createRuntime)({
+        cwd: options.workspacePath,
+        env: options.env ?? process.env
+      });
+      scheduler = createScheduler({
+        runtime,
+        store: serializeStateStore(root),
+        limits,
+        workspacePath: options.workspacePath,
+        initialRecords: state.lanes
+      });
+      return scheduler;
+    })().finally(() => {
+      schedulerInitialization = null;
     });
-    scheduler = createScheduler({
-      runtime,
-      store: serializeStateStore(root),
-      limits,
-      workspacePath: options.workspacePath,
-      initialRecords: state.lanes
-    });
-    return scheduler;
+    return schedulerInitialization;
   }
 
   async function reconcile() {
@@ -211,17 +220,33 @@ function createControlPlane(options) {
   }
 
   async function snapshot() {
+    if (schedulerInitialization) await schedulerInitialization;
     if (scheduler) {
       await reconcile();
       return scheduler.snapshot();
     }
-    const state = await readWorkspaceState(root);
-    return {
-      schemaVersion: 1,
-      queued: [],
-      active: [],
-      history: state.lanes
-    };
+    if (recoveringPersisted) return recoveringPersisted;
+    recoveringPersisted = (async () => {
+      const state = await readWorkspaceState(root);
+      const history = recoverPersistedRecords(state.lanes);
+      const changed = history.some((lane, index) => lane.status !== state.lanes[index]?.status);
+      if (changed) {
+        await writeWorkspaceState(root, {
+          schemaVersion: 1,
+          updatedAt: new Date().toISOString(),
+          lanes: history
+        });
+      }
+      return {
+        schemaVersion: 1,
+        queued: [],
+        active: [],
+        history
+      };
+    })().finally(() => {
+      recoveringPersisted = null;
+    });
+    return recoveringPersisted;
   }
 
   async function findMutableLane(laneId) {
@@ -424,7 +449,7 @@ export async function runSupervisor(options = {}) {
     schemaVersion: 1,
     protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
     workspaceKey,
-    address: paths.address,
+    address: server.address,
     token,
     process: ownedProcess
   });
@@ -462,7 +487,12 @@ export async function runSupervisor(options = {}) {
     return stopped;
   }
 
-  await writeManifest(paths, manifest);
+  try {
+    await writeManifest(paths, manifest);
+  } catch (error) {
+    await server.close().catch(() => undefined);
+    throw error;
+  }
   scheduleIdleShutdown(Math.max(2_000, idleDelayMs));
   process.once("SIGINT", () => void close());
   process.once("SIGTERM", () => void close());

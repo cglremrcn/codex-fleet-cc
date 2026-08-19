@@ -40,7 +40,7 @@ test("authenticated local supervisor accepts only its workspace and token", asyn
   t.after(() => server.close());
 
   const accepted = await requestSupervisor({
-    address: paths.address,
+    address: server.address,
     workspaceKey: WORKSPACE_KEY,
     token: TOKEN,
     method: "ping",
@@ -49,14 +49,14 @@ test("authenticated local supervisor accepts only its workspace and token", asyn
   assert.deepEqual(accepted, { method: "ping", owner: "fleet" });
 
   await assert.rejects(requestSupervisor({
-    address: paths.address,
+    address: server.address,
     workspaceKey: WORKSPACE_KEY,
     token: "b".repeat(64),
     method: "ping",
     params: {}
   }), /authentication failed/i);
   await assert.rejects(requestSupervisor({
-    address: paths.address,
+    address: server.address,
     workspaceKey: "f".repeat(32),
     token: TOKEN,
     method: "ping",
@@ -81,7 +81,7 @@ test("supervisor protocol rejects oversized requests before dispatch", async (t)
   t.after(() => server.close());
 
   await assert.rejects(requestSupervisor({
-    address: paths.address,
+    address: server.address,
     workspaceKey: WORKSPACE_KEY,
     token: TOKEN,
     method: "followUp",
@@ -105,7 +105,7 @@ test("supervisor envelope can carry a maximum-size CLI contract", async (t) => {
   t.after(() => server.close());
 
   const accepted = await requestSupervisor({
-    address: paths.address,
+    address: server.address,
     workspaceKey: WORKSPACE_KEY,
     token: TOKEN,
     method: "start",
@@ -123,7 +123,8 @@ test("supervisor paths stay private and deterministic per workspace", async (t) 
   assert.deepEqual(first, second);
   assert.equal(path.dirname(first.manifestPath), first.root);
   assert.equal(path.dirname(first.lockPath), first.root);
-  assert.match(first.address, process.platform === "win32" ? /^\\\\\.\\pipe\\/u : /\.sock$/u);
+  if (process.platform === "win32") assert.match(first.address, /^\\\\\.\\pipe\\/u);
+  else assert.equal(first.address, null);
 
   const longDataDir = path.join(dataDir, "x".repeat(160));
   const portable = supervisorPaths({
@@ -131,8 +132,7 @@ test("supervisor paths stay private and deterministic per workspace", async (t) 
     workspaceKey: WORKSPACE_KEY,
     platform: "darwin"
   });
-  assert.ok(Buffer.byteLength(portable.address, "utf8") < 100);
-  assert.equal(portable.address.includes(longDataDir), false);
+  assert.equal(portable.address, null);
 });
 
 test("supervisor root rejects a symbolic-link ancestor", async (t) => {
@@ -198,4 +198,36 @@ test("concurrent clients start one owned supervisor process", async (t) => {
   const stopped = await stopSupervisor({ ...options, manifest: first });
   assert.equal(stopped.stopped, true);
   await assert.rejects(fs.readFile(first.manifestPath, "utf8"), /ENOENT/u);
+});
+
+test("POSIX supervisors use a private random socket directory", {
+  skip: process.platform === "win32"
+}, async (t) => {
+  const dataDir = makeTempDir("fleet-supervisor-posix-");
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const scriptPath = path.resolve("plugins", "fleet", "scripts", "fleet-supervisor.mjs");
+  const options = {
+    dataDir,
+    workspaceKey: WORKSPACE_KEY,
+    workspacePath: dataDir,
+    scriptPath,
+    nodeExecutable: process.execPath,
+    env: process.env
+  };
+
+  const first = await ensureSupervisor(options);
+  const directory = path.dirname(first.address);
+  const directoryMetadata = await fs.lstat(directory);
+  const socketMetadata = await fs.lstat(first.address);
+  assert.equal(directoryMetadata.isDirectory(), true);
+  assert.equal(directoryMetadata.isSymbolicLink(), false);
+  assert.equal(directoryMetadata.mode & 0o077, 0);
+  assert.equal(socketMetadata.isSocket(), true);
+  assert.equal(socketMetadata.mode & 0o077, 0);
+
+  await stopSupervisor({ ...options, manifest: first });
+  const second = await ensureSupervisor(options);
+  t.after(() => stopSupervisor({ ...options, manifest: second }).catch(() => undefined));
+  assert.notEqual(second.address, first.address);
+  assert.equal(Buffer.byteLength(second.address, "utf8") < 100, true);
 });

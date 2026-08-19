@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -19,6 +18,8 @@ const TOKEN = /^[a-f0-9]{64}$/u;
 const MAX_MANIFEST_BYTES = 16 * 1024;
 const DEFAULT_START_TIMEOUT_MS = 15_000;
 const MAX_PORTABLE_SOCKET_BYTES = 99;
+const UNIX_SOCKET_DIRECTORY = /^cfx-[a-f0-9]{16}-[A-Za-z0-9]{6}$/u;
+const UNIX_SOCKET_NAME = "control.sock";
 const REQUEST_FIELDS = new Set([
   "schemaVersion",
   "requestId",
@@ -132,6 +133,71 @@ async function ensurePrivateRoot(root) {
   });
 }
 
+async function ensurePrivateSocketDirectory(directory) {
+  const metadata = await fs.lstat(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("Supervisor socket parent must be a private directory.");
+  }
+  if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+    throw new Error("Supervisor socket parent must be owned by the current user.");
+  }
+  if ((metadata.mode & 0o077) !== 0) {
+    throw new Error("Supervisor socket parent must not grant group or other access.");
+  }
+}
+
+async function validateUnixSocketAddress(value) {
+  const address = boundedSafeText(value, "Supervisor address", 512);
+  if (!path.isAbsolute(address) || path.basename(address) !== UNIX_SOCKET_NAME) {
+    throw new Error("Supervisor manifest has an invalid POSIX socket address.");
+  }
+  if (Buffer.byteLength(address, "utf8") > MAX_PORTABLE_SOCKET_BYTES) {
+    throw new Error("Supervisor socket path exceeds the portable Unix-domain limit.");
+  }
+  const directory = path.dirname(address);
+  if (!UNIX_SOCKET_DIRECTORY.test(path.basename(directory))) {
+    throw new Error("Supervisor manifest has an invalid POSIX socket directory.");
+  }
+  try {
+    await ensurePrivateSocketDirectory(directory);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  return address;
+}
+
+export async function createSupervisorEndpoint(options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform === "win32") {
+    return Object.freeze({ address: options.address, socketDirectory: null });
+  }
+  const temporaryRoot = path.join(path.parse(process.cwd()).root, "tmp");
+  const randomPrefix = `cfx-${crypto.randomBytes(8).toString("hex")}-`;
+  const sampleAddress = path.join(temporaryRoot, `${randomPrefix}XXXXXX`, UNIX_SOCKET_NAME);
+  if (Buffer.byteLength(sampleAddress, "utf8") > MAX_PORTABLE_SOCKET_BYTES) {
+    throw new Error("Supervisor socket path exceeds the portable Unix-domain limit.");
+  }
+  const socketDirectory = await fs.mkdtemp(path.join(temporaryRoot, randomPrefix));
+  await fs.chmod(socketDirectory, 0o700);
+  await ensurePrivateSocketDirectory(socketDirectory);
+  return Object.freeze({
+    address: path.join(socketDirectory, UNIX_SOCKET_NAME),
+    socketDirectory
+  });
+}
+
+async function removeUnixEndpoint(address) {
+  if (!address) return;
+  const validated = await validateUnixSocketAddress(address);
+  const directory = path.dirname(validated);
+  await fs.unlink(validated).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  await fs.rmdir(directory).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -151,15 +217,18 @@ function validateProcessRecord(value) {
   return Object.freeze({ pid: value.pid, recordedStart: value.recordedStart });
 }
 
-function validateManifest(value, paths, workspaceKey) {
+async function validateManifest(value, paths, workspaceKey) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Supervisor manifest must be an object.");
   }
+  const address = paths.platform === "win32"
+    ? value.address
+    : await validateUnixSocketAddress(value.address);
   if (
     value.schemaVersion !== 1
     || value.protocolVersion !== SUPERVISOR_PROTOCOL_VERSION
     || value.workspaceKey !== workspaceKey
-    || value.address !== paths.address
+    || (paths.platform === "win32" && address !== paths.address)
     || !TOKEN.test(value.token ?? "")
   ) {
     throw new Error("Supervisor manifest identity mismatch.");
@@ -168,7 +237,7 @@ function validateManifest(value, paths, workspaceKey) {
     schemaVersion: 1,
     protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
     workspaceKey,
-    address: paths.address,
+    address,
     token: value.token,
     process: validateProcessRecord(value.process),
     manifestPath: paths.manifestPath
@@ -186,7 +255,7 @@ async function readJsonFile(filePath, maximumBytes) {
 export async function readSupervisorManifest(options = {}) {
   const paths = supervisorPaths(options);
   try {
-    return validateManifest(
+    return await validateManifest(
       await readJsonFile(paths.manifestPath, MAX_MANIFEST_BYTES),
       paths,
       options.workspaceKey
@@ -221,14 +290,12 @@ async function connectExisting(options, paths) {
   }
 }
 
-async function removeStaleMetadata(paths) {
+async function removeStaleMetadata(paths, manifest) {
   await fs.unlink(paths.manifestPath).catch((error) => {
     if (error.code !== "ENOENT") throw error;
   });
-  if (process.platform !== "win32") {
-    await fs.unlink(paths.address).catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-    });
+  if (paths.platform !== "win32" && manifest?.address) {
+    await removeUnixEndpoint(manifest.address);
   }
 }
 
@@ -271,20 +338,11 @@ export function supervisorPaths(options = {}) {
     .update(`${dataDir}\0${workspaceKey}`)
     .digest("hex")
     .slice(0, 32);
-  let address;
-  if (platform === "win32") {
-    address = `\\\\.\\pipe\\codex-fleet-${endpointHash}`;
-  } else {
-    const socketName = `cfx-${endpointHash}.sock`;
-    address = path.join(os.tmpdir(), socketName);
-    if (Buffer.byteLength(address, "utf8") > MAX_PORTABLE_SOCKET_BYTES) {
-      address = path.join(path.parse(os.tmpdir()).root, "tmp", socketName);
-    }
-    if (Buffer.byteLength(address, "utf8") > MAX_PORTABLE_SOCKET_BYTES) {
-      throw new Error("Supervisor socket path exceeds the portable Unix-domain limit.");
-    }
-  }
+  const address = platform === "win32"
+    ? `\\\\.\\pipe\\codex-fleet-${endpointHash}`
+    : null;
   return Object.freeze({
+    platform,
     root,
     address,
     manifestPath: path.join(root, "supervisor.json"),
@@ -293,7 +351,7 @@ export function supervisorPaths(options = {}) {
 }
 
 export async function createSupervisorServer(options = {}) {
-  const address = boundedSafeText(options.address, "Supervisor address", 512);
+  const platform = options.platform ?? process.platform;
   const workspaceKey = assertWorkspaceKey(options.workspaceKey);
   if (!TOKEN.test(options.token ?? "")) {
     throw new TypeError("Supervisor token must be a 64-character lowercase hex value.");
@@ -302,6 +360,26 @@ export async function createSupervisorServer(options = {}) {
     throw new TypeError("Supervisor request handler is required.");
   }
   await ensurePrivateRoot(assertAbsoluteDirectory(options.root));
+  const endpoint = platform === "win32"
+    ? Object.freeze({
+      address: boundedSafeText(options.address, "Supervisor address", 512),
+      socketDirectory: null
+    })
+    : options.address
+      ? Object.freeze({
+        address: await validateUnixSocketAddress(options.address),
+        socketDirectory: path.dirname(options.address)
+      })
+      : await createSupervisorEndpoint({ platform });
+  const address = endpoint.address;
+  if (platform !== "win32") {
+    await ensurePrivateSocketDirectory(endpoint.socketDirectory);
+    const existing = await fs.lstat(address).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (existing) throw new Error("Supervisor socket endpoint already exists.");
+  }
 
   const sockets = new Set();
   const server = net.createServer((socket) => {
@@ -350,25 +428,26 @@ export async function createSupervisorServer(options = {}) {
     });
   });
 
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(address, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(address, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
-  if (process.platform !== "win32") await fs.chmod(address, 0o600);
+    if (platform !== "win32") await fs.chmod(address, 0o600);
+  } catch (error) {
+    if (platform !== "win32") await removeUnixEndpoint(address).catch(() => undefined);
+    throw error;
+  }
 
   return Object.freeze({
     address,
     async close() {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-      if (process.platform !== "win32") {
-        await fs.unlink(address).catch((error) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-      }
+      if (platform !== "win32") await removeUnixEndpoint(address);
     }
   });
 }
@@ -437,7 +516,7 @@ export async function ensureSupervisor(options = {}) {
 
   const initial = await connectExisting(options, paths);
   if (initial && !initial.stale) return initial.manifest;
-  if (initial?.stale) await removeStaleMetadata(paths);
+  if (initial?.stale) await removeStaleMetadata(paths, initial.manifest);
 
   const deadline = Date.now() + timeoutMs;
   let lockHandle = null;
@@ -446,7 +525,7 @@ export async function ensureSupervisor(options = {}) {
     if (lockHandle) break;
     const existing = await connectExisting(options, paths);
     if (existing && !existing.stale) return existing.manifest;
-    if (existing?.stale) await removeStaleMetadata(paths);
+    if (existing?.stale) await removeStaleMetadata(paths, existing.manifest);
     await clearStaleStartupLock(paths, options);
     await delay(50);
   }
@@ -455,7 +534,7 @@ export async function ensureSupervisor(options = {}) {
   try {
     const existing = await connectExisting(options, paths);
     if (existing && !existing.stale) return existing.manifest;
-    if (existing?.stale) await removeStaleMetadata(paths);
+    if (existing?.stale) await removeStaleMetadata(paths, existing.manifest);
 
     const child = spawn(nodeExecutable, [
       scriptPath,
