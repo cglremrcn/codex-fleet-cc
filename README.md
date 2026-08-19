@@ -16,8 +16,8 @@ does not create a Claude or Codex model turn.
 
 > **Development preview:** the runtime, console, reversible setup, terminal handoff, live follow-up
 > and exact owned-lane cancellation are implemented. The release gate passes on Windows, macOS
-> Intel and Apple Silicon, Linux x64 and ARM64 with Node 22 and 24. The project is not yet published
-> as a Claude Code marketplace plugin.
+> Intel and Apple Silicon, Linux x64 and ARM64 with Node 22 and 24. The project is installable from
+> its GitHub marketplace today; it is not yet published to a central marketplace catalog.
 
 ## Why this exists
 
@@ -145,7 +145,7 @@ matrix.
 | macOS Intel and Apple Silicon | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
-| Marketplace install | Not yet published |
+| Marketplace install | Available from the GitHub personal marketplace; not yet published to a central catalog |
 | Reversible settings setup | Preview/apply/uninstall, rollback and late-mutation refusal tested |
 | Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator and same-thread follow-up read separate random nonces, an independent verifier rechecks both, then exact cancellation completes |
 | Live cross-process follow-up/cancel | Passing through the authenticated local supervisor; `m` follows up and `x` previews then confirms exact cancellation |
@@ -154,9 +154,42 @@ Cross-platform support is gated by Windows, macOS and Linux CI plus PTY handoff 
 change and release tag. Capability discovery remains separate from a successful live capability
 smoke.
 
-## Work with the source today
+## Install from GitHub
 
-There is no thirty-second production install yet. For development and review:
+Fleet uses Claude Code's supported personal-marketplace flow. In Claude Code's terminal, run:
+
+```bash
+claude plugin marketplace add cglremrcn/codex-fleet-cc
+claude plugin install fleet@codex-fleet-cc
+```
+
+Restart Claude Code, then run the checks in this order:
+
+```text
+/fleet:doctor
+/fleet:setup
+```
+
+`/fleet:setup` first shows an exact settings preview. Review it, apply it with the displayed
+confirmation token, then press `Ctrl+G` to enter Fleet Console. Use `q` or `Esc` to return to the
+same Claude Code session.
+
+### Migrating from the legacy standalone skill
+
+The plugin contains the maintained `codex-fleet-orchestrator` skill. If a profile still has the
+older standalone directory below, archive or remove it before restarting Claude Code:
+
+```text
+~/.claude/skills/codex-fleet-orchestrator/
+```
+
+Keeping both copies gives Claude two skills with the same discovery name. The plugin replaces that
+prompt-only version with runtime-enforced scheduling, authority gates, independent verification,
+owned follow-up and cancellation, and Fleet Console. Do not merge their instruction files.
+
+## Work with the source
+
+For development and review:
 
 ```bash
 git clone https://github.com/cglremrcn/codex-fleet-cc.git
@@ -178,8 +211,8 @@ The project keeps Node.js 22.20 as its compatibility floor, matching the Claude 
 and tests the maintained Node 22 and current Node 24 LTS lines. Fleet has no production npm
 dependencies.
 `node-pty` is development-only and is excluded from the plugin package.
-Until the marketplace package is published, use the source checkout and review the setup preview
-before applying it to a Claude Code profile.
+The GitHub marketplace installs the packaged plugin. Source contributors should still use the
+checkout above and review the setup preview before applying it to a Claude Code profile.
 
 The plugin contract uses Claude Code's marketplace/plugin directory mechanism and these commands:
 
