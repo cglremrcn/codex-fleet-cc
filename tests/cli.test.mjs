@@ -74,7 +74,7 @@ async function waitForCliLane(scope, laneId, status, timeoutMs = 5_000) {
   throw new Error("Timed out waiting for " + laneId + " to reach " + status + ".");
 }
 
-async function waitForCliSupervisorExit(scope, timeoutMs = 5_000) {
+async function waitForCliSupervisorExit(scope, timeoutMs = 20_000) {
   const key = await workspaceKey(scope.workspace);
   const manifestPath = path.join(
     scope.data,
@@ -195,9 +195,10 @@ test("doctor reports runtime unavailable with its dedicated exit code", (t) => {
 test("export previews without writing and accepts only its exact confirmation token", (t) => {
   const scope = fixture(t);
   const output = path.join(scope.root, "support.json");
+  const env = fixtureEnv(scope, { PATH: "" });
   const previewRun = runFleet(
     ["export", "--json", "--workspace", scope.workspace, "--output", output],
-    { env: fixtureEnv(scope) }
+    { env }
   );
 
   assert.equal(previewRun.code, 0, previewRun.stderr);
@@ -210,7 +211,7 @@ test("export previews without writing and accepts only its exact confirmation to
       "export", "--json", "--workspace", scope.workspace, "--output", output,
       "--confirm-token", "wrong-token"
     ],
-    { env: fixtureEnv(scope) }
+    { env }
   );
   assert.equal(denied.code, 3);
   assert.equal(fs.existsSync(output), false);
@@ -220,7 +221,7 @@ test("export previews without writing and accepts only its exact confirmation to
       "export", "--json", "--workspace", scope.workspace, "--output", output,
       "--confirm-token", preview.confirmationToken
     ],
-    { env: fixtureEnv(scope) }
+    { env }
   );
   assert.equal(written.code, 0, written.stderr);
   assert.equal(JSON.parse(written.stdout).written, true);

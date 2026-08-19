@@ -710,14 +710,24 @@ async function execute(parsed, io, dependencies) {
           if (Date.now() >= deadline) {
             throw new RuntimeUnavailableError(`Timed out waiting for lane ${laneId}.`);
           }
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          const liveLane = await requestLiveSupervisor(
+            context,
+            "result",
+            { laneId },
+            io,
+            dependencies
+          );
+          lanes = [liveLane];
+          if (isTerminalStatus(liveLane.status)) break;
+          await new Promise((resolve) => setTimeout(resolve, 250));
           state = await readStateWithoutCreating(context.root);
-          lanes = state.lanes.filter((lane) => lane.id === laneId);
-          if (lanes.length === 0) {
+          const persisted = state.lanes.find((lane) => lane.id === laneId);
+          if (!persisted) {
             throw new RuntimeUnavailableError(
               `Lane disappeared while waiting: ${laneId}.`
             );
           }
+          lanes = [persisted];
         }
       }
     }

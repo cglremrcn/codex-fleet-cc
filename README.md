@@ -147,7 +147,7 @@ matrix.
 | Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Not yet published |
 | Reversible settings setup | Preview/apply/uninstall, rollback and late-mutation refusal tested |
-| Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator, same-thread follow-up, independent verifier and exact cancellation |
+| Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator and same-thread follow-up read separate random nonces, an independent verifier rechecks both, then exact cancellation completes |
 | Live cross-process follow-up/cancel | Passing through the authenticated local supervisor; `m` follows up and `x` previews then confirms exact cancellation |
 
 Cross-platform support is gated by Windows, macOS and Linux CI plus PTY handoff tests on every

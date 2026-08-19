@@ -75,10 +75,15 @@ test("live smoke uses ephemeral read-only lanes with an independent verifier", (
       delete: false
     });
   }
+  assert.match(contracts[0].lanes[0].prompt, /investigator-nonce\.txt/iu);
+  assert.match(contracts[1].lanes[0].prompt, /follow-up-nonce\.txt/iu);
+  assert.equal(contracts[0].lanes[0].effort, "high");
+  assert.equal(contracts[1].lanes[0].effort, "medium");
 });
 
 test("published live evidence cannot retain prompts, messages, credentials, or runtime ids", () => {
   const secret = "never-retain-this-value";
+  const secondSecret = "never-retain-this-second-value";
   const evidence = sanitizeLiveEvidence({
     codexVersion: "codex-cli 0.147.0",
     loginStatus: `Logged in ${secret}`,
@@ -89,14 +94,14 @@ test("published live evidence cannot retain prompts, messages, credentials, or r
       status: "complete",
       threadId: `thread-${secret}`,
       turnId: `turn-${secret}`,
-      lastMessage: secret,
+      lastMessage: `LIVE_INVESTIGATOR_OK ${secret}`,
       prompt: secret
     },
     followUp: {
       status: "complete",
       threadId: `thread-${secret}`,
       turnId: `turn-2-${secret}`,
-      lastMessage: secret
+      lastMessage: `LIVE_FOLLOW_UP_OK ${secondSecret}`
     },
     verifier: {
       id: "live-verifier",
@@ -104,17 +109,23 @@ test("published live evidence cannot retain prompts, messages, credentials, or r
       effort: "high",
       status: "complete",
       threadId: `verifier-${secret}`,
-      turnId: `verifier-turn-${secret}`
+      turnId: `verifier-turn-${secret}`,
+      lastMessage: `LIVE_VERIFIER_OK ${secret} ${secondSecret}`
     },
-    cancellation: { accepted: true, status: "cancelled", confirmationToken: secret }
+    cancellation: { accepted: true, status: "cancelled", confirmationToken: secret },
+    expectedNonces: { investigator: secret, followUp: secondSecret }
   });
   const serialized = JSON.stringify(evidence);
 
   assert.equal(serialized.includes(secret), false);
   assert.equal(evidence.loginAuthenticated, true);
+  assert.equal(evidence.investigator.nonceObserved, true);
   assert.equal(evidence.followUp.threadReused, true);
   assert.equal(evidence.followUp.turnChanged, true);
+  assert.equal(evidence.followUp.nonceObserved, true);
   assert.equal(evidence.verifier.independentThread, true);
+  assert.equal(evidence.verifier.bothNoncesObserved, true);
+  assert.equal(evidence.passed, true);
 });
 
 test("live cleanup stops the exact owned supervisor before removing its workspace", async () => {

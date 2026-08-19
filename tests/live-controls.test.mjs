@@ -14,6 +14,7 @@ import {
   buildEnv,
   installFakeCodex
 } from "./upstream/fake-codex-fixture.mjs";
+import { createShutdownGuard } from "../plugins/fleet/scripts/fleet-supervisor.mjs";
 
 const SUPERVISOR = path.resolve("plugins", "fleet", "scripts", "fleet-supervisor.mjs");
 
@@ -87,7 +88,7 @@ async function waitForLane(scope, id, status, timeoutMs = 5_000) {
   throw new Error(`Timed out waiting for ${id} to reach ${status}.`);
 }
 
-async function waitForSupervisorExit(manifestPath, timeoutMs = 5_000) {
+async function waitForSupervisorExit(manifestPath, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -173,8 +174,8 @@ test("invalid mutation after terminal work does not suppress idle shutdown", asy
   await waitForSupervisorExit(scope.manifest.manifestPath);
 });
 
-test("bounded idle grace keeps one ephemeral broker alive for immediate follow-up", async (t) => {
-  const scope = await fixture(t, "slow-task", { FLEET_SUPERVISOR_IDLE_MS: "5000" });
+test("default idle grace keeps one ephemeral broker alive for immediate follow-up", async (t) => {
+  const scope = await fixture(t, "slow-task");
   const contract = startContract(scope, "ephemeral-follow-up");
   contract.lanes[0].ephemeral = true;
   await request(scope, "start", contract);
@@ -193,10 +194,25 @@ test("bounded idle grace keeps one ephemeral broker alive for immediate follow-u
   assert.notEqual(second.turnId, first.turnId);
 });
 
-test("a new lane admitted at the previous idle boundary remains monitored", async (t) => {
-  const scope = await fixture(t, "slow-task", { FLEET_SUPERVISOR_IDLE_MS: "5000" });
+test("shutdown guard rejects close across an admitted boundary request", () => {
+  const guard = createShutdownGuard();
+  const idleVersion = guard.armIdleClose();
+  const releaseRequest = guard.admit();
+
+  assert.equal(guard.tryIdleClose(idleVersion), false);
+  releaseRequest();
+  assert.equal(guard.tryIdleClose(idleVersion), false);
+
+  const nextIdleVersion = guard.armIdleClose();
+  assert.equal(guard.tryIdleClose(nextIdleVersion), true);
+  assert.throws(() => guard.admit(), /shutting down/iu);
+});
+
+test("a lane admitted near the idle boundary remains monitored", async (t) => {
+  const scope = await fixture(t, "slow-task", { FLEET_SUPERVISOR_IDLE_MS: "750" });
   await request(scope, "start", startContract(scope, "idle-boundary-first"));
   await waitForLane(scope, "idle-boundary-first", "complete");
+  await new Promise((resolve) => setTimeout(resolve, 650));
 
   await request(scope, "start", startContract(scope, "idle-boundary-second"));
   const second = await waitForLane(scope, "idle-boundary-second", "complete");

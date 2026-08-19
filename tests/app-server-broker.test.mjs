@@ -23,6 +23,8 @@ test("protocol diagnostics retain shape without ids, text, errors, or secrets", 
     method: "turn/completed",
     turnStatus: "completed",
     itemType: "agentMessage",
+    paramsKeys: ["item", "threadId", "turn"],
+    turnKeys: ["error", "id", "status"],
     hasError: true
   });
   assert.equal(JSON.stringify(summary).includes(secret), false);

@@ -16,6 +16,17 @@ import { makeTempDir } from "./helpers.mjs";
 const WORKSPACE_KEY = "0123456789abcdef0123456789abcdef";
 const TOKEN = "a".repeat(64);
 
+test("stopping a stale manifest never targets a reused process id", async () => {
+  const outcome = await stopSupervisor({
+    manifest: {
+      process: { pid: 4242, recordedStart: "original-process" }
+    },
+    observeStart: async () => "reused-process"
+  });
+
+  assert.deepEqual(outcome, { stopped: true, reason: "owned-process-gone" });
+});
+
 test("authenticated local supervisor accepts only its workspace and token", async (t) => {
   const dataDir = makeTempDir("fleet-supervisor-auth-");
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
@@ -113,6 +124,15 @@ test("supervisor paths stay private and deterministic per workspace", async (t) 
   assert.equal(path.dirname(first.manifestPath), first.root);
   assert.equal(path.dirname(first.lockPath), first.root);
   assert.match(first.address, process.platform === "win32" ? /^\\\\\.\\pipe\\/u : /\.sock$/u);
+
+  const longDataDir = path.join(dataDir, "x".repeat(160));
+  const portable = supervisorPaths({
+    dataDir: longDataDir,
+    workspaceKey: WORKSPACE_KEY,
+    platform: "darwin"
+  });
+  assert.ok(Buffer.byteLength(portable.address, "utf8") < 100);
+  assert.equal(portable.address.includes(longDataDir), false);
 });
 
 test("supervisor root rejects a symbolic-link ancestor", async (t) => {

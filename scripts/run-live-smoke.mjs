@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -81,8 +82,9 @@ export function buildLiveSmokeContracts(workspacePath) {
       role: "investigator",
       label: "Read-only live investigator",
       prompt: [
-        "Reply exactly LIVE_INVESTIGATOR_OK.",
-        "Do not call tools, edit files, or access the network."
+        "Read investigator-nonce.txt from this disposable workspace.",
+        "Reply with LIVE_INVESTIGATOR_OK followed by its exact content.",
+        "Do not edit files or access the network."
       ].join(" ")
     }),
     startContract(workspace, {
@@ -90,10 +92,11 @@ export function buildLiveSmokeContracts(workspacePath) {
       role: "independent-verifier",
       label: "Independent live verifier",
       model: "gpt-5.6-terra",
-      effort: "high",
+      effort: "medium",
       prompt: [
-        "Independently reply exactly LIVE_VERIFIER_OK.",
-        "Do not call tools, edit files, or access the network."
+        "Independently read investigator-nonce.txt and follow-up-nonce.txt.",
+        "Reply with LIVE_VERIFIER_OK followed by both exact contents in that order.",
+        "Do not edit files or access the network."
       ].join(" ")
     }),
     startContract(workspace, {
@@ -124,6 +127,8 @@ export function sanitizeLiveEvidence(raw) {
   const investigatorMessage = String(raw.investigator?.lastMessage ?? "");
   const followUpMessage = String(raw.followUp?.lastMessage ?? "");
   const verifierMessage = String(raw.verifier?.lastMessage ?? "");
+  const investigatorNonce = String(raw.expectedNonces?.investigator ?? "");
+  const followUpNonce = String(raw.expectedNonces?.followUp ?? "");
   const threadReused = Boolean(
     raw.investigator?.threadId
     && raw.investigator.threadId === raw.followUp?.threadId
@@ -144,17 +149,23 @@ export function sanitizeLiveEvidence(raw) {
     codexVersion: String(raw.codexVersion ?? "").split(/\r?\n/u)[0].slice(0, 120),
     investigator: {
       ...publicLane(raw.investigator),
-      markerObserved: investigatorMessage.includes("LIVE_INVESTIGATOR_OK")
+      markerObserved: investigatorMessage.includes("LIVE_INVESTIGATOR_OK"),
+      nonceObserved: Boolean(investigatorNonce) && investigatorMessage.includes(investigatorNonce)
     },
     followUp: {
       status: raw.followUp?.status ?? null,
       markerObserved: followUpMessage.includes("LIVE_FOLLOW_UP_OK"),
+      nonceObserved: Boolean(followUpNonce) && followUpMessage.includes(followUpNonce),
       threadReused,
       turnChanged
     },
     verifier: {
       ...publicLane(raw.verifier),
       markerObserved: verifierMessage.includes("LIVE_VERIFIER_OK"),
+      bothNoncesObserved: Boolean(investigatorNonce)
+        && Boolean(followUpNonce)
+        && verifierMessage.includes(investigatorNonce)
+        && verifierMessage.includes(followUpNonce),
       independentThread
     },
     cancellation: {
@@ -165,12 +176,15 @@ export function sanitizeLiveEvidence(raw) {
   evidence.passed = evidence.loginAuthenticated
     && evidence.investigator.status === "complete"
     && evidence.investigator.markerObserved
+    && evidence.investigator.nonceObserved
     && evidence.followUp.status === "complete"
     && evidence.followUp.markerObserved
+    && evidence.followUp.nonceObserved
     && evidence.followUp.threadReused
     && evidence.followUp.turnChanged
     && evidence.verifier.status === "complete"
     && evidence.verifier.markerObserved
+    && evidence.verifier.bothNoncesObserved
     && evidence.verifier.independentThread
     && evidence.cancellation.accepted
     && evidence.cancellation.status === "cancelled";
@@ -260,6 +274,20 @@ export async function runLiveSmoke(options = {}) {
   const workspace = assertDisposableWorkspace(path.join(disposableRoot, "workspace"), disposableRoot);
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, "README.md"), "FleetLiveSmoke disposable evidence\n", "utf8");
+  const expectedNonces = {
+    investigator: crypto.randomBytes(16).toString("hex"),
+    followUp: crypto.randomBytes(16).toString("hex")
+  };
+  fs.writeFileSync(
+    path.join(workspace, "investigator-nonce.txt"),
+    `${expectedNonces.investigator}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
+  fs.writeFileSync(
+    path.join(workspace, "follow-up-nonce.txt"),
+    `${expectedNonces.followUp}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
   const env = isolatedEnvironment(disposableRoot);
   const context = { cwd: workspace, env };
   const dataDir = getFleetDataDir(env, process.platform, os.homedir());
@@ -296,7 +324,11 @@ export async function runLiveSmoke(options = {}) {
       schemaVersion: 1,
       workspacePath: workspace,
       laneId: "live-investigator",
-      message: "Reply exactly LIVE_FOLLOW_UP_OK. Do not call tools or access the network."
+      message: [
+        "Read follow-up-nonce.txt from this disposable workspace.",
+        "Reply with LIVE_FOLLOW_UP_OK followed by its exact content.",
+        "Do not edit files or access the network."
+      ].join(" ")
     });
     runFleetJson(["follow-up", "--contract", followUpPath], context);
     const followUp = laneFromResult(runFleetJson([
@@ -341,7 +373,8 @@ export async function runLiveSmoke(options = {}) {
       investigator: first,
       followUp,
       verifier,
-      cancellation: { accepted: accepted.accepted, status: cancelled.status }
+      cancellation: { accepted: accepted.accepted, status: cancelled.status },
+      expectedNonces
     });
     return evidence;
   } finally {

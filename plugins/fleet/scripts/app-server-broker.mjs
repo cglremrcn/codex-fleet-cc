@@ -44,6 +44,11 @@ function safeProtocolName(value) {
     : null;
 }
 
+function safeProtocolKeys(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value).filter((key) => safeProtocolName(key)).sort().slice(0, 16);
+}
+
 export function summarizeProtocolMessage(message) {
   const serverRequest = message?.id !== undefined && Boolean(message?.method);
   const notification = message?.id === undefined && Boolean(message?.method);
@@ -52,6 +57,8 @@ export function summarizeProtocolMessage(message) {
     method: safeProtocolName(message?.method),
     turnStatus: safeProtocolName(message?.params?.turn?.status),
     itemType: safeProtocolName(message?.params?.item?.type),
+    paramsKeys: safeProtocolKeys(message?.params),
+    turnKeys: safeProtocolKeys(message?.params?.turn),
     hasError: Boolean(message?.error ?? message?.params?.turn?.error)
   });
 }

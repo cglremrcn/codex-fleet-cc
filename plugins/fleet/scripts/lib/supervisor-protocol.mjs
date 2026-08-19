@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -17,6 +18,7 @@ const WORKSPACE_KEY = /^[a-f0-9]{32}$/u;
 const TOKEN = /^[a-f0-9]{64}$/u;
 const MAX_MANIFEST_BYTES = 16 * 1024;
 const DEFAULT_START_TIMEOUT_MS = 15_000;
+const MAX_PORTABLE_SOCKET_BYTES = 99;
 const REQUEST_FIELDS = new Set([
   "schemaVersion",
   "requestId",
@@ -265,12 +267,23 @@ export function supervisorPaths(options = {}) {
   const workspaceKey = assertWorkspaceKey(options.workspaceKey);
   const platform = options.platform ?? process.platform;
   const root = path.join(dataDir, "supervisors", workspaceKey);
-  const address = platform === "win32"
-    ? `\\\\.\\pipe\\codex-fleet-${crypto.createHash("sha256")
-      .update(`${dataDir}\0${workspaceKey}`)
-      .digest("hex")
-      .slice(0, 32)}`
-    : path.join(root, "control.sock");
+  const endpointHash = crypto.createHash("sha256")
+    .update(`${dataDir}\0${workspaceKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  let address;
+  if (platform === "win32") {
+    address = `\\\\.\\pipe\\codex-fleet-${endpointHash}`;
+  } else {
+    const socketName = `cfx-${endpointHash}.sock`;
+    address = path.join(os.tmpdir(), socketName);
+    if (Buffer.byteLength(address, "utf8") > MAX_PORTABLE_SOCKET_BYTES) {
+      address = path.join(path.parse(os.tmpdir()).root, "tmp", socketName);
+    }
+    if (Buffer.byteLength(address, "utf8") > MAX_PORTABLE_SOCKET_BYTES) {
+      throw new Error("Supervisor socket path exceeds the portable Unix-domain limit.");
+    }
+  }
   return Object.freeze({
     root,
     address,
@@ -344,6 +357,7 @@ export async function createSupervisorServer(options = {}) {
       resolve();
     });
   });
+  if (process.platform !== "win32") await fs.chmod(address, 0o600);
 
   return Object.freeze({
     address,
@@ -484,9 +498,13 @@ export async function ensureSupervisor(options = {}) {
 export async function stopSupervisor(options = {}) {
   const manifest = options.manifest ?? await readSupervisorManifest(options);
   if (!manifest) return Object.freeze({ stopped: true, reason: "not-running" });
-  const observedStart = await observeProcessStart(manifest.process.pid, options);
+  const observeStart = options.observeStart ?? observeProcessStart;
+  const observedStart = await observeStart(manifest.process.pid, options);
   if (observedStart !== manifest.process.recordedStart) {
-    return Object.freeze({ stopped: false, reason: "ownership-mismatch" });
+    return Object.freeze({
+      stopped: true,
+      reason: observedStart === null ? "not-running" : "owned-process-gone"
+    });
   }
   await requestSupervisor({
     address: manifest.address,
@@ -499,7 +517,7 @@ export async function stopSupervisor(options = {}) {
 
   const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_START_TIMEOUT_MS);
   while (Date.now() < deadline) {
-    const current = await observeProcessStart(manifest.process.pid, options);
+    const current = await observeStart(manifest.process.pid, options);
     if (current !== manifest.process.recordedStart) {
       return Object.freeze({ stopped: true, reason: "owned-supervisor-stopped" });
     }

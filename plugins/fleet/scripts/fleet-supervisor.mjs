@@ -23,7 +23,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 
 function idleShutdownDelay(env) {
   const value = env.FLEET_SUPERVISOR_IDLE_MS;
-  if (value === undefined) return 750;
+  if (value === undefined) return 5_000;
   if (!/^\d{3,5}$/u.test(value)) {
     throw new Error("FLEET_SUPERVISOR_IDLE_MS must be an integer between 750 and 60000.");
   }
@@ -32,6 +32,41 @@ function idleShutdownDelay(env) {
     throw new Error("FLEET_SUPERVISOR_IDLE_MS must be an integer between 750 and 60000.");
   }
   return milliseconds;
+}
+
+export function createShutdownGuard() {
+  let closing = false;
+  let activeRequests = 0;
+  let activityVersion = 0;
+  return Object.freeze({
+    admit() {
+      if (closing) throw new Error("Fleet supervisor is shutting down.");
+      activeRequests += 1;
+      activityVersion += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        activeRequests -= 1;
+      };
+    },
+    armIdleClose() {
+      return activityVersion;
+    },
+    tryIdleClose(expectedVersion) {
+      if (closing || activeRequests > 0 || expectedVersion !== activityVersion) return false;
+      closing = true;
+      return true;
+    },
+    forceClose() {
+      if (closing) return false;
+      closing = true;
+      return true;
+    },
+    isClosing() {
+      return closing;
+    }
+  });
 }
 
 function assertObject(value, label) {
@@ -195,6 +230,10 @@ function createControlPlane(options) {
   }
 
   return Object.freeze({
+    async isIdle() {
+      const current = await snapshot();
+      return current.queued.length === 0 && current.active.length === 0;
+    },
     async handle(method, params) {
       if (method === "ping") {
         const current = await snapshot();
@@ -272,8 +311,7 @@ function createControlPlane(options) {
       throw new Error(`Unknown Fleet supervisor method: ${method}.`);
     },
     async restoreIdlePolicy() {
-      const current = await snapshot();
-      if (current.queued.length === 0 && current.active.length === 0) {
+      if (await this.isIdle()) {
         options.onIdle?.();
       } else {
         monitorActive();
@@ -333,7 +371,7 @@ export async function runSupervisor(options = {}) {
   const token = crypto.randomBytes(32).toString("hex");
   const ownedProcess = await captureOwnedProcess(process.pid, options);
   const idleDelayMs = idleShutdownDelay(options.env ?? process.env);
-  let closing = false;
+  const shutdownGuard = createShutdownGuard();
   let idleTimer = null;
   let resolveStopped;
   const stopped = new Promise((resolve) => {
@@ -346,7 +384,8 @@ export async function runSupervisor(options = {}) {
 
   function scheduleIdleShutdown(delayMs = idleDelayMs) {
     cancelIdleShutdown();
-    idleTimer = setTimeout(() => void close(), delayMs);
+    const activityVersion = shutdownGuard.armIdleClose();
+    idleTimer = setTimeout(() => void close({ idleActivityVersion: activityVersion }), delayMs);
   }
 
   const control = createControlPlane({
@@ -365,15 +404,18 @@ export async function runSupervisor(options = {}) {
     workspaceKey,
     token,
     handleRequest: async ({ method, params }) => {
-      if (method === "shutdown") {
-        setTimeout(() => close(), 50).unref?.();
-        return { accepted: true };
-      }
+      const releaseRequest = shutdownGuard.admit();
       try {
+        if (method === "shutdown") {
+          setTimeout(() => close(), 50).unref?.();
+          return { accepted: true };
+        }
         return await control.handle(method, params);
       } catch (error) {
         await control.restoreIdlePolicy().catch(() => undefined);
         throw error;
+      } finally {
+        releaseRequest();
       }
     }
   });
@@ -387,9 +429,16 @@ export async function runSupervisor(options = {}) {
     process: ownedProcess
   });
 
-  async function close() {
-    if (closing) return stopped;
-    closing = true;
+  async function close(closeOptions = {}) {
+    if (closeOptions.idleActivityVersion !== undefined) {
+      if (!await control.isIdle()) return stopped;
+      if (!shutdownGuard.tryIdleClose(closeOptions.idleActivityVersion)) {
+        if (!shutdownGuard.isClosing()) scheduleIdleShutdown();
+        return stopped;
+      }
+    } else if (!shutdownGuard.forceClose()) {
+      return stopped;
+    }
     cancelIdleShutdown();
     await control.close().catch(() => undefined);
     process.chdir(path.dirname(process.execPath));
