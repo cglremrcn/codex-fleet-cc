@@ -97,7 +97,7 @@ function zipArchive(entries, sourceDateEpoch) {
 export async function buildPluginArchive(options = {}) {
   const sourceRoot = path.resolve(options.sourceRoot ?? path.join(ROOT, "plugins", "fleet"));
   const outputDir = path.resolve(options.outputDir ?? path.join(ROOT, "dist"));
-  const version = String(options.version ?? "0.1.4");
+  const version = String(options.version ?? "0.1.5");
   const sourceDateEpoch = Number(options.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH ?? 0);
   if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(version)) {
     throw new TypeError("Package version must be semantic.");
@@ -150,7 +150,7 @@ export async function buildPluginArchive(options = {}) {
 
 if (isMainModule(import.meta.url)) {
   const versionIndex = process.argv.indexOf("--version");
-  const version = versionIndex === -1 ? "0.1.4" : process.argv[versionIndex + 1];
+  const version = versionIndex === -1 ? "0.1.5" : process.argv[versionIndex + 1];
   const result = await buildPluginArchive({ version });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

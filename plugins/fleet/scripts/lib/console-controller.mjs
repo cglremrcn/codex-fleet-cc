@@ -73,6 +73,7 @@ function boundedStatus(value, width) {
 }
 
 function decorateFooter(screen, state, columns) {
+  if (state.session) return screen;
   let message = null;
   if (state.composer) {
     message = `FOLLOW-UP / ${state.composer.laneId} · EXISTING CODEX THREAD · ${state.composer.value || "type a message"} · Enter send · Esc discard`;
@@ -120,7 +121,9 @@ export function createConsoleController(options = {}) {
     frame: 0,
     notice: null,
     confirmation: null,
-    composer: null
+    composer: null,
+    session: null,
+    refreshTick: 0
   };
   let previousScreen = null;
   let firstRender = true;
@@ -154,7 +157,9 @@ export function createConsoleController(options = {}) {
       ...preferences,
       motion: ui.motion,
       reducedMotion: preferences.reducedMotion === true || ui.motion === false,
-      frame
+      frame,
+      session: ui.session,
+      composer: ui.composer
     }), ui, terminal.columns);
     if (screen === previousScreen) return false;
     previousScreen = screen;
@@ -183,14 +188,86 @@ export function createConsoleController(options = {}) {
     }
     try {
       await runtime[method](lane, ...args);
-      setNotice(method === "followUp"
-        ? `FOLLOW-UP SENT · ${lane.id} · EXISTING CODEX THREAD`
+      setNotice(method === "followUp" || method === "message"
+        ? `MESSAGE SENT · ${lane.id} · SAME CODEX THREAD`
         : `${method}-requested · ${lane.id}`);
       return true;
     } catch (error) {
       setNotice(actionFailure(error));
       return false;
     }
+  }
+
+  async function refreshSession() {
+    if (!ui.session) return false;
+    const laneId = ui.session.laneId;
+    const lane = snapshot.lanes.find((candidate) => candidate.id === laneId);
+    if (!lane) {
+      ui.session = { ...ui.session, loading: false, error: "Lane is no longer available." };
+      return false;
+    }
+    if (typeof runtime.session !== "function") {
+      ui.session = {
+        ...ui.session,
+        loading: false,
+        error: "Runtime thread inspection is unavailable."
+      };
+      return false;
+    }
+    try {
+      const session = await runtime.session(lane);
+      if (ui.session?.laneId !== laneId) return false;
+      ui.session = {
+        ...session,
+        laneId,
+        loading: false,
+        error: null,
+        scroll: ui.session.scroll ?? 0
+      };
+      return true;
+    } catch (error) {
+      if (ui.session?.laneId === laneId) {
+        ui.session = {
+          ...ui.session,
+          loading: false,
+          error: boundedStatus(error?.message ?? "Session read failed.", 160)
+        };
+      }
+      return false;
+    }
+  }
+
+  async function openSession() {
+    const lane = selectedLane();
+    if (!lane) {
+      setNotice("NO LANE SELECTED");
+      return;
+    }
+    ui.filterEditing = false;
+    ui.confirmation = null;
+    ui.notice = null;
+    ui.session = {
+      laneId: lane.id,
+      threadId: lane.threadId ?? null,
+      source: "fleet",
+      canAcceptDirectInput: Boolean(lane.threadId),
+      messages: [],
+      loading: true,
+      error: null,
+      scroll: 0
+    };
+    // The authoritative thread identity may only be available from thread/read.
+    // Keep the composer available while that session metadata is loading so a
+    // freshly persisted terminal lane behaves exactly like an existing one.
+    ui.composer = { laneId: lane.id, value: "" };
+    await renderCurrent();
+    await refreshSession();
+  }
+
+  function closeSession() {
+    ui.session = null;
+    ui.composer = null;
+    setNotice("RETURNED TO FLEET DASHBOARD");
   }
 
   async function confirmCancellation() {
@@ -257,6 +334,7 @@ export function createConsoleController(options = {}) {
   async function dispatch(event) {
     if (!event || typeof event !== "object") return { exit: false };
     if (event.type === "tick") {
+      ui.refreshTick += 1;
       if (typeof readSnapshot === "function") {
         try {
           snapshot = normalizeSnapshot(await readSnapshot(), options.cwd);
@@ -265,6 +343,11 @@ export function createConsoleController(options = {}) {
         }
       }
       if (ui.motion && MOTION_STATUSES.has(selectedLane()?.status)) ui.frame += 1;
+      if (ui.session && ui.refreshTick % 4 === 0 && !ui.composer?.value) {
+        await refreshSession();
+      }
+    } else if (event.type === "closeSession") {
+      closeSession();
     } else if (event.type === "filter") {
       ui.filterEditing = true;
       ui.notice = null;
@@ -289,8 +372,7 @@ export function createConsoleController(options = {}) {
       ui.panelIndex = PANELS.indexOf("controls");
       setNotice("PANEL CONTROLS · 5/5");
     } else if (event.type === "activate") {
-      ui.panelIndex = PANELS.indexOf("detail");
-      setNotice("PANEL DETAIL · 2/5");
+      await openSession();
     } else if (event.type === "edit") {
       if (!draftPath) setNotice("draft-path-not-provided");
       else if (typeof spawnEditor !== "function") setNotice("original-editor-unavailable");
@@ -306,25 +388,25 @@ export function createConsoleController(options = {}) {
       const lane = selectedLane();
       const decision = authorize(lane, "process.start");
       if (!decision.allowed) setNotice(decision.reason);
-      else if (lane?.status !== "complete") setNotice("follow-up-requires-complete-lane");
-      else if (lane) {
-        ui.filterEditing = false;
-        ui.confirmation = null;
-        ui.notice = null;
-        ui.composer = { laneId: lane.id, value: "" };
-      }
+      else await openSession();
     } else if (event.type === "submitMessage" && ui.composer) {
       const composer = ui.composer;
       const lane = snapshot.lanes.find((candidate) => candidate.id === composer.laneId);
       if (!composer.value.trim()) setNotice("follow-up-message-empty");
       else if (!lane) setNotice("follow-up-target-changed");
       else {
-        const succeeded = await runRuntimeAction("followUp", lane, composer.value);
-        if (succeeded) ui.composer = null;
+        const method = typeof runtime.message === "function" ? "message" : "followUp";
+        const succeeded = await runRuntimeAction(method, lane, composer.value);
+        if (succeeded) {
+          ui.composer = { laneId: composer.laneId, value: "" };
+          if (ui.session) {
+            ui.session.scroll = 0;
+            await refreshSession();
+          }
+        }
       }
     } else if (event.type === "discardMessage" && ui.composer) {
-      ui.composer = null;
-      setNotice("FOLLOW-UP DISCARDED");
+      closeSession();
     } else if (event.type === "cancel") {
       const lane = selectedLane();
       if (lane && !CANCELLABLE_STATUSES.has(lane.status)) {
@@ -350,6 +432,9 @@ export function createConsoleController(options = {}) {
       terminal = safeTerminal(event);
     } else if (event.type === "invalidInput") {
       setNotice(event.reason);
+    } else if (event.type === "move" && ui.session) {
+      const delta = event.delta < 0 ? 3 : -3;
+      ui.session.scroll = Math.max(0, (ui.session.scroll ?? 0) + delta);
     } else if (event.type === "move") {
       if (ui.laneCount <= 1) {
         setNotice(`ONLY ${ui.laneCount} LANE · selection unchanged`);

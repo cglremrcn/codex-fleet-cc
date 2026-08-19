@@ -1,5 +1,5 @@
 FLEET//OPS  codex-fleet-cc@main                                                           [= o o =]R
-01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY  MOTION ENABLED
+01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY  PANEL LANES  MOTION LIVE |
 > SIGNAL 02/04  console-build · RUNNING · renderer =================================================
 [LANES]  4                            | DETAIL
 ----------------------------------------------------------------------------------------------------
@@ -25,4 +25,4 @@ FLEET//OPS  codex-fleet-cc@main                                                 
                                       |
                                       |
 ----------------------------------------------------------------------------------------------------
-↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  TAB PANEL  P MOTION  ? HELP  Q RETURN
+↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H/? HELP  CTRL+G/Q RETURN

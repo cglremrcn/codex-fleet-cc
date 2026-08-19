@@ -108,6 +108,8 @@ test("a second client follows up a completed supervisor-owned lane", async (t) =
 
   assert.equal(admitted.background, true);
   assert.equal(admitted.lanes[0].status, "running");
+  assert.match(admitted.lanes[0].admissionId, /^[a-f0-9-]{36}$/u);
+  assert.equal(admitted.lanes[0].admissionSource, "fleet-supervisor");
   const first = await waitForLane(scope, "cross-process", "complete");
   await stopSupervisor({ ...scope.options, manifest: scope.manifest });
   scope.manifest = await ensureSupervisor(scope.options);
@@ -121,6 +123,49 @@ test("a second client follows up a completed supervisor-owned lane", async (t) =
 
   assert.equal(second.threadId, first.threadId);
   assert.notEqual(second.turnId, first.turnId);
+});
+
+test("duplicate admission cannot replace a completed terminal lane", async (t) => {
+  const scope = await fixture(t, "slow-task");
+  const contract = startContract(scope, "immutable-terminal");
+  await request(scope, "start", contract);
+  const completed = await waitForLane(scope, "immutable-terminal", "complete");
+
+  await assert.rejects(
+    request(scope, "start", contract),
+    /already known/iu
+  );
+  const preserved = await request(scope, "result", { laneId: "immutable-terminal" });
+
+  assert.equal(preserved.status, "complete");
+  assert.equal(preserved.turnId, completed.turnId);
+  assert.equal(preserved.lastMessage, completed.lastMessage);
+  assert.equal(preserved.finishedAt, completed.finishedAt);
+});
+
+test("session returns the real Codex transcript and message steers the active turn", async (t) => {
+  const scope = await fixture(t, "interruptible-slow-task");
+  await request(scope, "start", startContract(scope, "interactive-session"));
+  const running = await waitForLane(scope, "interactive-session", "running");
+
+  const session = await request(scope, "session", { laneId: "interactive-session" });
+  assert.equal(session.threadId, running.threadId);
+  assert.equal(session.source, "appServer");
+  assert.equal(session.messages.some((message) => message.kind === "user"), true);
+
+  const steered = await request(scope, "message", {
+    laneId: "interactive-session",
+    message: "Inspect the contradictory source before finishing."
+  });
+  assert.equal(steered.status, "running");
+  const fakeState = JSON.parse(
+    await fs.readFile(path.join(scope.binDir, "fake-codex-state.json"), "utf8")
+  );
+  assert.deepEqual(fakeState.lastTurnSteer, {
+    threadId: running.threadId,
+    turnId: running.turnId,
+    prompt: "Inspect the contradictory source before finishing."
+  });
 });
 
 test("supervisor rejects database write admission without a confirmation reference", async (t) => {

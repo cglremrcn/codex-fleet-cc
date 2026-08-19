@@ -58,9 +58,19 @@ controls. Do not kill processes broadly by executable name.
 
 Claude Code's `↓ to manage` hint controls Claude background agents. Press `Ctrl+G` to enter Fleet
 Console, then use `↑`/`↓` or `j`/`k` to select lanes. With only one lane, Fleet reports that the selection
-cannot change. `Tab`, `Enter`, and `?` display the focused panel in brackets. `p` pauses or resumes KITE
-and shows an explicit notice; completed lanes may move while awaiting verification, while verified,
-blocked, failed, and unknown states remain locked.
+cannot change. `Tab` displays the focused panel in brackets. `Enter` or `m` opens the real selected Codex
+thread; type directly and press `Enter` to send. `Ctrl+G` closes that session back to Fleet, then `q` or
+`Esc` returns to Claude Code. Use `h` or `F1` when `?` is awkward on a Turkish keyboard. `p` pauses or
+resumes KITE and shows an explicit notice; completed lanes visibly move while awaiting verification,
+while verified, blocked, failed, and unknown states remain locked.
+
+## Desktop Browser or Computer Use is missing in a lane
+
+`codex mcp list` proves configuration, not lane injection. A Codex desktop Browser/Chrome/Computer Use
+skill name also does not prove a callable tool exists in the Fleet app-server thread. Run a lane-local,
+non-mutating capability smoke. If the exact tool is absent, Fleet must stop or request an explicit parent
+Claude fallback; it must not substitute Playwright, Chrome DevTools, generic web search, or a fresh browser
+profile and claim the same signed-in session.
 
 ## Status shows no lanes
 

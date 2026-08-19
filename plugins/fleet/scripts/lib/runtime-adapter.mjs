@@ -9,6 +9,8 @@ import { createLane } from "./domain.mjs";
 import { redactText } from "./redaction.mjs";
 
 const MAX_PROMPT_LENGTH = 128 * 1024;
+const MAX_TRANSCRIPT_ITEMS = 96;
+const MAX_TRANSCRIPT_ITEM_LENGTH = 4_096;
 const IGNORED_NOTIFICATION_METHODS = new Set([
   "item/agentMessage/delta",
   "item/reasoning/summaryTextDelta",
@@ -84,6 +86,113 @@ function safeItemPayload(item) {
     default:
       return { itemType: redactText(item.type ?? "unknown") };
   }
+}
+
+function transcriptText(value) {
+  return redactText(value ?? "").slice(0, MAX_TRANSCRIPT_ITEM_LENGTH);
+}
+
+function userInputText(content) {
+  if (!Array.isArray(content)) return "";
+  return content.map((item) => {
+    if (item?.type === "text") return item.text ?? "";
+    if (item?.type === "image" || item?.type === "localImage") return "[image attached]";
+    if (item?.type === "audio" || item?.type === "localAudio") return "[audio attached]";
+    if (item?.type === "skill") return `[skill: ${item.name ?? "unknown"}]`;
+    if (item?.type === "mention") return `[mention: ${item.name ?? "unknown"}]`;
+    return "[attachment]";
+  }).filter(Boolean).join("\n");
+}
+
+function transcriptItem(item, turnId) {
+  if (!item || typeof item !== "object") return null;
+  const base = { turnId, itemId: typeof item.id === "string" ? item.id : null };
+  switch (item.type) {
+    case "userMessage":
+      return { ...base, kind: "user", text: transcriptText(userInputText(item.content)) };
+    case "agentMessage":
+      return { ...base, kind: "assistant", text: transcriptText(item.text) };
+    case "plan":
+      return { ...base, kind: "assistant", text: transcriptText(`[plan]\n${item.text ?? ""}`) };
+    case "commandExecution":
+      return {
+        ...base,
+        kind: "activity",
+        // Command text can contain credentials or private paths. The embedded
+        // session shows lifecycle truth without replaying raw shell input/output.
+        text: transcriptText(`COMMAND ${String(item.status ?? "unknown").toUpperCase()}`)
+      };
+    case "fileChange":
+      return {
+        ...base,
+        kind: "activity",
+        text: `FILE CHANGE ${String(item.status ?? "unknown").toUpperCase()} · ${Array.isArray(item.changes) ? item.changes.length : 0} change(s)`
+      };
+    case "mcpToolCall":
+      return {
+        ...base,
+        kind: "activity",
+        text: transcriptText(`MCP ${item.server ?? "unknown"}/${item.tool ?? "unknown"} · ${item.status ?? "unknown"}`)
+      };
+    case "dynamicToolCall":
+      return {
+        ...base,
+        kind: "activity",
+        text: transcriptText(`TOOL ${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"} · ${item.status ?? "unknown"}`)
+      };
+    case "webSearch":
+      return { ...base, kind: "activity", text: transcriptText(`WEB SEARCH · ${item.query ?? ""}`) };
+    case "imageGeneration":
+      return { ...base, kind: "activity", text: transcriptText(`IMAGE GENERATION · ${item.status ?? "unknown"}`) };
+    case "imageView":
+      return { ...base, kind: "activity", text: "IMAGE VIEW" };
+    case "collabAgentToolCall":
+      return {
+        ...base,
+        kind: "activity",
+        text: transcriptText(`AGENT ${item.tool ?? "control"} · ${item.status ?? "unknown"}`)
+      };
+    case "reasoning":
+    case "hookPrompt":
+      return null;
+    default:
+      return { ...base, kind: "activity", text: transcriptText(String(item.type ?? "activity")) };
+  }
+}
+
+function sessionSource(value) {
+  if (typeof value === "string") return transcriptText(value);
+  if (value && typeof value === "object") {
+    return transcriptText(value.type ?? value.kind ?? "app-server");
+  }
+  return "app-server";
+}
+
+function safeThreadSession(thread) {
+  const messages = [];
+  for (const turn of Array.isArray(thread?.turns) ? thread.turns : []) {
+    for (const item of Array.isArray(turn?.items) ? turn.items : []) {
+      const safe = transcriptItem(item, typeof turn?.id === "string" ? turn.id : null);
+      if (safe?.text) messages.push(safe);
+    }
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    threadId: assertRuntimeId(thread?.id, "Codex thread id"),
+    sessionId: typeof thread?.sessionId === "string" ? transcriptText(thread.sessionId) : null,
+    parentThreadId: typeof thread?.parentThreadId === "string"
+      ? transcriptText(thread.parentThreadId)
+      : null,
+    source: sessionSource(thread?.source),
+    name: typeof thread?.name === "string" ? transcriptText(thread.name) : null,
+    status: typeof thread?.status === "string"
+      ? transcriptText(thread.status)
+      : transcriptText(thread?.status?.type ?? "unknown"),
+    canAcceptDirectInput: thread?.canAcceptDirectInput === true,
+    createdAt: Number.isFinite(thread?.createdAt) ? thread.createdAt : null,
+    updatedAt: Number.isFinite(thread?.updatedAt) ? thread.updatedAt : null,
+    messages: Object.freeze(messages.slice(-MAX_TRANSCRIPT_ITEMS).map((message) => Object.freeze(message)))
+  });
 }
 
 class FleetRuntime {
@@ -338,6 +447,14 @@ class FleetRuntime {
   }
 
   async beginContinuation(lane, prompt) {
+    const previous = {
+      status: lane.status,
+      phase: lane.phase,
+      turnId: lane.turnId,
+      lastMessage: lane.lastMessage,
+      exitReason: lane.exitReason,
+      updatedAt: lane.updatedAt
+    };
     this.unbindTurn(lane);
     this.updateLane(
       lane,
@@ -345,15 +462,25 @@ class FleetRuntime {
       "lane.continued",
       { threadId: lane.threadId }
     );
-    const turn = await this.broker.request("turn/start", {
-      threadId: lane.threadId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
-      model: lane.model,
-      effort: lane.effort,
-      outputSchema: null
-    });
-    if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
-    return copyLane(lane);
+    try {
+      const turn = await this.broker.request("turn/start", {
+        threadId: lane.threadId,
+        input: [{ type: "text", text: prompt, text_elements: [] }],
+        model: lane.model,
+        effort: lane.effort,
+        outputSchema: null
+      });
+      if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
+      return copyLane(lane);
+    } catch (error) {
+      this.unbindTurn(lane);
+      Object.assign(lane, previous);
+      if (previous.turnId) this.turnToLane.set(previous.turnId, lane.id);
+      this.emit(lane.id, "lane.continuation-rejected", {
+        message: transcriptText(error?.message ?? "Continuation was rejected.")
+      });
+      throw error;
+    }
   }
 
   async continueLane(id, message) {
@@ -406,6 +533,44 @@ class FleetRuntime {
       sandbox: lane.authority.sandbox
     });
     return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
+  }
+
+  async steerLane(id, message, expectedIdentity = null) {
+    this.assertMutableProtocol();
+    const lane = this.lanes.get(id);
+    if (!lane) throw new Error(`Unknown lane: ${id}.`);
+    if (lane.status !== "running" || !lane.threadId || !lane.turnId) {
+      throw new Error(`Lane ${id} has no active turn that can accept a message.`);
+    }
+    if (
+      expectedIdentity
+      && (
+        expectedIdentity.threadId !== lane.threadId
+        || expectedIdentity.turnId !== lane.turnId
+      )
+    ) {
+      throw new Error(`Lane ${id} target identity changed; message was refused.`);
+    }
+    const prompt = assertPrompt(message, "Lane message");
+    const response = await this.broker.request("turn/steer", {
+      threadId: lane.threadId,
+      expectedTurnId: lane.turnId,
+      input: [{ type: "text", text: prompt, text_elements: [] }]
+    });
+    if (response?.turnId && response.turnId !== lane.turnId) {
+      throw new Error(`Lane ${id} active turn identity changed while steering.`);
+    }
+    this.emit(lane.id, "turn.steered", { threadId: lane.threadId, turnId: lane.turnId });
+    return copyLane(lane);
+  }
+
+  async readThread(threadId) {
+    if (this.closed) throw new Error("Fleet runtime is closed.");
+    const response = await this.broker.request("thread/read", {
+      threadId: assertRuntimeId(threadId, "Codex thread id"),
+      includeTurns: true
+    });
+    return safeThreadSession(response?.thread);
   }
 
   async interruptLane(id) {

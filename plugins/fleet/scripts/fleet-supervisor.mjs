@@ -259,8 +259,10 @@ export function createControlPlane(options) {
           expectedWorkspacePath: options.workspacePath
         });
         const owner = await ensureScheduler(contract.limits);
+        owner.assertAvailable(contract.lanes.map((lane) => lane.id));
         const admissions = contract.lanes.map((lane) => owner.enqueue({
           ...lane,
+          admissionSource: "fleet-supervisor",
           workspacePath: options.workspacePath,
           workspaceKey: options.workspaceKey,
           checkoutKey: lane.checkoutKey ?? options.workspaceKey
@@ -276,6 +278,19 @@ export function createControlPlane(options) {
         const lane = await owner.continue(laneId, assertMessage(params.message));
         monitorActive();
         return lane;
+      }
+      if (method === "message") {
+        options.onActivity?.();
+        const laneId = assertSafeId(params.laneId, "Message lane id");
+        const owner = await ensureScheduler();
+        const lane = await owner.message(laneId, assertMessage(params.message));
+        monitorActive();
+        return lane;
+      }
+      if (method === "session") {
+        const laneId = assertSafeId(params.laneId, "Session lane id");
+        const owner = await ensureScheduler();
+        return owner.readSession(laneId);
       }
       if (method === "cancel") {
         options.onActivity?.();

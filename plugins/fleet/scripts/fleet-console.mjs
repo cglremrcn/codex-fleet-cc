@@ -150,6 +150,12 @@ export async function createSupervisorRuntime(options = {}) {
   }
 
   return Object.freeze({
+    async session(lane) {
+      return call("session", { laneId: lane.id });
+    },
+    async message(lane, message) {
+      return call("message", { laneId: lane.id, message });
+    },
     async followUp(lane, message) {
       return call("followUp", { laneId: lane.id, message });
     },

@@ -9,12 +9,14 @@ const KEY_EVENTS = Object.freeze({
   "\t": Object.freeze({ type: "cyclePanel", delta: 1 }),
   "/": Object.freeze({ type: "filter" }),
   "?": Object.freeze({ type: "help" }),
+  h: Object.freeze({ type: "help" }),
   e: Object.freeze({ type: "edit" }),
   m: Object.freeze({ type: "message" }),
   x: Object.freeze({ type: "cancel" }),
   r: Object.freeze({ type: "reconcile" }),
   c: Object.freeze({ type: "confirm" }),
   p: Object.freeze({ type: "toggleMotion" }),
+  "\u0007": Object.freeze({ type: "quit" }),
   q: Object.freeze({ type: "quit" })
 });
 
@@ -24,6 +26,11 @@ const CSI_EVENTS = Object.freeze({
   C: Object.freeze({ type: "cyclePanel", delta: 1 }),
   D: Object.freeze({ type: "cyclePanel", delta: -1 }),
   Z: Object.freeze({ type: "cyclePanel", delta: -1 })
+});
+
+const COMPLETE_ESCAPE_EVENTS = Object.freeze({
+  "\u001bOP": Object.freeze({ type: "help" }),
+  "\u001b[11~": Object.freeze({ type: "help" })
 });
 
 function positiveInteger(value, fallback) {
@@ -85,7 +92,9 @@ export function createInputDecoder(options = {}) {
         const byteLength = Buffer.byteLength(character);
         pending = pending.subarray(byteLength);
         if (textMode) {
-          if (character === "\r" || character === "\n") {
+          if (character === "\u0007") {
+            events.push({ type: "closeSession" });
+          } else if (character === "\r" || character === "\n") {
             events.push({ type: textMode === "composer" ? "submitMessage" : "applyFilter" });
           } else if (character === "\b" || character === "\u007f") {
             events.push({ type: "backspace" });
@@ -99,6 +108,15 @@ export function createInputDecoder(options = {}) {
         continue;
       }
       if (pending.length === 1) break;
+      if (value[1] === "O") {
+        if (value.length < 3) break;
+        const sequence = value.slice(0, 3);
+        pending = pending.subarray(Buffer.byteLength(sequence));
+        const event = COMPLETE_ESCAPE_EVENTS[sequence];
+        if (event) events.push({ ...event });
+        else events.push({ type: "invalidInput", reason: "unsupported-escape-sequence" });
+        continue;
+      }
       if (value[1] !== "[") {
         pending = pending.subarray(1);
         events.push({ type: "quit" });
@@ -119,7 +137,8 @@ export function createInputDecoder(options = {}) {
       }
       const sequence = value.slice(0, terminator + 1);
       pending = pending.subarray(Buffer.byteLength(sequence));
-      const event = sequence.length === 3 ? CSI_EVENTS[sequence[2]] : null;
+      const event = COMPLETE_ESCAPE_EVENTS[sequence]
+        ?? (sequence.length === 3 ? CSI_EVENTS[sequence[2]] : null);
       if (event) events.push({ ...event });
     }
     return events;

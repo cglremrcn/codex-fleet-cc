@@ -14,6 +14,8 @@ Use these states without collapsing them:
 - `unknown`: the observation was incomplete or ambiguous.
 
 Only `smoke_passed` proves operational reach. A parent-Claude smoke does not prove a Codex-lane smoke.
+Likewise, an MCP name in `codex mcp list`, a discoverable skill, or a desktop-app capability does not
+prove that the exact callable tool was injected into an app-server lane.
 
 ## Discovery sequence
 
@@ -38,6 +40,20 @@ Only `smoke_passed` proves operational reach. A parent-Claude smoke does not pro
 | Image/visual inspection | visual-capable lane/tool | one non-sensitive fixture | explicit parent fallback or stop |
 | Image generation or edit | Codex built-in `$imagegen` (GPT Image 2) | explicit confirmation + lane-local generated artifact | explicit parent fallback or stop |
 | External provider | dedicated operator | provider/tenant identity + sandbox-safe status | stop unless separately authorized |
+
+## Desktop Browser, Chrome, and Computer Use
+
+Treat the Codex desktop app's built-in Browser, ChatGPT Chrome control, and Computer Use as host-scoped
+capabilities, not portable Codex CLI primitives. Fleet may use one only when the exact callable tool is
+visible inside the target Codex lane and that lane passes the required non-mutating smoke. Skill metadata,
+an enabled MCP configuration, a native-pipe environment variable, or success in the parent desktop app is
+only `available`/`configured` evidence.
+
+If the lane sees no callable Browser/Chrome/Computer Use tool, stop or use an explicitly approved parent
+Claude fallback. Do not silently replace a signed-in desktop browser with Playwright, Chrome DevTools, a
+new browser profile, or generic web search: those surfaces have different sessions, authority, and proof.
+Computer Use is not represented by `browser.inspect`/`browser.mutate`; until a dedicated authority surface
+and lane-local enforcement exist, Fleet must not dispatch computer-control work.
 
 ## Fallback rules
 

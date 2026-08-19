@@ -85,15 +85,15 @@ Core navigation is designed around:
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `j` / `k` | Select a lane |
-| `Enter` | Inspect the selected lane |
-| `Tab` | Move between panels |
+| `Enter` / `m` | Open the selected real Codex thread; `Enter` sends inside it |
+| `Tab` | Move between visibly labelled dashboard panels |
 | `/` | Filter lanes |
-| `?` | Open contextual help |
-| `m` | Send a bounded follow-up |
+| `h`, `?`, `F1` | Open contextual help (including Turkish-keyboard-safe alternatives) |
 | `x` | Request confirmed cancellation |
 | `e` | Open the editor Fleet preserved during setup |
 | `p` | Pause or resume KITE motion |
-| `q` / `Esc` | Return to Claude Code |
+| `Ctrl+G` | Close the Codex thread view back to Fleet; also opens Fleet from Claude Code |
+| `q` / `Esc` | Return from the Fleet dashboard to Claude Code |
 
 Mouse input is an optional convenience. Every essential operation remains available from the
 keyboard. Linear plain-text status, monochrome output, reduced motion and narrow layouts are
@@ -123,6 +123,10 @@ was approved, copies the selected output into the project workspace, and returns
 path. Fleet does not silently switch to an API-key script or another image provider.
 
 Claude can also inspect status and results, then continue a completed lane in the same Codex task/thread.
+Fleet Console's embedded session uses app-server `thread/read`, displays the real transcript and thread ID,
+and uses `turn/steer` for an active turn or a same-thread continuation for a terminal turn. It does not start
+a nested `codex` CLI. Each admission records a stable admission ID, source, and timestamp so the local Fleet
+acceptance can be tied to the real Codex thread without inventing a human identity.
 If a worker merely asks for a redundant “say continue” approval even though the original contract already
 granted the required authority, Claude sends a bounded follow-up and requires the actual work and evidence.
 New scope, new authority, external effects, or a genuine user choice still stop for confirmation.
@@ -181,6 +185,13 @@ synthetic idle harness, a configured 4 Hz refresh ceiling, 1.5 MiB retained heap
 development guardrails, not product workload or universal benchmarks; CI records the same
 platform-specific evidence on every run.
 
+Codex desktop capabilities are not automatically portable to a Fleet app-server lane. An MCP shown as
+configured, a Browser/Chrome/Computer Use skill name, or a working parent desktop tool is not operational
+proof; Fleet requires the exact callable tool and a lane-local smoke. GPT Image generation is routed only
+when `$imagegen`/the built-in image tool is actually exposed. Desktop Browser, Chrome, and Computer Use
+fall back only with explicit user approval and are never silently substituted with Playwright or a fresh
+browser profile.
+
 ## Current status
 
 This table describes evidence available in the repository today, not the intended final support
@@ -192,7 +203,7 @@ matrix.
 | Windows runtime and PTY fixture | Passing: installed launcher, exact draft, restored terminal, zero owned child |
 | macOS Intel and Apple Silicon | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
-| Fleet Console | Renderer, controller, input, accessibility and fixture E2E implemented |
+| Fleet Console | Real Codex transcript/session input, renderer, controller, input, accessibility and fixture E2E implemented |
 | Marketplace install | Available from the GitHub personal marketplace; not yet published to a central catalog |
 | Reversible settings setup | Preview/apply/uninstall, rollback and late-mutation refusal tested |
 | Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator and same-thread follow-up read separate random nonces, an independent verifier rechecks both, then exact cancellation completes |
@@ -284,8 +295,9 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 Those commands are the public contract. Setup and uninstall use separate immutable previews and
 exact confirmation tokens. SessionStart only detects missing setup; after one plain user
 confirmation, setup carries its token internally. Users never need to copy or paste it. Inside Fleet
-Console, `m` continues the selected completed lane on its existing Codex thread and `x` performs an
-immutable preview before cancelling only the pinned owned thread and turn.
+Console, `Enter` or `m` opens the selected real Codex thread; messages steer an active turn or continue a
+terminal turn on that same thread. `x` performs an immutable preview before cancelling only the pinned
+owned thread and turn.
 
 ## Safety decisions that should not be “simplified”
 

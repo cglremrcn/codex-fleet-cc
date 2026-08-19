@@ -323,15 +323,14 @@ function authorityLines(lane, width) {
 function controlsLines(width) {
   const controls = [
     "↑/↓ or J/K   Select lane",
-    "Enter        Open lane detail",
-    "Tab          Cycle panels",
+    "Enter or M   Open live Codex session",
+    "Tab          Cycle dashboard panels",
     "/            Filter lanes",
-    "M            Bounded follow-up",
     "X            Confirmed cancellation",
     "E            Open preserved editor",
     "P            Pause formation motion",
-    "?            Contextual help",
-    "Q or Esc     Return to Claude Code"
+    "H, ? or F1   Contextual help",
+    "Ctrl+G/Q/Esc Return to Claude Code"
   ];
   return controls.flatMap((line) => wrap(line, width));
 }
@@ -384,10 +383,12 @@ function center(value, width) {
 function kiteFeatures(status, frame, useUnicode) {
   if (!useUnicode) {
     const movingEyes = [["o", "o"], [".", "o"], ["-", "-"], ["o", "."]];
+    const completeMouths = ["-", "~", "-", "~"];
+    const completeCores = ["C", "*", "C", "+"];
     const states = {
       queued: [".", ".", "v", "Q"],
       running: [...movingEyes[frame], "v", "R"],
-      complete: ["o", "o", "-", "C"],
+      complete: [...movingEyes[frame], completeMouths[frame], completeCores[frame]],
       verified: ["^", "^", "u", "V"],
       blocked: ["-", "-", "!", "!"],
       failed: ["x", "x", "-", "X"],
@@ -397,10 +398,12 @@ function kiteFeatures(status, frame, useUnicode) {
     return states[status] ?? states.blocked;
   }
   const movingEyes = [["●", "●"], ["•", "●"], ["─", "─"], ["●", "•"]];
+  const completeMouths = ["─", "⌁", "─", "⌁"];
+  const completeCores = ["◇", "◈", "◆", "◈"];
   const states = {
     queued: ["·", "·", "⌄", "○"],
     running: [...movingEyes[frame], "▿", "◆"],
-    complete: ["●", "●", "─", "◇"],
+    complete: [...movingEyes[frame], completeMouths[frame], completeCores[frame]],
     verified: ["⌒", "⌒", "⌣", "✓"],
     blocked: ["─", "─", "!", "!"],
     failed: ["×", "×", "─", "×"],
@@ -419,6 +422,12 @@ function formationFrame(preferences, length) {
 function postureFrame(status, preferences, length) {
   if (!MOTION_STATUSES.has(status)) return 2 % length;
   return formationFrame(preferences, length);
+}
+
+function motionLabel(preferences) {
+  if (preferences.motion === false || preferences.reducedMotion === true) return "PAUSED ■";
+  const frames = preferences.unicode === false ? ["|", "/", "-", "\\"] : ["◐", "◓", "◑", "◒"];
+  return `LIVE ${frames[formationFrame(preferences, frames.length)]}`;
 }
 
 export function renderFleetMark(view, preferences = {}) {
@@ -468,9 +477,8 @@ function wideMasthead(view, columns, preferences) {
   const mark = renderFleetMark(view, preferences);
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
   const selected = view.selectedLane;
-  const motion = preferences.motion === false || preferences.reducedMotion === true
-    ? "PAUSED"
-    : "ENABLED";
+  const motion = motionLabel(preferences);
+  const panelIndex = ["lanes", "detail", "evidence", "authority", "controls"].indexOf(view.panel);
   return [
     placeRight(
       `FLEET//OPS  ${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
@@ -496,7 +504,7 @@ function wideMasthead(view, columns, preferences) {
       columns
     ),
     placeRight(
-      `FLEET LANES ${view.lanes.length}  ACTIVE LIMIT ${limit}`,
+      `PANEL ${view.panel.toUpperCase()} ${panelIndex + 1}/5  FLEET LANES ${view.lanes.length}  ACTIVE LIMIT ${limit}`,
       mark[4],
       columns
     )
@@ -567,7 +575,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  ENTER DETAIL  TAB PANEL  / FILTER  P MOTION  ? HELP  Q RETURN",
+      "↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  / FILTER  P MOTION  H/? HELP  CTRL+G/Q RETURN",
       terminal.columns
     )
   ];
@@ -590,9 +598,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
       mark,
       terminal.columns
     ),
-    `${summary(view)}  ${runtime}  MOTION ${
-      preferences.motion === false || preferences.reducedMotion === true ? "PAUSED" : "ENABLED"
-    }`,
+    `${summary(view)}  ${runtime}  PANEL ${view.panel.toUpperCase()}  MOTION ${motionLabel(preferences)}`,
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
       `${panelLabel("LANES", "lanes", view.panel)}  ${view.lanes.length}`,
@@ -605,7 +611,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  TAB PANEL  P MOTION  ? HELP  Q RETURN",
+      "↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H/? HELP  CTRL+G/Q RETURN",
       terminal.columns
     )
   ];
@@ -635,7 +641,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("↑↓ SELECT  M MESSAGE  X CANCEL  TAB PANEL  P MOTION  Q RETURN", terminal.columns)
+    truncate("↑↓ SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H HELP  CTRL+G/Q RETURN", terminal.columns)
   ];
 }
 
@@ -660,6 +666,68 @@ function normalizedTerminal(terminal = {}) {
   const columns = Number.isInteger(terminal.columns) ? Math.max(1, terminal.columns) : 80;
   const rows = Number.isInteger(terminal.rows) ? Math.max(1, terminal.rows) : 24;
   return { columns, rows };
+}
+
+function transcriptMessageLines(message, width) {
+  const label = message?.kind === "user"
+    ? "[YOU]"
+    : message?.kind === "assistant" ? "[CODEX]" : "[ACTIVITY]";
+  const prefix = `${label} `;
+  const continuation = " ".repeat(displayWidth(prefix));
+  const sourceLines = String(message?.text ?? "").split(/\r?\n/u);
+  const output = [];
+  for (const sourceLine of sourceLines) {
+    const wrapped = wrap(sourceLine, Math.max(1, width - displayWidth(prefix)));
+    wrapped.forEach((line, index) => output.push(`${index === 0 ? prefix : continuation}${line}`));
+  }
+  return output.length > 0 ? output : [`${prefix}(empty message)`];
+}
+
+function renderCodexSession(view, terminal, border, preferences) {
+  const session = preferences.session;
+  const lane = view.lanes.find((candidate) => candidate.id === session.laneId)
+    ?? view.selectedLane;
+  const direct = session.canAcceptDirectInput ? "YES" : "NO";
+  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const transcript = messages.flatMap((message) => [
+    ...transcriptMessageLines(message, terminal.columns),
+    ""
+  ]);
+  if (session.loading) transcript.push("Loading the real Codex app-server thread…");
+  if (session.error) transcript.push(`SESSION ERROR · ${session.error}`);
+  if (transcript.length === 0) transcript.push("No thread messages are available yet.");
+
+  const bodyHeight = Math.max(1, terminal.rows - 8);
+  const scroll = Math.max(0, Number.isInteger(session.scroll) ? session.scroll : 0);
+  const end = Math.max(0, transcript.length - scroll);
+  const start = Math.max(0, end - bodyHeight);
+  const body = fitPanel(transcript.slice(start, end), bodyHeight, terminal.columns);
+  const composerValue = preferences.composer?.value ?? "";
+  const composer = composerValue
+    ? `MESSAGE > ${composerValue}`
+    : "MESSAGE > type directly…";
+  return [
+    truncate(`FLEET//CODEX SESSION  ${session.laneId}`, terminal.columns),
+    truncate(
+      `THREAD ${session.threadId ?? "PENDING"}  SOURCE ${session.source ?? "unknown"}`,
+      terminal.columns
+    ),
+    truncate(
+      `ADMISSION ${session.admissionId ?? "LEGACY"}  `
+        + `${session.admissionSource ?? "unknown"}  ${session.admittedAt ?? "time-not-recorded"}`,
+      terminal.columns
+    ),
+    truncate(
+      `STATUS ${(lane?.status ?? "unknown").toUpperCase()}  DIRECT INPUT ${direct}  `
+        + "REAL THREAD · reasoning/raw command output hidden",
+      terminal.columns
+    ),
+    border.horizontal.repeat(terminal.columns),
+    ...body,
+    border.horizontal.repeat(terminal.columns),
+    truncate(composer, terminal.columns),
+    truncate("Enter send  ↑/↓ transcript  Esc/Ctrl+G dashboard", terminal.columns)
+  ].slice(0, terminal.rows);
 }
 
 export function renderScreen(viewModel, terminalInput, preferences = {}) {
@@ -689,6 +757,15 @@ export function renderScreen(viewModel, terminalInput, preferences = {}) {
       truncate("Terminal too small", terminal.columns),
       truncate("Resize to at least 32x8", terminal.columns)
     ].slice(0, terminal.rows).join("\n");
+  }
+  if (preferences.session) {
+    const lines = renderCodexSession(view, terminal, border, preferences);
+    if (preferences.screenReader === true) {
+      return lines.map((line) => truncate(stripAnsi(line), terminal.columns)).join("\n");
+    }
+    return lines
+      .map((line, index) => colorizeLine(truncate(line, terminal.columns), index, view, theme))
+      .join("\n");
   }
   const lines = terminal.columns >= 120
     ? renderWide(view, terminal, border, useUnicode, preferences)

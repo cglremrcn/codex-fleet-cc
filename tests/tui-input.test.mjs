@@ -16,9 +16,9 @@ test("decoder handles arrow and SGR mouse sequences split across chunks", () => 
   ]);
 });
 
-test("decoder maps dashboard keys without claiming Claude control chords", () => {
+test("decoder maps dashboard keys including keyboard-layout-safe help and return", () => {
   const decoder = createInputDecoder();
-  const events = decoder.push(Buffer.from("jk\r\t/?emxrcpq"));
+  const events = decoder.push(Buffer.from("jk\r\t/?hemxrcp\u0007q"));
 
   assert.deepEqual(events, [
     { type: "move", delta: 1 },
@@ -27,13 +27,24 @@ test("decoder maps dashboard keys without claiming Claude control chords", () =>
     { type: "cyclePanel", delta: 1 },
     { type: "filter" },
     { type: "help" },
+    { type: "help" },
     { type: "edit" },
     { type: "message" },
     { type: "cancel" },
     { type: "reconcile" },
     { type: "confirm" },
     { type: "toggleMotion" },
+    { type: "quit" },
     { type: "quit" }
+  ]);
+});
+
+test("decoder maps both common F1 sequences to help", () => {
+  const decoder = createInputDecoder();
+
+  assert.deepEqual(decoder.push(Buffer.from("\u001bOP\u001b[11~")), [
+    { type: "help" },
+    { type: "help" }
   ]);
 });
 
@@ -96,6 +107,13 @@ test("composer mode captures shortcuts and emits submit or discard events", () =
   ]);
   assert.deepEqual(decoder.push(Buffer.from("\u001b")), []);
   assert.deepEqual(decoder.flush(), [{ type: "discardMessage" }]);
+});
+
+test("Ctrl+G leaves the embedded Codex session even while composing", () => {
+  const decoder = createInputDecoder();
+  decoder.setTextMode("composer");
+
+  assert.deepEqual(decoder.push(Buffer.from("\u0007")), [{ type: "closeSession" }]);
 });
 
 test("input reducer changes only local console state", () => {

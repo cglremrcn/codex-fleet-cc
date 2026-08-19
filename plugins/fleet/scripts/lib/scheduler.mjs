@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { normalizeAuthority } from "./authority.mjs";
 import { createLane } from "./domain.mjs";
 
@@ -88,6 +90,16 @@ function hasExternalEffect(authority) {
     || Object.values(authority.externalEffects).some(Boolean);
 }
 
+function assertLaneMessage(message) {
+  if (typeof message !== "string" || !message.trim() || message.length > 128 * 1024) {
+    throw new TypeError("Lane message must contain between 1 and 131072 characters.");
+  }
+  if (message.includes("\0")) {
+    throw new TypeError("Lane message cannot contain null bytes.");
+  }
+  return message;
+}
+
 function publicRecord(item, status = item.status) {
   return Object.freeze({
     id: item.id,
@@ -105,6 +117,9 @@ function publicRecord(item, status = item.status) {
     externalEffect: item.externalEffect,
     retryOf: item.retryOf,
     reconciliationRef: item.reconciliationRef,
+    admissionId: item.admissionId,
+    admissionSource: item.admissionSource,
+    admittedAt: item.admittedAt,
     threadId: item.threadId,
     turnId: item.turnId,
     lastMessage: item.lastMessage ?? null,
@@ -145,6 +160,15 @@ function hydratePersistedRecord(record, sequence, clock) {
     externalEffect: hasExternalEffect(authority),
     retryOf: record.retryOf ?? null,
     reconciliationRef: record.reconciliationRef ?? null,
+    admissionId: boundedIdentifier(
+      record.admissionId ?? crypto.randomUUID(),
+      "Persisted lane admission id"
+    ),
+    admissionSource: boundedIdentifier(
+      record.admissionSource ?? "legacy-state",
+      "Persisted lane admission source"
+    ),
+    admittedAt: record.admittedAt ?? record.enqueuedAt ?? validated.createdAt,
     status,
     phase: status,
     sequence,
@@ -238,6 +262,7 @@ class FleetScheduler {
       throw new TypeError("Scheduled lanes require a prompt.");
     }
 
+    const enqueuedAt = new Date(this.clock.now()).toISOString();
     return {
       contract: { ...contract, authority },
       id: lane.id,
@@ -252,10 +277,19 @@ class FleetScheduler {
       externalEffect: hasExternalEffect(authority),
       retryOf: contract.retryOf ?? null,
       reconciliationRef: contract.reconciliationRef ?? null,
+      admissionId: boundedIdentifier(
+        contract.admissionId ?? crypto.randomUUID(),
+        "Lane admission id"
+      ),
+      admissionSource: boundedIdentifier(
+        contract.admissionSource ?? "scheduler-direct",
+        "Lane admission source"
+      ),
+      admittedAt: enqueuedAt,
       status: "queued",
       phase: "queued",
       sequence: this.nextSequence,
-      enqueuedAt: new Date(this.clock.now()).toISOString(),
+      enqueuedAt,
       startedAt: null,
       finishedAt: null,
       threadId: null,
@@ -275,6 +309,20 @@ class FleetScheduler {
     ) {
       throw new Error(`Lane id is already known to the scheduler: ${id}.`);
     }
+  }
+
+  assertAvailable(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new TypeError("Lane availability check requires at least one lane ID.");
+    }
+    const incoming = new Set();
+    for (const id of ids) {
+      boundedIdentifier(id, "Lane id");
+      if (incoming.has(id)) throw new Error(`Lane id is duplicated in this admission: ${id}.`);
+      incoming.add(id);
+      this.assertUnique(id);
+    }
+    return true;
   }
 
   assertRetryReconciled(item) {
@@ -433,12 +481,7 @@ class FleetScheduler {
   }
 
   async continue(id, message) {
-    if (typeof message !== "string" || !message.trim() || message.length > 128 * 1024) {
-      throw new TypeError("Follow-up message must contain between 1 and 131072 characters.");
-    }
-    if (message.includes("\0")) {
-      throw new TypeError("Follow-up message cannot contain null bytes.");
-    }
+    const validatedMessage = assertLaneMessage(message);
     if (!this.workspacePath) {
       throw new Error("Scheduler workspace path is required for a persisted follow-up.");
     }
@@ -475,24 +518,82 @@ class FleetScheduler {
       throw error;
     }
 
+    let resumed;
     try {
-      const resumed = runtimeAlreadyOwnsLane
-        ? await this.runtime.continueLane(id, message)
-        : await this.runtime.resumeLane(resumeRecord, this.workspacePath, message);
-      item.status = resumed.status ?? "running";
-      item.phase = resumed.phase ?? item.status;
-      item.threadId = resumed.threadId ?? item.threadId;
-      item.turnId = resumed.turnId ?? null;
-      item.lastMessage = resumed.lastMessage ?? item.lastMessage;
-      item.exitReason = resumed.exitReason ?? null;
-      await this.persist();
-      return publicRecord(item);
+      resumed = runtimeAlreadyOwnsLane
+        ? await this.runtime.continueLane(id, validatedMessage)
+        : await this.runtime.resumeLane(resumeRecord, this.workspacePath, validatedMessage);
     } catch (error) {
-      this.release(item, "failed");
-      item.exitReason = error.message;
+      this.active.delete(id);
+      if (item.authority.sandbox === "workspace-write") {
+        const remaining = Math.max(0, (this.writerCounts.get(item.checkoutKey) ?? 1) - 1);
+        if (remaining === 0) this.writerCounts.delete(item.checkoutKey);
+        else this.writerCounts.set(item.checkoutKey, remaining);
+      }
+      Object.assign(item, resumeRecord);
+      this.history.set(id, item);
       await this.persist();
       throw error;
     }
+
+    item.status = resumed.status ?? "running";
+    item.phase = resumed.phase ?? item.status;
+    item.threadId = resumed.threadId ?? item.threadId;
+    item.turnId = resumed.turnId ?? null;
+    item.lastMessage = resumed.lastMessage ?? item.lastMessage;
+    item.exitReason = resumed.exitReason ?? null;
+    await this.persist();
+    return publicRecord(item);
+  }
+
+  async message(id, message) {
+    const validatedMessage = assertLaneMessage(message);
+    const active = this.active.get(id);
+    if (active && active.threadId && active.turnId) {
+      if (typeof this.runtime.steerLane !== "function") {
+        throw new Error("Runtime steering is unavailable.");
+      }
+      const steered = await this.runtime.steerLane(id, validatedMessage, {
+        threadId: active.threadId,
+        turnId: active.turnId
+      });
+      active.threadId = steered.threadId ?? active.threadId;
+      active.turnId = steered.turnId ?? active.turnId;
+      await this.persist();
+      return publicRecord(active);
+    }
+    return this.continue(id, validatedMessage);
+  }
+
+  async readSession(id) {
+    const item = this.queue.find((candidate) => candidate.id === id)
+      ?? this.active.get(id)
+      ?? this.history.get(id);
+    if (!item) throw new Error(`Lane session was not found: ${id}.`);
+    if (!item.threadId) {
+      return Object.freeze({
+        schemaVersion: 1,
+        laneId: id,
+        threadId: null,
+        source: "fleet-queue",
+        admissionId: item.admissionId,
+        admissionSource: item.admissionSource,
+        admittedAt: item.admittedAt,
+        canAcceptDirectInput: false,
+        messages: Object.freeze([])
+      });
+    }
+    if (typeof this.runtime.readThread !== "function") {
+      throw new Error("Runtime thread inspection is unavailable.");
+    }
+    const session = await this.runtime.readThread(item.threadId);
+    return Object.freeze({
+      ...session,
+      laneId: id,
+      admissionId: item.admissionId,
+      admissionSource: item.admissionSource,
+      admittedAt: item.admittedAt
+    });
   }
 
   async cancel(id, expectedIdentity = null) {

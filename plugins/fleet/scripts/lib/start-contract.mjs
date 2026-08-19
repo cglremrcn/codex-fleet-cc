@@ -50,6 +50,17 @@ const LIMIT_PROPERTIES = new Set(["maxActive", "maxWritersPerCheckout", "stagger
 const UNSUPPORTED_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const ANY_CONTROL = /[\u0000-\u001f\u007f]/u;
 const ROLE_VALUES = new Set(LANE_ROLES);
+export const MODEL_EFFORTS = Object.freeze({
+  "gpt-5.6-sol": Object.freeze(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-5.6-terra": Object.freeze(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-5.6-luna": Object.freeze(["low", "medium", "high", "xhigh", "max"]),
+  "gpt-5.5": Object.freeze(["low", "medium", "high", "xhigh"]),
+  "gpt-5.4": Object.freeze(["low", "medium", "high", "xhigh"])
+});
+export const MODEL_VALUES = Object.freeze(Object.keys(MODEL_EFFORTS));
+export const EFFORT_VALUES = Object.freeze([
+  ...new Set(Object.values(MODEL_EFFORTS).flat())
+]);
 
 export class StartContractValidationError extends Error {
   constructor(issues) {
@@ -176,8 +187,31 @@ function collectLane(value, index, confirmationRef, issues) {
     addIssue(issues, "input", `${propertyPath}.role`, `must be one of: ${LANE_ROLES.join(", ")}.`);
   }
   collectBoundedText(value.label, `${propertyPath}.label`, 120, issues);
-  collectBoundedText(value.model, `${propertyPath}.model`, 80, issues);
-  collectBoundedText(value.effort, `${propertyPath}.effort`, 32, issues);
+  const model = collectBoundedText(value.model, `${propertyPath}.model`, 80, issues);
+  const effort = collectBoundedText(value.effort, `${propertyPath}.effort`, 32, issues);
+  if (model && !MODEL_VALUES.includes(model)) {
+    addIssue(
+      issues,
+      "input",
+      `${propertyPath}.model`,
+      `must be one of: ${MODEL_VALUES.join(", ")}.`
+    );
+  }
+  if (effort && !EFFORT_VALUES.includes(effort)) {
+    addIssue(
+      issues,
+      "input",
+      `${propertyPath}.effort`,
+      `must be one of: ${EFFORT_VALUES.join(", ")}.`
+    );
+  } else if (model && MODEL_EFFORTS[model] && effort && !MODEL_EFFORTS[model].includes(effort)) {
+    addIssue(
+      issues,
+      "input",
+      `${propertyPath}.effort`,
+      `must be one of ${MODEL_EFFORTS[model].join(", ")} for ${model}.`
+    );
+  }
   collectBoundedText(value.prompt, `${propertyPath}.prompt`, MAX_CONTRACT_BYTES, issues, {
     bytes: true,
     multiline: true

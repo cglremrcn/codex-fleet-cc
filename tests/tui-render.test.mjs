@@ -180,10 +180,50 @@ test("complete awaits verification with motion while verified remains locked", (
     renderFleetMark(completeView, { frame: 0, unicode: true }),
     renderFleetMark(completeView, { frame: 1, unicode: true })
   );
+  assert.notDeepEqual(
+    renderFleetMark(completeView, { frame: 0, unicode: true }).slice(2),
+    renderFleetMark(completeView, { frame: 1, unicode: true }).slice(2)
+  );
   assert.deepEqual(
     renderFleetMark(verifiedView, { frame: 0, unicode: true }),
     renderFleetMark(verifiedView, { frame: 1, unicode: true })
   );
+});
+
+test("embedded Codex session renders real transcript, provenance, and composer", () => {
+  const output = stripAnsi(renderScreen(
+    viewFixture({ selection: "runtime-audit" }),
+    { columns: 120, rows: 28 },
+    plainPreferences({
+      session: {
+        laneId: "runtime-audit",
+        threadId: "0198-thread-proof",
+        source: "appServer",
+        admissionId: "71177e04-admission-proof",
+        admissionSource: "fleet-supervisor",
+        admittedAt: "2026-08-19T20:25:00.000Z",
+        canAcceptDirectInput: true,
+        messages: [
+          { kind: "user", text: "Check the exact source claim." },
+          { kind: "assistant", text: "The source supports only a narrower claim." },
+          { kind: "activity", text: "WEB SEARCH · Citroen C4 launch" }
+        ],
+        scroll: 0
+      },
+      composer: { laneId: "runtime-audit", value: "Ask a follow-up" }
+    })
+  ));
+
+  assert.match(output, /CODEX SESSION/iu);
+  assert.match(output, /THREAD 0198-thread-proof/iu);
+  assert.match(output, /SOURCE appServer/iu);
+  assert.match(output, /ADMISSION 71177e04-admission-proof/iu);
+  assert.match(output, /fleet-supervisor.*2026-08-19T20:25:00.000Z/iu);
+  assert.match(output, /\[YOU\].*Check the exact source claim\./u);
+  assert.match(output, /\[CODEX\].*narrower claim\./u);
+  assert.match(output, /\[ACTIVITY\].*WEB SEARCH/u);
+  assert.match(output, /MESSAGE > Ask a follow-up/u);
+  assert.match(output, /Enter send.*Esc\/Ctrl\+G dashboard/iu);
 });
 
 test("wide and compact layouts render every focused panel visibly", () => {
@@ -239,7 +279,7 @@ test("every layout exposes follow-up and cancel controls without hidden help", (
       { columns, rows: 28 },
       plainPreferences()
     ));
-    assert.match(output, /M (?:FOLLOW-UP|MESSAGE)/);
+    assert.match(output, /(?:ENTER\/M|M) SESSION/);
     assert.match(output, /X CANCEL/);
   }
 });

@@ -1,8 +1,8 @@
 FLEET//OPS  codex-fleet-cc@main  01 LIVE  01 VERIFIED  01 ATTENTION                                                                         ◆                 ◆
 RUNTIME READY  PROTOCOL COMPATIBLE                                                                                                           ╲               ╱
 NAV//KITE  WATCH 02/04  console-build                                                                                                       ╭━━━╾▰  ● ●  ▰╼━━━╮
-POSTURE RUNNING  MOTION ENABLED                                                                                                              ╰━╮     ▿     ╭━╯
-FLEET LANES 4  ACTIVE LIMIT 3                                                                                                                 ╰━━━╲  ◆  ╱━━━╯
+POSTURE RUNNING  MOTION LIVE ◐                                                                                                               ╰━╮     ▿     ╭━╯
+PANEL LANES 1/5  FLEET LANES 4  ACTIVE LIMIT 3                                                                                                ╰━━━╲  ◆  ╱━━━╯
 ▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [LANES]  4                                      │ DETAIL / console-build                                                   │ AUTHORITY
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -25,4 +25,4 @@ FLEET LANES 4  ACTIVE LIMIT 3                                                   
                                                 │                                                                          │
                                                 │                                                                          │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↑↓/JK SELECT  M FOLLOW-UP  X CANCEL  ENTER DETAIL  TAB PANEL  / FILTER  P MOTION  ? HELP  Q RETURN
+↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  / FILTER  P MOTION  H/? HELP  CTRL+G/Q RETURN

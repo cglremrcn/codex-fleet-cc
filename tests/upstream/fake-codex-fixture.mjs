@@ -39,9 +39,13 @@ function now() {
   return Math.floor(Date.now() / 1000);
 }
 
-function buildThread(thread) {
+function buildThread(thread, includeTurns = false) {
   return {
     id: thread.id,
+    extra: null,
+    sessionId: "session_" + thread.id,
+    forkedFromId: null,
+    parentThreadId: null,
     preview: thread.preview || "",
     ephemeral: Boolean(thread.ephemeral),
     modelProvider: "openai",
@@ -52,16 +56,27 @@ function buildThread(thread) {
     cwd: thread.cwd,
     cliVersion: "fake-codex",
     source: "appServer",
+    canAcceptDirectInput: true,
+    threadSource: null,
     agentNickname: null,
     agentRole: null,
     gitInfo: null,
     name: thread.name || null,
-    turns: []
+    turns: includeTurns ? (thread.turns || []).map((turn) => ({ ...turn })) : []
   };
 }
 
-function buildTurn(id, status = "inProgress", error = null) {
-  return { id, status, items: [], error };
+function buildTurn(id, status = "inProgress", error = null, items = []) {
+  return {
+    id,
+    status,
+    items,
+    itemsView: { type: "all" },
+    error,
+    startedAt: now(),
+    completedAt: status === "inProgress" ? null : now(),
+    durationMs: null
+  };
 }
 
 function buildAccountReadResult() {
@@ -124,7 +139,8 @@ function nextThread(state, cwd, ephemeral) {
     preview: "",
     ephemeral: Boolean(ephemeral),
     createdAt: now(),
-    updatedAt: now()
+    updatedAt: now(),
+    turns: []
   };
   state.threads.unshift(thread);
   saveState(state);
@@ -162,6 +178,19 @@ function saveImportLedger(ledger) {
 
 function emitTurnCompleted(threadId, turnId, item) {
   const items = Array.isArray(item) ? item : [item];
+  const state = loadState();
+  const thread = state.threads.find((candidate) => candidate.id === threadId);
+  const storedTurn = thread?.turns?.find((candidate) => candidate.id === turnId);
+  if (storedTurn) {
+    for (const entry of items) {
+      if (entry?.started) storedTurn.items.push(entry.started);
+      if (entry?.completed) storedTurn.items.push(entry.completed);
+    }
+    storedTurn.status = "completed";
+    storedTurn.completedAt = now();
+    thread.updatedAt = now();
+    saveState(state);
+  }
   const turnStartedParams = BEHAVIOR === "official-turn-envelope"
     ? { turn: buildTurn(turnId) }
     : { threadId, turn: buildTurn(turnId) };
@@ -352,6 +381,15 @@ rl.on("line", (line) => {
         break;
       }
 
+      case "thread/read": {
+        const thread = ensureThread(state, message.params.threadId);
+        send({
+          id: message.id,
+          result: { thread: buildThread(thread, message.params.includeTurns === true) }
+        });
+        break;
+      }
+
       case "thread/resume": {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
@@ -453,12 +491,22 @@ rl.on("line", (line) => {
 
 	      case "turn/start": {
 	        const thread = ensureThread(state, message.params.threadId);
+	        if ((thread.turns || []).some((turn) => turn.status === "inProgress")) {
+	          throw new Error("thread " + thread.id + " already has an active writer");
+	        }
 	        const prompt = (message.params.input || [])
           .filter((item) => item.type === "text")
           .map((item) => item.text)
           .join("\\n");
         const turnId = nextTurnId(state);
         thread.updatedAt = now();
+	        thread.turns = thread.turns || [];
+	        thread.turns.push(buildTurn(turnId, "inProgress", null, [{
+	          type: "userMessage",
+	          id: "user_" + turnId,
+	          clientId: null,
+	          content: message.params.input || []
+	        }]));
 	        state.lastTurnStart = {
 	          threadId: message.params.threadId,
 	          turnId,
@@ -592,7 +640,15 @@ rl.on("line", (line) => {
                     summary: [{ text: "Inspected the prompt, gathered evidence, and checked the highest-risk paths first." }],
                     content: []
                   }
-              }
+                },
+                {
+                  completed: {
+                    type: "commandExecution",
+                    id: "command_" + turnId,
+                    command: "echo private-command-value",
+                    status: "completed"
+                  }
+                }
             ]
             : []),
           {
@@ -623,6 +679,33 @@ rl.on("line", (line) => {
 	        break;
 	      }
 
+	      case "turn/steer": {
+	        const thread = ensureThread(state, message.params.threadId);
+	        const turn = (thread.turns || []).find((candidate) => (
+	          candidate.id === message.params.expectedTurnId && candidate.status === "inProgress"
+	        ));
+	        if (!turn) throw new Error("active turn precondition failed");
+	        const prompt = (message.params.input || [])
+	          .filter((item) => item.type === "text")
+	          .map((item) => item.text)
+	          .join("\\n");
+	        turn.items.push({
+	          type: "userMessage",
+	          id: "steer_" + turn.id + "_" + turn.items.length,
+	          clientId: null,
+	          content: message.params.input || []
+	        });
+	        state.lastTurnSteer = {
+	          threadId: thread.id,
+	          turnId: turn.id,
+	          prompt
+	        };
+	        thread.updatedAt = now();
+	        saveState(state);
+	        send({ id: message.id, result: { turnId: turn.id } });
+	        break;
+	      }
+
 	      case "turn/interrupt": {
 	        state.lastInterrupt = {
 	          threadId: message.params.threadId,
@@ -633,6 +716,13 @@ rl.on("line", (line) => {
 	        if (pending) {
 	          clearTimeout(pending.timer);
 	          interruptibleTurns.delete(message.params.turnId);
+	          const thread = state.threads.find((candidate) => candidate.id === pending.threadId);
+	          const turn = thread?.turns?.find((candidate) => candidate.id === message.params.turnId);
+	          if (turn) {
+	            turn.status = "interrupted";
+	            turn.completedAt = now();
+	          }
+	          saveState(state);
 	          send({
 	            method: "turn/completed",
 	            params: {

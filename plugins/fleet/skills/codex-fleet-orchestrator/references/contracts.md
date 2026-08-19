@@ -36,8 +36,8 @@ private logs.
       "id": "bounded-stable-id",
       "role": "investigator",
       "label": "Short operator-visible label",
-      "model": "configured-model-id",
-      "effort": "configured-effort",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
       "prompt": "Objective: ...\nInputs: ...\nExclusions: ...",
       "authority": {
         "sandbox": "read-only",
@@ -72,6 +72,20 @@ The machine `role` field requires an exact literal. Allowed values are `investig
 `integrator`, and `independent-verifier`. Natural-language shorthand such as `verifier` is descriptive
 prose, not a valid machine role. Use `fleet.mjs init --list --json` to inspect the maintained template
 gallery instead of guessing enum values.
+
+The machine `model` and `effort` fields are also exact literals and are validated together before
+supervisor admission:
+
+| Model | Allowed effort values |
+|---|---|
+| `gpt-5.6-sol` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `gpt-5.6-terra` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `gpt-5.5` | `low`, `medium`, `high`, `xhigh` |
+| `gpt-5.4` | `low`, `medium`, `high`, `xhigh` |
+
+A typo is rejected with all other contract issues in the same validation response; it is not deferred
+to a failing runtime turn.
 
 ## Immutability and follow-ups
 

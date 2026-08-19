@@ -24,4 +24,4 @@ FLEET//OPS  codex-fleet-cc                                    ╭▰ ● ● ▰
 
 
 ────────────────────────────────────────────────────────────────────────
-↑↓ SELECT  M MESSAGE  X CANCEL  TAB PANEL  P MOTION  Q RETURN
+↑↓ SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H HELP  CTRL…

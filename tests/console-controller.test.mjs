@@ -84,6 +84,23 @@ function recordingRuntime() {
   const calls = [];
   return {
     calls,
+    async session(lane) {
+      calls.push(["session", lane]);
+      return {
+        schemaVersion: 1,
+        laneId: lane.id,
+        threadId: lane.threadId ?? "thread-lane-a",
+        source: "appServer",
+        canAcceptDirectInput: true,
+        messages: [
+          { kind: "user", text: "Inspect the runtime." },
+          { kind: "assistant", text: "The runtime inspection is complete." }
+        ]
+      };
+    },
+    async message(...args) {
+      calls.push(["message", ...args]);
+    },
     async followUp(...args) {
       calls.push(["followUp", ...args]);
     },
@@ -197,10 +214,67 @@ test("wide panel navigation changes visible focus instead of only internal state
   });
 
   await controller.render();
-  await controller.dispatch({ type: "activate" });
+  await controller.dispatch({ type: "cyclePanel", delta: 1 });
   assert.match(writes.at(-1), /\[DETAIL\]/u);
   await controller.dispatch({ type: "help" });
   assert.match(writes.at(-1), /\[CONTROLS\]/u);
+});
+
+test("Enter opens the selected Codex thread with transcript and direct composer", async () => {
+  const writes = [];
+  const runtime = recordingRuntime();
+  const completed = lane({
+    status: "complete",
+    phase: "complete",
+    threadId: "thread-lane-a",
+    turnId: "turn-lane-a"
+  });
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [completed] }),
+    runtime,
+    write: (value) => writes.push(value),
+    terminal: { columns: 120, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "activate" });
+
+  assert.equal(controller.state().session.laneId, "lane-a");
+  assert.equal(controller.state().composer.laneId, "lane-a");
+  assert.match(writes.at(-1), /CODEX SESSION/iu);
+  assert.match(writes.at(-1), /The runtime inspection is complete\./u);
+  assert.match(writes.at(-1), /type directly/iu);
+  assert.equal(runtime.calls[0][0], "session");
+});
+
+test("session composer sends on the same lane and Ctrl+G returns to the dashboard", async () => {
+  const runtime = recordingRuntime();
+  const completed = lane({
+    status: "complete",
+    phase: "complete",
+    threadId: "thread-lane-a",
+    turnId: "turn-lane-a"
+  });
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [completed] }),
+    runtime,
+    terminal: { columns: 120, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "activate" });
+  await controller.dispatch({ type: "text", value: "Continue from here." });
+  await controller.dispatch({ type: "submitMessage" });
+
+  assert.equal(runtime.calls.some((call) => (
+    call[0] === "message" && call[1].id === "lane-a" && call[2] === "Continue from here."
+  )), true);
+  assert.equal(controller.state().session.laneId, "lane-a");
+  assert.equal(controller.state().composer.value, "");
+
+  await controller.dispatch({ type: "closeSession" });
+  assert.equal(controller.state().session, null);
+  assert.equal(controller.state().composer, null);
 });
 
 test("single-lane movement reports why selection did not change", async () => {
@@ -263,7 +337,7 @@ test("owned cancellation runs only after the visible confirmation", async () => 
   });
 });
 
-test("message opens a bounded composer and submits text without triggering shortcuts", async () => {
+test("message opens the embedded session and submits text without triggering shortcuts", async () => {
   const runtime = recordingRuntime();
   const completed = lane({ status: "complete", phase: "complete" });
   const writes = [];
@@ -276,7 +350,7 @@ test("message opens a bounded composer and submits text without triggering short
   });
 
   await controller.dispatch({ type: "message" });
-  assert.deepEqual(runtime.calls, []);
+  assert.equal(runtime.calls.some((call) => call[0] === "message"), false);
   assert.equal(controller.state().composer.laneId, "lane-a");
   await controller.dispatch({ type: "text", value: "j" });
   await controller.dispatch({ type: "text", value: "m" });
@@ -284,13 +358,12 @@ test("message opens a bounded composer and submits text without triggering short
   await controller.dispatch({ type: "submitMessage" });
 
   assert.equal(controller.state().selectedIndex, 0);
-  assert.equal(controller.state().composer, null);
-  assert.equal(runtime.calls.length, 1);
-  assert.equal(runtime.calls[0][0], "followUp");
-  assert.equal(runtime.calls[0][1].id, "lane-a");
-  assert.equal(runtime.calls[0][2], "j");
-  assert.match(writes.join("\n"), /FOLLOW-UP/i);
-  assert.match(controller.state().notice, /EXISTING CODEX THREAD/iu);
+  assert.deepEqual(controller.state().composer, { laneId: "lane-a", value: "" });
+  const messageCall = runtime.calls.find((call) => call[0] === "message");
+  assert.equal(messageCall[1].id, "lane-a");
+  assert.equal(messageCall[2], "j");
+  assert.match(writes.join("\n"), /CODEX SESSION/i);
+  assert.match(controller.state().notice, /SAME CODEX THREAD/iu);
 });
 
 test("completed lanes refuse misleading cancellation previews", async () => {
@@ -306,7 +379,7 @@ test("completed lanes refuse misleading cancellation previews", async () => {
   assert.match(controller.state().notice, /ALREADY COMPLETE|NOTHING TO CANCEL/iu);
 });
 
-test("composer Escape discards text without invoking the runtime", async () => {
+test("composer Escape returns to the dashboard without sending", async () => {
   const runtime = recordingRuntime();
   const controller = createConsoleController({
     snapshot: snapshot({ lanes: [lane({ status: "complete" })] }),
@@ -320,7 +393,8 @@ test("composer Escape discards text without invoking the runtime", async () => {
   await controller.dispatch({ type: "discardMessage" });
 
   assert.equal(controller.state().composer, null);
-  assert.deepEqual(runtime.calls, []);
+  assert.equal(controller.state().session, null);
+  assert.equal(runtime.calls.some((call) => call[0] === "message"), false);
 });
 
 test("one terminal chunk can enter composer, type, submit, and return safely", async () => {
@@ -337,12 +411,11 @@ test("one terminal chunk can enter composer, type, submit, and return safely", a
     terminalSession: async (_io, run) => run({ signal: new AbortController().signal })
   });
 
-  await emitAfterStart(io, "mhello\rq");
+  await emitAfterStart(io, "mhello\r\u0007q");
   await running;
 
-  assert.equal(runtime.calls.length, 1);
-  assert.equal(runtime.calls[0][0], "followUp");
-  assert.equal(runtime.calls[0][2], "hello");
+  const messageCall = runtime.calls.find((call) => call[0] === "message");
+  assert.equal(messageCall[2], "hello");
 });
 
 test("cancellation refuses a lane whose pinned turn changed before confirmation", async () => {

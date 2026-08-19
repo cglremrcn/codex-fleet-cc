@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createScheduler } from "../plugins/fleet/scripts/lib/scheduler.mjs";
+import {
+  createScheduler,
+  recoverPersistedRecords
+} from "../plugins/fleet/scripts/lib/scheduler.mjs";
 
 const WORKSPACE_KEY = "0123456789abcdef0123456789abcdef";
 
@@ -335,6 +338,45 @@ test("failed follow-up persistence restores terminal state and writer capacity",
   await replacement;
 });
 
+test("a rejected runtime continuation preserves the previous terminal record", async () => {
+  const runtime = recordingRuntime();
+  runtime.resumeLane = async () => {
+    throw new Error("thread already has an active writer");
+  };
+  const scheduler = createScheduler({
+    runtime,
+    store: memoryStore(),
+    limits: { maxActive: 1, maxWritersPerCheckout: 1, staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{
+      ...reader("immutable-success", "shared"),
+      status: "complete",
+      phase: "complete",
+      threadId: "thread-immutable-success",
+      turnId: "turn-immutable-success",
+      lastMessage: "The verified research report remains available.",
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z",
+      finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+
+  await assert.rejects(
+    scheduler.continue("immutable-success", "Continue only if the thread is writable."),
+    /active writer/iu
+  );
+
+  const restored = scheduler.snapshot().history.find((lane) => lane.id === "immutable-success");
+  assert.equal(restored.status, "complete");
+  assert.equal(restored.phase, "complete");
+  assert.equal(restored.turnId, "turn-immutable-success");
+  assert.equal(restored.lastMessage, "The verified research report remains available.");
+  assert.equal(restored.exitReason, null);
+  assert.equal(restored.finishedAt, "2026-08-19T10:00:02.000Z");
+  assert.deepEqual(scheduler.snapshot().active, []);
+});
+
 test("cancel refuses a stale caller-pinned turn identity", async () => {
   const runtime = recordingRuntime();
   const scheduler = createScheduler({
@@ -453,4 +495,27 @@ test("state persistence failure rolls back admission before Codex starts", async
     scheduler.snapshot().history.find((lane) => lane.id === "state-failure").status,
     "failed"
   );
+});
+
+test("every lane keeps immutable admission provenance across persistence", async () => {
+  const store = memoryStore();
+  const scheduler = createScheduler({
+    runtime: recordingRuntime(),
+    store,
+    limits: { staggerMs: 0 },
+    clock: deterministicClock()
+  });
+
+  const completed = await scheduler.enqueue({
+    ...reader("provenance", "safe"),
+    admissionSource: "fleet-supervisor"
+  });
+  const recovered = recoverPersistedRecords([completed])[0];
+
+  assert.match(completed.admissionId, /^[a-f0-9-]{36}$/u);
+  assert.equal(completed.admissionSource, "fleet-supervisor");
+  assert.equal(completed.admittedAt, completed.enqueuedAt);
+  assert.equal(recovered.admissionId, completed.admissionId);
+  assert.equal(recovered.admissionSource, "fleet-supervisor");
+  assert.equal(recovered.admittedAt, completed.admittedAt);
 });

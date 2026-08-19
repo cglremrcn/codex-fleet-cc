@@ -393,8 +393,8 @@ test("start reports every contract validation issue before contacting the superv
         id: "bad id",
         role: "wizard",
         label: "",
-        model: "",
-        effort: "",
+        model: "gpt-5.6-slo",
+        effort: "extreme",
         prompt: "Reject this malformed contract before admission.",
         priority: 0,
         authority: {
@@ -423,6 +423,8 @@ test("start reports every contract validation issue before contacting the superv
   assert.match(stderr.join(""), /lanes\[0\]\.label/iu);
   assert.match(stderr.join(""), /lanes\[0\]\.model/iu);
   assert.match(stderr.join(""), /lanes\[0\]\.effort/iu);
+  assert.match(stderr.join(""), /gpt-5\.6-sol/iu);
+  assert.match(stderr.join(""), /low, medium, high/iu);
   assert.match(stderr.join(""), /priority/iu);
   assert.equal(supervisorRequests, 0);
 });

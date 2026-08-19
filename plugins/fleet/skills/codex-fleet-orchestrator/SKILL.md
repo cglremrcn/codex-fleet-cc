@@ -54,6 +54,13 @@ Before a “missing” or “broken” claim, perform an existence check using n
 configuration, and available project memory. Presence is not wiring: prove the discovered item reaches
 the execution path.
 
+Before every dispatch, also inspect current Fleet status/results and repository history for the lane ID,
+deliverable, feature name, and likely commit message. A stale checklist is not authority to repeat work.
+If the requested outcome already exists and its evidence is sufficient, report it instead of dispatching.
+If an existing terminal lane needs more work inside the same authority, continue its real Codex thread;
+never reuse its lane ID for a new admission. A genuinely new attempt receives a new stable ID and an
+explicit `retryOf`/reconciliation relationship when applicable.
+
 For diagnosis, state a falsifiable hypothesis and the observation that would refute it. Collect that
 observation before proposing a fix. After root cause, perform a class-wide sibling search and either
 include each in-scope sibling or report it with evidence.
@@ -107,7 +114,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" start --stdin --json
 Do not invoke Codex through an ad-hoc shell command or bypass Fleet's authority and scheduling gates.
 Do not edit an admitted lane contract. A new requirement is a new follow-up contract or a new lane.
 After admission, mention once that `Ctrl+G` opens Fleet Console; Claude Code's down-arrow background
-agent control is a separate interface.
+agent control is a separate interface. Inside Fleet Console, `Enter` or `m` opens the selected real Codex
+thread, `Enter` sends a message, and `Ctrl+G` returns to the Fleet dashboard before `q`/`Esc` returns to
+Claude Code.
 
 When a `complete` result has not satisfied the objective and asks only for a redundant approval such
 as “say continue,” compare the request with the original contract. If it stays wholly inside the

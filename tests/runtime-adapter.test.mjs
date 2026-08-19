@@ -121,6 +121,53 @@ test("a completed lane can continue on its existing Codex thread", async (t) => 
   assert.match(fixture.readState().lastTurnStart.prompt, /remaining edge case/i);
 });
 
+test("runtime reads a sanitized same-thread transcript without reasoning content", async (t) => {
+  const fixture = startFakeCodex(t, "with-reasoning");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  const started = await runtime.startLane(readOnlyContract(fixture, "lane-session"));
+  await waitFor(
+    () => runtime.inspectLane("lane-session")?.status === "complete",
+    "session lane to complete"
+  );
+  const session = await runtime.readThread(started.threadId);
+
+  assert.equal(session.threadId, started.threadId);
+  assert.equal(session.source, "appServer");
+  assert.equal(session.canAcceptDirectInput, true);
+  assert.equal(session.messages.some((message) => message.kind === "user"), true);
+  assert.equal(session.messages.some((message) => message.kind === "assistant"), true);
+  assert.equal(session.messages.some((message) => /reasoning/iu.test(message.text)), false);
+  assert.equal(session.messages.some((message) => /private-command|echo/iu.test(message.text)), false);
+  assert.equal(session.messages.some((message) => message.text === "COMMAND COMPLETED"), true);
+});
+
+test("runtime steers an active owned Codex turn", async (t) => {
+  const fixture = startFakeCodex(t, "interruptible-slow-task");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  const started = await runtime.startLane(readOnlyContract(fixture, "lane-steer"));
+  const steered = await runtime.steerLane("lane-steer", "Prioritize the source contradiction.");
+
+  assert.equal(steered.threadId, started.threadId);
+  assert.equal(steered.turnId, started.turnId);
+  assert.deepEqual(fixture.readState().lastTurnSteer, {
+    threadId: started.threadId,
+    turnId: started.turnId,
+    prompt: "Prioritize the source contradiction."
+  });
+});
+
 test("official turn envelopes without threadId resolve through the turn index", async (t) => {
   const fixture = startFakeCodex(t, "official-turn-envelope");
   const runtime = await createRuntime({
