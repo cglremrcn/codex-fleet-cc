@@ -164,7 +164,12 @@ test("session returns the real Codex transcript and message steers the active tu
   assert.deepEqual(fakeState.lastTurnSteer, {
     threadId: running.threadId,
     turnId: running.turnId,
-    prompt: "Inspect the contradictory source before finishing."
+    prompt: "Inspect the contradictory source before finishing.",
+    input: [{
+      type: "text",
+      text: "Inspect the contradictory source before finishing.",
+      text_elements: []
+    }]
   });
 });
 

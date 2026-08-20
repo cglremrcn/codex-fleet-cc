@@ -14,7 +14,12 @@ export function startFakeCodex(t, behavior = "review-ok") {
   const scriptPath = path.join(root, "codex");
 
   t.after(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50
+    });
   });
 
   return {

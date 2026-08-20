@@ -28,6 +28,13 @@ const broker = await createAppServerBroker({
 });
 
 try {
+  const skillCatalog = await broker.request("skills/list", {
+    cwds: [disposableRoot],
+    forceReload: true
+  });
+  const imageSkill = (Array.isArray(skillCatalog?.data) ? skillCatalog.data : [])
+    .flatMap((group) => Array.isArray(group?.skills) ? group.skills : [])
+    .find((skill) => skill?.name === "imagegen");
   const thread = await broker.request("thread/start", {
     cwd: disposableRoot,
     model: "gpt-5.6-sol",
@@ -50,7 +57,19 @@ try {
     completed.then(() => true),
     new Promise((resolve) => setTimeout(() => resolve(false), 60_000))
   ]);
-  process.stdout.write(`${JSON.stringify({ schemaVersion: 1, finished, events })}\n`);
+  process.stdout.write(`${JSON.stringify({
+    schemaVersion: 1,
+    finished,
+    imagegen: {
+      discovered: Boolean(imageSkill),
+      enabled: imageSkill?.enabled === true,
+      system: imageSkill?.scope === "system",
+      safePath: typeof imageSkill?.path === "string"
+        && path.isAbsolute(imageSkill.path)
+        && path.basename(imageSkill.path).toLowerCase() === "skill.md"
+    },
+    events
+  })}\n`);
   if (!finished) process.exitCode = 1;
 } finally {
   await broker.close();

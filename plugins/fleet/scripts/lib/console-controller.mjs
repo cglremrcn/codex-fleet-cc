@@ -5,7 +5,7 @@ import { createInputDecoder, reduceInput } from "./tui-input.mjs";
 import { buildViewModel, renderScreen } from "./tui-render.mjs";
 import { withTerminalSession } from "./tui-session.mjs";
 
-const PANELS = Object.freeze(["lanes", "detail", "evidence", "authority", "controls"]);
+const PANELS = Object.freeze(["detail", "evidence", "authority"]);
 const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
 const CANCELLABLE_STATUSES = new Set(["queued", "starting", "running"]);
 const MAX_FILTER_LENGTH = 64;
@@ -80,7 +80,9 @@ function decorateFooter(screen, state, columns) {
   } else if (state.confirmation) {
     message = `[CONFIRM] cancel ${state.confirmation.laneId} · C confirm · Q return`;
   } else if (state.filterEditing) {
-    message = `FILTER / ${state.filterQuery || "type to narrow"} · Enter apply · Esc clear`;
+    message = `SEARCH LANES › ${state.filterQuery || "type to filter"}_ · MATCHES ${state.laneCount}/${state.totalLaneCount} · Enter: Keep · Esc: Clear`;
+  } else if (state.filterQuery) {
+    message = `SEARCH LANES › ${state.filterQuery} · MATCHES ${state.laneCount}/${state.totalLaneCount} · /: Edit or clear`;
   } else if (state.notice) {
     message = state.notice;
   }
@@ -111,6 +113,7 @@ export function createConsoleController(options = {}) {
   let terminal = safeTerminal(options.terminal);
   let ui = {
     laneCount: snapshot.lanes.length,
+    totalLaneCount: snapshot.lanes.length,
     selectedIndex: 0,
     panelIndex: 0,
     panelCount: PANELS.length,
@@ -135,6 +138,7 @@ export function createConsoleController(options = {}) {
   function clampSelection() {
     const lanes = visibleSnapshot().lanes;
     ui.laneCount = lanes.length;
+    ui.totalLaneCount = snapshot.lanes.length;
     if (lanes.length === 0) ui.selectedIndex = 0;
     else ui.selectedIndex = Math.max(0, Math.min(ui.selectedIndex, lanes.length - 1));
   }
@@ -223,7 +227,8 @@ export function createConsoleController(options = {}) {
         laneId,
         loading: false,
         error: null,
-        scroll: ui.session.scroll ?? 0
+        scroll: ui.session.scroll ?? 0,
+        activityExpanded: ui.session.activityExpanded === true
       };
       return true;
     } catch (error) {
@@ -255,7 +260,8 @@ export function createConsoleController(options = {}) {
       messages: [],
       loading: true,
       error: null,
-      scroll: 0
+      scroll: 0,
+      activityExpanded: false
     };
     // The authoritative thread identity may only be available from thread/read.
     // Keep the composer available while that session metadata is loading so a
@@ -324,7 +330,7 @@ export function createConsoleController(options = {}) {
   }
 
   function selectMouseRow(event) {
-    const firstLaneRow = terminal.columns >= 120 ? 9 : terminal.columns >= 80 ? 6 : 5;
+    const firstLaneRow = 5;
     const index = Math.floor((event.row - firstLaneRow) / 2);
     if (event.row >= firstLaneRow && index >= 0 && index < ui.laneCount) {
       ui.selectedIndex = index;
@@ -371,8 +377,9 @@ export function createConsoleController(options = {}) {
       ui.filterQuery = "";
       setNotice("FILTER CLEARED");
     } else if (event.type === "help") {
-      ui.panelIndex = PANELS.indexOf("controls");
-      setNotice("PANEL CONTROLS · 5/5");
+      setNotice(
+        "FLEET CONTROLS · ↑↓ select · Enter open agent · Tab change view · / search · X cancel · P motion · Ctrl+G return"
+      );
     } else if (event.type === "activate") {
       await openSession();
     } else if (event.type === "edit") {
@@ -394,7 +401,24 @@ export function createConsoleController(options = {}) {
     } else if (event.type === "submitMessage" && ui.composer) {
       const composer = ui.composer;
       const lane = snapshot.lanes.find((candidate) => candidate.id === composer.laneId);
-      if (!composer.value.trim()) setNotice("follow-up-message-empty");
+      const command = composer.value.trim().toLocaleLowerCase("en-US");
+      if (command === "/" || command === "/help") {
+        setNotice("FLEET LOCAL COMMANDS · /latest · /activity · /status · /back");
+        ui.composer = { laneId: composer.laneId, value: "" };
+      } else if (command === "/latest") {
+        ui.session.scroll = 0;
+        setNotice("TRANSCRIPT AT LATEST");
+        ui.composer = { laneId: composer.laneId, value: "" };
+      } else if (command === "/activity") {
+        ui.session.activityExpanded = ui.session.activityExpanded !== true;
+        setNotice(ui.session.activityExpanded ? "ACTIVITY EXPANDED" : "ACTIVITY COLLAPSED");
+        ui.composer = { laneId: composer.laneId, value: "" };
+      } else if (command === "/status") {
+        setNotice(`LANE ${lane?.id ?? "UNKNOWN"} · ${lane?.status ?? "unknown"} · ${lane?.phase ?? "unknown"}`);
+        ui.composer = { laneId: composer.laneId, value: "" };
+      } else if (command === "/back") {
+        closeSession();
+      } else if (!composer.value.trim()) setNotice("follow-up-message-empty");
       else if (!lane) setNotice("follow-up-target-changed");
       else {
         const method = typeof runtime.message === "function" ? "message" : "followUp";
@@ -436,7 +460,8 @@ export function createConsoleController(options = {}) {
       setNotice(event.reason);
     } else if (event.type === "move" && ui.session) {
       const delta = event.delta < 0 ? 3 : -3;
-      ui.session.scroll = Math.max(0, (ui.session.scroll ?? 0) + delta);
+      const maximum = Math.max(0, (ui.session.messages?.length ?? 1) * 8);
+      ui.session.scroll = Math.max(0, Math.min(maximum, (ui.session.scroll ?? 0) + delta));
     } else if (event.type === "move") {
       if (ui.laneCount <= 1) {
         setNotice(`ONLY ${ui.laneCount} LANE · selection unchanged`);
@@ -446,7 +471,7 @@ export function createConsoleController(options = {}) {
       }
     } else if (event.type === "cyclePanel") {
       ui = { ...ui, ...reduceInput(ui, event) };
-      setNotice(`PANEL ${PANELS[ui.panelIndex].toUpperCase()} · ${ui.panelIndex + 1}/${PANELS.length}`);
+      setNotice(`VIEW ${PANELS[ui.panelIndex].toUpperCase()}`);
     } else if (event.type === "toggleMotion") {
       if (preferences.reducedMotion === true) {
         setNotice("KITE MOTION LOCKED · REDUCED MOTION");

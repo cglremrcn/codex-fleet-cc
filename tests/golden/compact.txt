@@ -1,7 +1,7 @@
 FLEET//OPS  codex-fleet-cc@main                                                           ╭▰ ● ● ▰╮◆
-01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY  PANEL LANES  MOTION LIVE ◐
+01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY  VIEW DETAIL  KITE LIVE ◐
 ▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[LANES]  4                            │ DETAIL
+LANES  4                              │ [DETAIL]
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   01 ◇ COMPLETE        runtime-audit  │ Build the responsive operator console
      investigator · gpt-5.6-sol/high  │
@@ -25,4 +25,4 @@ FLEET//OPS  codex-fleet-cc@main                                                 
                                       │
                                       │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H/? HELP  CTRL+G/Q RETURN
+Enter: Open agent  X: Cancel  Tab: View  /: Search lanes  H/?: Help  Ctrl+G: Return

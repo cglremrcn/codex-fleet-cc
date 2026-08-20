@@ -64,7 +64,7 @@ possible effect produces `OUTCOME_UNKNOWN`, which blocks blind retry.
 | Cross-workspace disclosure | Hashed workspace keys, owned paths, redaction | Evidence files intentionally referenced by a lane remain governed by workspace permissions |
 | PID reuse kills another process | PID plus process-start identity | Platform process APIs can fail, in which case cancellation denies |
 | Duplicate external mutation | Exact confirmation and unknown-outcome reconciliation | Providers without idempotency still require operator reconciliation |
-| Unapproved or substituted image generation | Explicit image authority and `$imagegen` route contract | Built-in image availability still requires a lane-local smoke |
+| Unapproved or substituted image generation | Explicit image authority plus app-server discovery and exact `imagegen` skill injection before every image turn | Built-in generation still depends on the user's Codex entitlement and runtime availability |
 | Terminal escape injection | Bounded sanitized display and pure renderer | Terminal emulator vulnerabilities are outside Fleet |
 | Settings loss | Structural merge, backup, ownership manifest and drift-aware uninstall | Manual edits during setup require a fresh preview |
 | Secret leakage in support output | Preview, redaction rules and bounded export | Novel credential formats may require new rules |

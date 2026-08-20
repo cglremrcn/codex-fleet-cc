@@ -787,8 +787,12 @@ test("setup previews before applying and uninstall requires its own exact token"
   const currentRun = runFleet(["setup", "--json"], { env });
   assert.equal(currentRun.code, 0, currentRun.stderr);
   const current = JSON.parse(currentRun.stdout);
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(ROOT, "plugins", "fleet", ".claude-plugin", "plugin.json"),
+    "utf8"
+  ));
   assert.equal(current.mode, "current");
-  assert.equal(current.previousVersion, "0.1.6");
+  assert.equal(current.previousVersion, manifest.version);
   assert.deepEqual(current.changes, []);
 
   const uninstallPreviewRun = runFleet(["uninstall", "--json"], { env });

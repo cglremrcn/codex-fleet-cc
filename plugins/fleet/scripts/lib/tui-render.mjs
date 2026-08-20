@@ -1,7 +1,7 @@
 import { STATUS_PRESENTATION, createTheme } from "./theme.mjs";
 
 const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
-const PANELS = new Set(["lanes", "detail", "evidence", "authority", "controls"]);
+const PANELS = new Set(["detail", "evidence", "authority"]);
 const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
 const segmenter = typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter("en", { granularity: "grapheme" })
@@ -221,7 +221,7 @@ function normalizeLane(value, index) {
   };
 }
 
-export function buildViewModel(snapshot, selection, panel = "lanes") {
+export function buildViewModel(snapshot, selection, panel = "detail") {
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
   const lanes = Array.isArray(source.lanes) ? source.lanes.map(normalizeLane) : [];
   const selectedIndex = typeof selection === "number"
@@ -252,7 +252,7 @@ export function buildViewModel(snapshot, selection, panel = "lanes") {
     selectedIndex,
     selectedLane,
     totals,
-    panel: PANELS.has(panel) ? panel : "lanes"
+    panel: PANELS.has(panel) ? panel : "detail"
   });
 }
 
@@ -545,40 +545,16 @@ function versionLabel(preferences) {
 }
 
 function wideMasthead(view, columns, preferences) {
-  const mark = renderFleetMark(view, preferences);
+  const mark = renderCompactMark(view, preferences);
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
-  const selected = view.selectedLane;
   const motion = motionLabel(preferences);
-  const panelIndex = ["lanes", "detail", "evidence", "authority", "controls"].indexOf(view.panel);
   return [
     placeRight(
       `FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
-      mark[0],
+      mark,
       columns
     ),
-    placeRight(
-      `RUNTIME ${view.runtime.health.toUpperCase()}  `
-        + `PROTOCOL ${view.runtime.protocol.toUpperCase()}`,
-      mark[1],
-      columns
-    ),
-    placeRight(
-      `NAV//KITE  WATCH ${String(view.selectedIndex + 1).padStart(2, "0")}/${String(
-        view.lanes.length
-      ).padStart(2, "0")}  ${selected?.id ?? "NO-LANE"}`,
-      mark[2],
-      columns
-    ),
-    placeRight(
-      `POSTURE ${(selected?.status ?? "queued").toUpperCase()}  MOTION ${motion}`,
-      mark[3],
-      columns
-    ),
-    placeRight(
-      `PANEL ${view.panel.toUpperCase()} ${panelIndex + 1}/5  FLEET LANES ${view.lanes.length}  ACTIVE LIMIT ${limit}`,
-      mark[4],
-      columns
-    )
+    `RUNTIME ${view.runtime.health.toUpperCase()} · PROTOCOL ${view.runtime.protocol.toUpperCase()} · ACTIVE LIMIT ${limit} · KITE ${motion}`
   ];
 }
 
@@ -625,8 +601,8 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
   const authorityWidth = Math.max(30, Math.floor(available * 0.23));
   const detailWidth = available - laneWidth - authorityWidth;
   const widths = [laneWidth, detailWidth, authorityWidth];
-  const bodyHeight = Math.max(4, terminal.rows - 10);
-  const middlePanel = ["evidence", "controls"].includes(view.panel) ? view.panel : "detail";
+  const bodyHeight = Math.max(4, terminal.rows - 7);
+  const middlePanel = view.panel === "evidence" ? "evidence" : "detail";
   const middleLabel = middlePanel === "detail"
     ? `${panelLabel("DETAIL", "detail", view.panel)} / ${view.selectedLane?.id ?? "NONE"}`
     : panelLabel(middlePanel.toUpperCase(), middlePanel, view.panel);
@@ -634,7 +610,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ...wideMasthead(view, terminal.columns, preferences),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
-      `${panelLabel("LANES", "lanes", view.panel)}  ${view.lanes.length}`,
+      `LANES  ${view.lanes.length}`,
       middleLabel,
       panelLabel("AUTHORITY", "authority", view.panel)
     ], widths, border),
@@ -646,7 +622,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  / FILTER  P MOTION  H/? HELP  CTRL+G/Q RETURN",
+      "↑↓: Select lane   Enter: Open agent   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -658,7 +634,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
   const detailWidth = terminal.columns - separatorWidth - laneWidth;
   const widths = [laneWidth, detailWidth];
   const bodyHeight = Math.max(4, terminal.rows - 7);
-  const rightPanel = view.panel === "lanes" ? "detail" : view.panel;
+  const rightPanel = view.panel;
   const rightTitle = rightPanel.toUpperCase();
   const rightLines = panelBody(view, rightPanel, detailWidth, useUnicode);
   const mark = renderCompactMark(view, preferences);
@@ -669,10 +645,10 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
       mark,
       terminal.columns
     ),
-    `${summary(view)}  ${runtime}  PANEL ${view.panel.toUpperCase()}  MOTION ${motionLabel(preferences)}`,
+    `${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences)}`,
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
-      `${panelLabel("LANES", "lanes", view.panel)}  ${view.lanes.length}`,
+      `LANES  ${view.lanes.length}`,
       panelLabel(rightTitle, rightPanel, view.panel)
     ], widths, border),
     divider(widths, border),
@@ -682,7 +658,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓/JK SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H/? HELP  CTRL+G/Q RETURN",
+      "Enter: Open agent  X: Cancel  Tab: View  /: Search lanes  H/?: Help  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -699,9 +675,7 @@ function panelLines(view, width, useUnicode) {
 }
 
 function renderNarrow(view, terminal, border, useUnicode, preferences) {
-  const panels = ["lanes", "detail", "evidence", "authority", "controls"];
-  const panelIndex = panels.indexOf(view.panel);
-  const title = `${String(panelIndex + 1).padStart(2, "0")}/05 ${view.panel.toUpperCase()}`;
+  const title = `VIEW ${view.panel.toUpperCase()} · ${view.selectedLane?.id ?? "NO LANE"}`;
   const bodyHeight = Math.max(3, terminal.rows - 7);
   const mark = renderCompactMark(view, preferences);
   return [
@@ -712,7 +686,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("↑↓ SELECT  ENTER/M SESSION  X CANCEL  TAB PANEL  P MOTION  H HELP  CTRL+G/Q RETURN", terminal.columns)
+    truncate("Enter: Open agent  X: Cancel  Tab: View  /: Search  Ctrl+G: Return", terminal.columns)
   ];
 }
 
@@ -758,31 +732,56 @@ function renderCodexSession(view, terminal, border, preferences) {
   const session = preferences.session;
   const lane = view.lanes.find((candidate) => candidate.id === session.laneId)
     ?? view.selectedLane;
-  const direct = session.canAcceptDirectInput ? "YES" : "NO";
   const messages = Array.isArray(session.messages) ? session.messages : [];
-  const transcript = messages.flatMap((message) => [
+  const active = ["queued", "running"].includes(lane?.status);
+  const mode = active ? "LIVE STEER" : "FOLLOW-UP";
+  const activityCount = messages.filter((message) => message?.kind === "activity").length;
+  const visibleMessages = session.activityExpanded === true
+    ? messages
+    : messages.filter((message) => message?.kind !== "activity");
+  const transcript = visibleMessages.flatMap((message) => [
     ...transcriptMessageLines(message, terminal.columns),
     ""
   ]);
+  if (activityCount > 0 && session.activityExpanded !== true) {
+    transcript.push(
+      `ACTIVITY ${activityCount} event${activityCount === 1 ? "" : "s"} hidden · /activity to expand`,
+      ""
+    );
+  }
   if (session.loading) transcript.push("Loading the real Codex app-server thread…");
   if (session.error) transcript.push(`SESSION ERROR · ${session.error}`);
+  if (preferences.notice) transcript.push(`FLEET · ${preferences.notice}`, "");
+
+  const composerValue = preferences.composer?.value ?? "";
+  if (composerValue.trimStart().startsWith("/")) {
+    transcript.push(
+      "FLEET LOCAL COMMANDS",
+      "/latest    Jump to the newest transcript entry",
+      "/activity  Expand or collapse safe activity events",
+      "/status    Show the selected lane state",
+      "/back      Return to the Fleet dashboard",
+      ""
+    );
+  }
   if (transcript.length === 0) transcript.push("No thread messages are available yet.");
 
-  const bodyHeight = Math.max(1, terminal.rows - 8);
-  const scroll = Math.max(0, Number.isInteger(session.scroll) ? session.scroll : 0);
-  const end = Math.max(0, transcript.length - scroll);
+  const bodyHeight = Math.max(1, terminal.rows - 9);
+  const requestedScroll = Math.max(0, Number.isInteger(session.scroll) ? session.scroll : 0);
+  const maximumScroll = Math.max(0, transcript.length - 1);
+  const scroll = Math.min(requestedScroll, maximumScroll);
+  const end = Math.max(1, transcript.length - scroll);
   const start = Math.max(0, end - bodyHeight);
   const body = fitPanel(transcript.slice(start, end), bodyHeight, terminal.columns);
-  const composerValue = preferences.composer?.value ?? "";
-  const composer = composerValue
-    ? `MESSAGE > ${composerValue}`
-    : preferences.notice
-      ? boundedText(preferences.notice, "MESSAGE STATUS UNAVAILABLE", terminal.columns)
-      : "MESSAGE > type directly…";
+  const position = scroll === 0
+    ? "LATEST"
+    : scroll === maximumScroll ? "OLDEST" : `${scroll} LINES BACK`;
+  const activityState = session.activityExpanded === true ? "EXPANDED" : "COLLAPSED";
+  const composer = `COMPOSE [${mode}] › ${composerValue || "Type a message or / for Fleet commands"}`;
   return [
     truncate(`FLEET//CODEX SESSION  ${session.laneId}`, terminal.columns),
     truncate(
-      `THREAD ${session.threadId ?? "PENDING"}  SOURCE ${session.source ?? "unknown"}`,
+      `THREAD ${session.threadId ?? "PENDING"} · SOURCE ${session.source ?? "unknown"} · MODE ${mode}`,
       terminal.columns
     ),
     truncate(
@@ -791,15 +790,18 @@ function renderCodexSession(view, terminal, border, preferences) {
       terminal.columns
     ),
     truncate(
-      `STATUS ${(lane?.status ?? "unknown").toUpperCase()}  DIRECT INPUT ${direct}  `
-        + "REAL THREAD · reasoning/raw command output hidden",
+      `STATUS ${(lane?.status ?? "unknown").toUpperCase()} · REAL THREAD · reasoning/raw command output hidden`,
+      terminal.columns
+    ),
+    truncate(
+      `TRANSCRIPT · ${position} · ${messages.length} messages · ACTIVITY ${activityState}`,
       terminal.columns
     ),
     border.horizontal.repeat(terminal.columns),
     ...body,
     border.horizontal.repeat(terminal.columns),
     truncate(composer, terminal.columns),
-    truncate("Enter send  ↑/↓ transcript  Esc/Ctrl+G dashboard", terminal.columns)
+    truncate("Enter: Send  ↑/↓: Transcript  /: Fleet commands  Ctrl+G: Dashboard", terminal.columns)
   ].slice(0, terminal.rows);
 }
 
@@ -807,7 +809,7 @@ export function renderScreen(viewModel, terminalInput, preferences = {}) {
   const terminal = normalizedTerminal(terminalInput);
   const view = viewModel && typeof viewModel === "object"
     ? viewModel
-    : buildViewModel({}, null, "lanes");
+    : buildViewModel({}, null, "detail");
   const useUnicode = preferences.unicode !== false;
   const border = BORDERS[useUnicode ? "unicode" : "ascii"];
   const theme = createTheme(preferences);

@@ -119,6 +119,18 @@ test("masthead identifies the integration runtime that is actually loaded", () =
   assert.match(output, /FLEET\/\/OPS\s+v0\.1\.6/);
 });
 
+test("operator chrome exposes named destinations without internal panel counters", () => {
+  const output = stripAnsi(renderScreen(
+    viewFixture({ panel: "detail" }),
+    { columns: 160, rows: 28 },
+    plainPreferences({ version: "0.1.6" })
+  ));
+
+  assert.doesNotMatch(output, /NAV\/\/KITE|POSTURE|\bPANEL\s+\w+\s+\d+\/5/iu);
+  assert.match(output, /Tab: Detail → Evidence → Authority/iu);
+  assert.match(output, /\/: Search lanes/iu);
+});
+
 test("renderer never invents token or verification data", () => {
   const output = stripAnsi(renderScreen(
     viewFixture({
@@ -294,14 +306,64 @@ test("embedded Codex session renders real transcript, provenance, and composer",
   assert.match(output, /fleet-supervisor.*2026-08-19T20:25:00.000Z/iu);
   assert.match(output, /\[YOU\].*Check the exact source claim\./u);
   assert.match(output, /\[CODEX\].*narrower claim\./u);
-  assert.match(output, /\[ACTIVITY\].*WEB SEARCH/u);
+  assert.doesNotMatch(output, /\[ACTIVITY\].*WEB SEARCH/u);
+  assert.match(output, /ACTIVITY\s+1 event hidden/iu);
   assert.match(output, /MESSAGE SENT · runtime-audit · SAME CODEX THREAD/u);
-  assert.match(output, /Enter send.*Esc\/Ctrl\+G dashboard/iu);
+  assert.match(output, /FOLLOW-UP/iu);
+  assert.match(output, /Enter: Send.*Ctrl\+G: Dashboard/iu);
+});
+
+test("session scroll clamps at the oldest transcript instead of rendering blank", () => {
+  const output = stripAnsi(renderScreen(
+    viewFixture({ selection: "runtime-audit" }),
+    { columns: 100, rows: 18 },
+    plainPreferences({
+      session: {
+        laneId: "runtime-audit",
+        threadId: "thread-scroll",
+        source: "appServer",
+        canAcceptDirectInput: true,
+        messages: [
+          { kind: "user", text: "Oldest retained message." },
+          { kind: "assistant", text: "Middle retained message." },
+          { kind: "assistant", text: "Newest retained message." }
+        ],
+        scroll: 999
+      },
+      composer: { laneId: "runtime-audit", value: "" }
+    })
+  ));
+
+  assert.match(output, /Oldest retained message\./u);
+  assert.match(output, /TRANSCRIPT · OLDEST/iu);
+});
+
+test("session slash prefix opens a clearly local command palette", () => {
+  const output = stripAnsi(renderScreen(
+    viewFixture({ selection: "runtime-audit" }),
+    { columns: 120, rows: 24 },
+    plainPreferences({
+      session: {
+        laneId: "runtime-audit",
+        threadId: "thread-command",
+        source: "appServer",
+        canAcceptDirectInput: true,
+        messages: [],
+        scroll: 0
+      },
+      composer: { laneId: "runtime-audit", value: "/" }
+    })
+  ));
+
+  assert.match(output, /FLEET LOCAL COMMANDS/iu);
+  assert.match(output, /\/latest/iu);
+  assert.match(output, /\/activity/iu);
+  assert.match(output, /\/back/iu);
 });
 
 test("wide and compact layouts render every focused panel visibly", () => {
   for (const columns of [160, 100]) {
-    for (const panel of ["lanes", "detail", "evidence", "authority", "controls"]) {
+    for (const panel of ["detail", "evidence", "authority"]) {
       const output = stripAnsi(renderScreen(
         viewFixture({ panel }),
         { columns, rows: 28 },
@@ -352,8 +414,8 @@ test("every layout exposes follow-up and cancel controls without hidden help", (
       { columns, rows: 28 },
       plainPreferences()
     ));
-    assert.match(output, /(?:ENTER\/M|M) SESSION/);
-    assert.match(output, /X CANCEL/);
+    assert.match(output, /Enter: Open agent/iu);
+    assert.match(output, /X: Cancel/iu);
   }
 });
 

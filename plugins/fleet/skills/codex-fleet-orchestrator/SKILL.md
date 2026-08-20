@@ -132,6 +132,11 @@ it can inside its own authority and asks the human only when a material human de
 is genuinely required. Never interpret `complete` as successful work when requested work or
 verification evidence is absent.
 
+For an image-authorized lane, do not decide availability from Claude Code's plugin, MCP, or skill
+inventory. Fleet asks the target Codex app-server for `skills/list`, requires the enabled system skill
+named `imagegen`, and injects that exact skill into every image turn. A pre-turn capability refusal means
+the target Codex runtime did not expose a safe ImageGen route; do not substitute another generator.
+
 For every returned image artifact, the parent Claude must resolve the workspace-relative path inside
 the approved workspace and open the file with its Read tool before presenting or approving
 it. Perform visual QA against the requested composition, text, brand, dimensions, and exclusions; path

@@ -237,9 +237,10 @@ test("SessionStart reports an outdated Ctrl+G integration runtime to Claude", as
 
   const response = runSessionHook({ workspace, pluginData });
   const context = response.hookSpecificOutput?.additionalContext ?? "";
+  const manifest = JSON.parse(await read("plugins/fleet/.claude-plugin/plugin.json"));
 
   assert.match(context, /integration runtime 0\.1\.0/iu);
-  assert.match(context, /installed plugin 0\.1\.6/iu);
+  assert.equal(context.includes(`installed plugin ${manifest.version}`), true);
   assert.match(context, /Fleet setup.*upgrade/iu);
   assert.equal((await fs.readdir(pluginData)).length, 1, "the hook must remain read-only");
 });

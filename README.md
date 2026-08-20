@@ -123,7 +123,10 @@ targets only the exact Codex thread and turn owned by the lane.
 Image work uses explicit `image.generate` and `image.edit` grants. An approved visual lane routes
 through Codex's built-in `$imagegen` capability (GPT Image 2), preserves edit sources unless replacement
 was approved, copies the selected output into the project workspace, and returns the verified artifact
-path. Fleet does not silently switch to an API-key script or another image provider.
+path. Fleet discovers the enabled `imagegen` system skill from the target Codex app-server and injects
+it explicitly into every image turn; it does not depend on Claude Code exposing a matching local tool.
+Missing or malformed ImageGen metadata blocks the turn before generation. Fleet does not silently switch
+to an API-key script or another image provider.
 
 Claude can also inspect status and results, then continue a completed lane in the same Codex task/thread.
 Fleet Console's embedded session uses app-server `thread/read`, displays the real transcript and thread ID,
@@ -197,7 +200,8 @@ platform-specific evidence on every run.
 Codex desktop capabilities are not automatically portable to a Fleet app-server lane. An MCP shown as
 configured, a Browser/Chrome/Computer Use skill name, or a working parent desktop tool is not operational
 proof; Fleet requires the exact callable tool and a lane-local smoke. GPT Image generation is routed only
-when `$imagegen`/the built-in image tool is actually exposed. Desktop Browser, Chrome, and Computer Use
+when the target app-server exposes the enabled `imagegen` system skill and Fleet injects it into the turn.
+Desktop Browser, Chrome, and Computer Use
 fall back only with explicit user approval and are never silently substituted with Playwright or a fresh
 browser profile.
 

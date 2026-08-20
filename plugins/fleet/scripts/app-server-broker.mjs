@@ -10,7 +10,8 @@ import { spawn } from "node:child_process";
 
 import {
   cancelOwnedProcess,
-  captureOwnedProcess
+  captureOwnedProcess,
+  observeProcessStart
 } from "./lib/process-ownership.mjs";
 import { terminateProcessTree } from "./lib/upstream/process.mjs";
 
@@ -20,6 +21,7 @@ const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_GRACEFUL_CLOSE_MS = 1_000;
+const DEFAULT_STOP_RECONCILIATION_MS = 250;
 const WINDOWS_UNSAFE_BATCH_PATH = /[%!^&|<>\"]/;
 const OWNERSHIP_REMEDIATION =
   "Re-run doctor; inspect the process through normal OS or app controls.";
@@ -27,7 +29,7 @@ const OWNERSHIP_REMEDIATION =
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.1.6"
+  version: "0.1.7"
 });
 
 const CAPABILITIES = Object.freeze({
@@ -100,7 +102,7 @@ export function summarizeProtocolMessage(message) {
 
 export async function stopOwnedProcessTree(record, options = {}) {
   const stopTree = options.terminateProcessTree ?? terminateProcessTree;
-  return cancelOwnedProcess(record, {
+  const outcome = await cancelOwnedProcess(record, {
     observeStart: options.observeStart,
     platform: options.platform,
     env: options.env,
@@ -117,6 +119,29 @@ export async function stopOwnedProcessTree(record, options = {}) {
       }
     }
   });
+
+  if (outcome.reason !== "stop-failed") return outcome;
+
+  const waitForStopReconciliation = options.waitForStopReconciliation
+    ?? ((delayMs) => new Promise((resolve) => {
+      const timeout = setTimeout(resolve, delayMs);
+      timeout.unref?.();
+    }));
+  await waitForStopReconciliation(
+    options.stopReconciliationMs ?? DEFAULT_STOP_RECONCILIATION_MS
+  );
+  const observeStart = options.observeStart ?? observeProcessStart;
+  const currentStart = await observeStart(record.pid, {
+    platform: options.platform,
+    env: options.env
+  });
+  if (!currentStart) {
+    return Object.freeze({ cancelled: false, reason: "not-running" });
+  }
+  if (currentStart !== record.recordedStart) {
+    return Object.freeze({ cancelled: false, reason: "ownership-mismatch" });
+  }
+  return outcome;
 }
 
 function candidateExtensions(platform, env, command) {

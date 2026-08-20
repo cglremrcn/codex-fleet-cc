@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { createRuntime } from "../plugins/fleet/scripts/lib/runtime-adapter.mjs";
@@ -62,6 +63,152 @@ test("one adapter reuses one broker for two read-only lanes", async (t) => {
     "item/reasoning/summaryPartAdded",
     "item/reasoning/textDelta"
   ]);
+});
+
+test("image-authorized lanes discover and inject the enabled imagegen skill", async (t) => {
+  const fixture = startFakeCodex(t);
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-image", {
+    authority: {
+      sandbox: "workspace-write",
+      network: "off",
+      process: { start: true, stopOwned: true },
+      image: { generate: true, edit: false }
+    },
+    prompt: "Use $imagegen to create the approved square visual."
+  }));
+  await waitFor(
+    () => runtime.inspectLane("lane-image")?.status === "complete",
+    "image lane completion"
+  );
+
+  const state = fixture.readState();
+  assert.equal(state.skillsListCalls, 1);
+  assert.deepEqual(
+    state.lastTurnStart.input.filter((item) => item.type === "skill"),
+    [{
+      type: "skill",
+      name: "imagegen",
+      path: path.join(fixture.workspace, "system-skills", "imagegen", "SKILL.md")
+    }]
+  );
+});
+
+test("imagegen injection persists across same-thread continuations", async (t) => {
+  const fixture = startFakeCodex(t);
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-image-follow-up", {
+    authority: {
+      sandbox: "workspace-write",
+      network: "off",
+      process: { start: true, stopOwned: true },
+      image: { generate: true, edit: false }
+    },
+    prompt: "Use $imagegen to create the confirmed visual."
+  }));
+  const first = await waitFor(
+    () => runtime.inspectLane("lane-image-follow-up")?.status === "complete"
+      ? runtime.inspectLane("lane-image-follow-up")
+      : null,
+    "first image turn"
+  );
+  await runtime.continueLane("lane-image-follow-up", "Generate one approved refinement.");
+  await waitFor(
+    () => {
+      const lane = runtime.inspectLane("lane-image-follow-up");
+      return lane?.status === "complete" && lane.turnId !== first.turnId;
+    },
+    "image follow-up turn"
+  );
+
+  const state = fixture.readState();
+  assert.equal(state.skillsListCalls, 1);
+  assert.equal(state.lastTurnStart.input.at(-1).type, "skill");
+  assert.equal(state.lastTurnStart.input.at(-1).name, "imagegen");
+});
+
+test("missing imagegen capability fails before a Codex turn is started", async (t) => {
+  const fixture = startFakeCodex(t, "imagegen-missing");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await assert.rejects(
+    runtime.startLane(readOnlyContract(fixture, "lane-image-missing", {
+      authority: {
+        sandbox: "workspace-write",
+        network: "off",
+        process: { start: true, stopOwned: true },
+        image: { generate: true, edit: false }
+      },
+      prompt: "Create the confirmed launch visual."
+    })),
+    /enabled imagegen skill is unavailable/iu
+  );
+
+  const state = fixture.readState();
+  assert.equal(state.skillsListCalls, 1);
+  assert.equal(state.lastTurnStart, undefined);
+  assert.equal(runtime.inspectLane("lane-image-missing").status, "failed");
+});
+
+test("a non-system imagegen skill cannot satisfy the image capability gate", async (t) => {
+  const fixture = startFakeCodex(t, "imagegen-non-system");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await assert.rejects(
+    runtime.startLane(readOnlyContract(fixture, "lane-image-non-system", {
+      authority: {
+        sandbox: "workspace-write",
+        network: "off",
+        process: { start: true, stopOwned: true },
+        image: { generate: true, edit: false }
+      },
+      prompt: "Create the confirmed visual."
+    })),
+    /enabled imagegen skill is unavailable/iu
+  );
+  assert.equal(fixture.readState().lastTurnStart, undefined);
+});
+
+test("non-image lanes do not discover or inject imagegen", async (t) => {
+  const fixture = startFakeCodex(t, "imagegen-missing");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-no-image"));
+  await waitFor(
+    () => runtime.inspectLane("lane-no-image")?.status === "complete",
+    "non-image lane completion"
+  );
+
+  const state = fixture.readState();
+  assert.equal(state.skillsListCalls, undefined);
+  assert.equal(state.lastTurnStart.input.some((item) => item.type === "skill"), false);
 });
 
 test("runtime requires a structured evidence-bearing outcome", async (t) => {
@@ -369,7 +516,12 @@ test("runtime steers an active owned Codex turn", async (t) => {
   assert.deepEqual(fixture.readState().lastTurnSteer, {
     threadId: started.threadId,
     turnId: started.turnId,
-    prompt: "Prioritize the source contradiction."
+    prompt: "Prioritize the source contradiction.",
+    input: [{
+      type: "text",
+      text: "Prioritize the source contradiction.",
+      text_elements: []
+    }]
   });
 });
 

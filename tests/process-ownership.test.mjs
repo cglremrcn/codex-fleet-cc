@@ -92,3 +92,37 @@ test("broker tree cleanup verifies process identity before terminating", async (
   );
   assert.deepEqual(terminated, [4242]);
 });
+
+test("broker tree cleanup reconciles a stop failure when the owned PID exits", async () => {
+  const observations = ["start-a", null];
+  const result = await stopOwnedProcessTree(
+    { pid: 4242, recordedStart: "start-a" },
+    {
+      observeStart: async () => observations.shift() ?? null,
+      terminateProcessTree: () => {
+        throw new Error("taskkill reported a partial tree failure");
+      },
+      waitForStopReconciliation: async () => {}
+    }
+  );
+
+  assert.deepEqual(result, { cancelled: false, reason: "not-running" });
+  assert.deepEqual(observations, []);
+});
+
+test("broker tree cleanup keeps a live owned PID fail-closed after a stop failure", async () => {
+  const observations = ["start-a", "start-a"];
+  const result = await stopOwnedProcessTree(
+    { pid: 4242, recordedStart: "start-a" },
+    {
+      observeStart: async () => observations.shift() ?? null,
+      terminateProcessTree: () => {
+        throw new Error("taskkill failed");
+      },
+      waitForStopReconciliation: async () => {}
+    }
+  );
+
+  assert.deepEqual(result, { cancelled: false, reason: "stop-failed" });
+  assert.deepEqual(observations, []);
+});

@@ -24,6 +24,36 @@ const IGNORED_NOTIFICATION_METHODS = new Set([
   "item/reasoning/textDelta"
 ]);
 
+function needsImageSkill(authority) {
+  return authority?.image?.generate === true || authority?.image?.edit === true;
+}
+
+function imageSkillCandidates(response) {
+  const groups = Array.isArray(response?.data) ? response.data : [];
+  return groups.flatMap((group) => Array.isArray(group?.skills) ? group.skills : []);
+}
+
+function validateImageSkill(response) {
+  const skill = imageSkillCandidates(response).find((candidate) => (
+    candidate?.name === "imagegen"
+    && candidate?.enabled === true
+    && candidate?.scope === "system"
+  ));
+  const skillPath = skill?.path;
+  if (
+    !skill
+    || typeof skillPath !== "string"
+    || !path.isAbsolute(skillPath)
+    || path.basename(skillPath).toLowerCase() !== "skill.md"
+  ) {
+    throw new Error(
+      "Image capability blocked: the enabled imagegen skill is unavailable or malformed. "
+      + "Fleet did not start the Codex turn and did not substitute another generator."
+    );
+  }
+  return Object.freeze({ type: "skill", name: "imagegen", path: path.resolve(skillPath) });
+}
+
 function assertPrompt(value, label) {
   if (typeof value !== "string" || !value.trim() || value.length > MAX_PROMPT_LENGTH) {
     throw new TypeError(`${label} must contain between 1 and ${MAX_PROMPT_LENGTH} characters.`);
@@ -251,6 +281,25 @@ class FleetRuntime {
     if (this.closed) {
       throw new Error("Fleet runtime is closed.");
     }
+  }
+
+  async prepareSkillInputs(lane) {
+    if (!needsImageSkill(lane.authority)) {
+      lane.skillInputs = Object.freeze([]);
+      return;
+    }
+    const response = await this.broker.request("skills/list", {
+      cwds: [lane.workspacePath],
+      forceReload: true
+    });
+    lane.skillInputs = Object.freeze([validateImageSkill(response)]);
+  }
+
+  turnInput(lane, text) {
+    return [
+      { type: "text", text, text_elements: [] },
+      ...(lane.skillInputs ?? [])
+    ];
   }
 
   emit(laneId, type, payload = {}) {
@@ -499,12 +548,14 @@ class FleetRuntime {
       artifactRefs: Object.freeze([]),
       controllerRequest: null,
       stopReason: null,
-      automaticContinuations: 0
+      automaticContinuations: 0,
+      skillInputs: Object.freeze([])
     };
     this.lanes.set(lane.id, lane);
     this.emit(lane.id, "lane.queued", {});
 
     try {
+      await this.prepareSkillInputs(lane);
       const thread = await this.broker.request("thread/start", {
         cwd: lane.workspacePath,
         model: lane.model,
@@ -532,7 +583,7 @@ class FleetRuntime {
       );
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
-        input: [{ type: "text", text: buildExecutionPrompt(prompt), text_elements: [] }],
+        input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -571,7 +622,7 @@ class FleetRuntime {
     try {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
-        input: [{ type: "text", text: buildExecutionPrompt(prompt), text_elements: [] }],
+        input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -638,7 +689,7 @@ class FleetRuntime {
     try {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
-        input: [{ type: "text", text: buildExecutionPrompt(prompt), text_elements: [] }],
+        input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -715,8 +766,10 @@ class FleetRuntime {
       artifactRefs: Object.freeze(record.artifactRefs ?? []),
       controllerRequest: record.controllerRequest ?? null,
       stopReason: record.stopReason ?? null,
-      automaticContinuations: 0
+      automaticContinuations: 0,
+      skillInputs: Object.freeze([])
     };
+    await this.prepareSkillInputs(lane);
     this.lanes.set(lane.id, lane);
     this.bindThread(lane, lane.threadId);
     await this.broker.request("thread/resume", {
@@ -749,7 +802,7 @@ class FleetRuntime {
     const response = await this.broker.request("turn/steer", {
       threadId: lane.threadId,
       expectedTurnId: lane.turnId,
-      input: [{ type: "text", text: prompt, text_elements: [] }]
+      input: this.turnInput(lane, prompt)
     });
     if (response?.turnId && response.turnId !== lane.turnId) {
       throw new Error(`Lane ${id} active turn identity changed while steering.`);

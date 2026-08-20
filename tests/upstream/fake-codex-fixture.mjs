@@ -394,6 +394,33 @@ rl.on("line", (line) => {
         send({ id: message.id, result: buildConfigReadResult() });
         break;
 
+      case "skills/list": {
+        const requestedCwds = Array.isArray(message.params?.cwds)
+          ? message.params.cwds
+          : [];
+        const imageSkill = {
+          name: "imagegen",
+          description: "Generate or edit raster images.",
+          shortDescription: "Generate or edit images",
+          path: path.join(path.dirname(STATE_PATH), "system-skills", "imagegen", "SKILL.md"),
+          scope: BEHAVIOR === "imagegen-non-system" ? "workspace" : "system",
+          enabled: BEHAVIOR !== "imagegen-disabled"
+        };
+        state.skillsListCalls = (state.skillsListCalls || 0) + 1;
+        saveState(state);
+        send({
+          id: message.id,
+          result: {
+            data: requestedCwds.map((cwd) => ({
+              cwd,
+              skills: BEHAVIOR === "imagegen-missing" ? [] : [imageSkill],
+              errors: []
+            }))
+          }
+        });
+        break;
+      }
+
       case "thread/start": {
         if (BEHAVIOR === "auth-run-fails") {
           throw new Error("authentication expired; run codex login");
@@ -563,6 +590,7 @@ rl.on("line", (line) => {
 	          turnId,
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
+	          input: message.params.input || [],
 	          prompt,
 	          structuredOutcome: Boolean(
 	            message.params.outputSchema
@@ -766,7 +794,8 @@ rl.on("line", (line) => {
 	        state.lastTurnSteer = {
 	          threadId: thread.id,
 	          turnId: turn.id,
-	          prompt
+	          prompt,
+	          input: message.params.input || []
 	        };
 	        thread.updatedAt = now();
 	        saveState(state);

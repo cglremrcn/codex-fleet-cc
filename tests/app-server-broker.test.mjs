@@ -77,7 +77,6 @@ test("broker refusal releases local handles and reports safe ownership metadata"
     cwd: fake.workspace,
     env: fake.env,
     gracefulCloseMs: 10,
-    gracefulCloseMs: 10,
     captureOwnedProcess: async (pid) => ({ pid, recordedStart: "recorded-start" }),
     stopOwnedProcessTree: async () => ({
       cancelled: false,

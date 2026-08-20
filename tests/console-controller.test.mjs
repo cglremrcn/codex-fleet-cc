@@ -230,9 +230,10 @@ test("wide panel navigation changes visible focus instead of only internal state
 
   await controller.render();
   await controller.dispatch({ type: "cyclePanel", delta: 1 });
-  assert.match(writes.at(-1), /\[DETAIL\]/u);
+  assert.match(writes.at(-1), /\[EVIDENCE\]/u);
   await controller.dispatch({ type: "help" });
-  assert.match(writes.at(-1), /\[CONTROLS\]/u);
+  assert.match(writes.at(-1), /FLEET CONTROLS/iu);
+  assert.doesNotMatch(writes.at(-1), /\b[1-9]\/5\b/u);
 });
 
 test("Enter opens the selected Codex thread with transcript and direct composer", async () => {
@@ -258,7 +259,7 @@ test("Enter opens the selected Codex thread with transcript and direct composer"
   assert.equal(controller.state().composer.laneId, "lane-a");
   assert.match(writes.at(-1), /CODEX SESSION/iu);
   assert.match(writes.at(-1), /The runtime inspection is complete\./u);
-  assert.match(writes.at(-1), /type directly/iu);
+  assert.match(writes.at(-1), /Type a message or \/ for Fleet commands/iu);
   assert.equal(runtime.calls[0][0], "session");
 });
 
@@ -478,11 +479,47 @@ test("filter mode narrows lanes without treating typed J and K as navigation", a
 
   await controller.dispatch({ type: "filter" });
   await controller.dispatch({ type: "text", value: "k" });
+
+  assert.match(writes.at(-1), /SEARCH LANES/iu);
+  assert.match(writes.at(-1), /MATCHES 1\/2/iu);
+
   await controller.dispatch({ type: "applyFilter" });
 
   assert.equal(controller.state().laneCount, 1);
   assert.match(writes.at(-1), /lane-k/);
   assert.doesNotMatch(writes.at(-1), /lane-j/);
+});
+
+test("Fleet local slash commands control the session without messaging Codex", async () => {
+  const runtime = recordingRuntime();
+  const completed = lane({
+    status: "complete",
+    phase: "complete",
+    threadId: "thread-lane-a",
+    turnId: "turn-lane-a"
+  });
+  const controller = createConsoleController({
+    snapshot: snapshot({ lanes: [completed] }),
+    runtime,
+    terminal: { columns: 120, rows: 28 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.dispatch({ type: "activate" });
+  await controller.dispatch({ type: "move", delta: -1 });
+  assert.ok(controller.state().session.scroll > 0);
+  await controller.dispatch({ type: "text", value: "/latest" });
+  await controller.dispatch({ type: "submitMessage" });
+
+  assert.equal(controller.state().session.scroll, 0);
+  assert.equal(
+    runtime.calls.some((call) => call[0] === "message" || call[0] === "followUp"),
+    false
+  );
+
+  await controller.dispatch({ type: "text", value: "/activity" });
+  await controller.dispatch({ type: "submitMessage" });
+  assert.equal(controller.state().session.activityExpanded, true);
 });
 
 test("copy uses bounded OSC 52 and leaves a visible identifier fallback", async () => {

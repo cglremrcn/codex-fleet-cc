@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.7 — 2026-08-20
+
+- Replace internal five-panel counters with three named operator views and explicit keyboard
+  destinations across wide, compact, narrow, monochrome, and screen-reader-safe layouts.
+- Add a visible lane-search row with match counts, a fixed session composer, truthful `LIVE STEER`
+  and `FOLLOW-UP` modes, collapsed safe activity, local slash commands, and bounded transcript scroll.
+- Keep KITE motion visible through a compact status-driven indicator while preserving pause and
+  reduced-motion behavior.
+- Discover the enabled system `imagegen` skill through Codex app-server and inject it explicitly into
+  initial, continued, resumed, and steered image work; missing or malformed capability fails closed.
+- Reconcile Windows process-tree shutdown races only after the exact owned PID is confirmed absent;
+  live or reused PIDs remain fail-closed with structured broker diagnostics.
+- Document that Claude's local plugin inventory is not the Codex ImageGen capability boundary.
+
 ## 0.1.6 — 2026-08-20
 
 - Open the selected real Codex app-server thread from Fleet Console with `Enter` or `m`, send a

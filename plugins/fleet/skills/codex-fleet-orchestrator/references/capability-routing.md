@@ -74,6 +74,12 @@ not a non-mutating smoke: require explicit confirmation and declare `image.gener
 in the authority contract. Editing also requires the exact source image path and must preserve the
 original unless replacement was explicitly approved.
 
+Fleet performs the decisive capability check inside the target app-server: it calls
+`skills/list({cwds, forceReload: true})`, requires an enabled skill whose exact name is `imagegen` and
+whose path is an absolute `SKILL.md`, then supplies that skill as an explicit turn input. Claude Code's
+own skill/MCP inventory is a different surface and must not be used to declare Codex ImageGen missing.
+If discovery fails or returns malformed metadata, Fleet refuses the turn before generation.
+
 The lane prompt must name `$imagegen`, the intended visual outcome, aspect ratio or dimensions,
 composition, style, brand constraints, required source images, exclusions, output filename, and visual
 QA criteria. Built-in output may first appear under the Codex `generated_images` directory. Copy the
