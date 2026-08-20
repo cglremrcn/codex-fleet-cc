@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
+import fs from "node:fs";
+import path from "node:path";
+
 import {
   buildViewModel,
   renderScreen
 } from "../plugins/fleet/scripts/lib/tui-render.mjs";
+
+const project = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, "..", "package.json"), "utf8"));
+const version = project.version;
 
 const authority = (overrides = {}) => ({
   sandbox: "read-only",
@@ -79,12 +85,56 @@ const snapshot = {
   updatedAt: "2026-08-17T12:00:00.000Z",
   lanes
 };
-const view = buildViewModel(snapshot, "console-build", "lanes");
+const dashboardView = buildViewModel(snapshot, "console-build", "detail");
+const sessionView = buildViewModel(snapshot, "runtime-audit", "detail");
 
 const frames = Array.from({ length: 4 }, (_, frame) => renderScreen(
-  view,
+  dashboardView,
   { columns: 160, rows: 28 },
-  { color: true, unicode: true, frame }
+  { color: true, unicode: true, frame, version }
 ));
 
-process.stdout.write(JSON.stringify({ columns: 160, rows: 28, frames }));
+const sessionFrame = renderScreen(
+  sessionView,
+  { columns: 140, rows: 30 },
+  {
+    color: true,
+    unicode: true,
+    frame: 1,
+    version,
+    session: {
+      laneId: "runtime-audit",
+      threadId: "0198-sanitized-thread",
+      source: "appServer",
+      admissionId: "71177e04-sanitized-admission",
+      admissionSource: "fleet-supervisor",
+      admittedAt: "2026-08-20T02:11:01.799Z",
+      canAcceptDirectInput: true,
+      messages: [
+        {
+          kind: "user",
+          text: "Check whether the cited source supports the exact launch claim."
+        },
+        {
+          kind: "assistant",
+          text: "The source supports availability by April 2015, so the narrower date range is safer."
+        },
+        {
+          kind: "activity",
+          text: "WEB SEARCH · sanitized source inspection"
+        }
+      ],
+      scroll: 0
+    },
+    composer: { laneId: "runtime-audit", value: "Continue with the narrower verified claim." },
+    notice: "SAME CODEX THREAD · READY FOR FOLLOW-UP"
+  }
+);
+
+process.stdout.write(JSON.stringify({
+  schemaVersion: 1,
+  previews: {
+    dashboard: { columns: 160, rows: 28, frames },
+    session: { columns: 140, rows: 30, frame: sessionFrame }
+  }
+}));

@@ -56,31 +56,54 @@ def draw_ansi_line(
         x += cell_width * cell_span(character)
 
 
-def main() -> None:
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: render-preview-gif.py frames.json font.ttf output.gif")
-    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    font = ImageFont.truetype(sys.argv[2], 16)
+def render_terminal(
+    source: str,
+    columns: int,
+    rows: int,
+    font: ImageFont.FreeTypeFont,
+) -> Image.Image:
     cell_width = round(font.getlength("M"))
     line_height = 22
     padding = 22
-    width = padding * 2 + payload["columns"] * cell_width
-    height = padding * 2 + payload["rows"] * line_height
-    frames = []
-    for source in payload["frames"]:
-        image = Image.new("RGB", (width, height), GROUND)
-        draw = ImageDraw.Draw(image)
-        for index, line in enumerate(source.splitlines()):
-            draw_ansi_line(draw, line, (padding, padding + index * line_height), font, cell_width)
-        frames.append(image.quantize(colors=128, method=Image.Quantize.MEDIANCUT))
+    width = padding * 2 + columns * cell_width
+    height = padding * 2 + rows * line_height
+    image = Image.new("RGB", (width, height), GROUND)
+    draw = ImageDraw.Draw(image)
+    for index, line in enumerate(source.splitlines()):
+        draw_ansi_line(draw, line, (padding, padding + index * line_height), font, cell_width)
+    return image
+
+
+def main() -> None:
+    if len(sys.argv) != 4:
+        raise SystemExit("usage: render-preview-gif.py previews.json font.ttf output-dir")
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    font = ImageFont.truetype(sys.argv[2], 16)
+    output_dir = Path(sys.argv[3])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    dashboard = payload["previews"]["dashboard"]
+    frames = [
+        render_terminal(source, dashboard["columns"], dashboard["rows"], font).quantize(
+            colors=128,
+            method=Image.Quantize.MEDIANCUT,
+        )
+        for source in dashboard["frames"]
+    ]
     frames[0].save(
-        sys.argv[3],
+        output_dir / "fleet-console-dashboard.gif",
         save_all=True,
         append_images=frames[1:],
         duration=320,
         loop=0,
         optimize=False,
         disposal=2,
+    )
+
+    session = payload["previews"]["session"]
+    render_terminal(session["frame"], session["columns"], session["rows"], font).save(
+        output_dir / "fleet-console-session.png",
+        optimize=True,
     )
 
 

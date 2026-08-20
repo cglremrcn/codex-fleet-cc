@@ -22,6 +22,17 @@ navigate Fleet. Use `Ctrl+G` for Fleet, then the arrow keys or `j`/`k` inside th
 > Intel and Apple Silicon, Linux x64 and ARM64 with Node 22 and 24. The project is installable from
 > its GitHub marketplace today; it is not yet published to a central marketplace catalog.
 
+## See the fleet without leaving Claude Code
+
+Press `Ctrl+G` to open the operator console in the same terminal. Select a lane, inspect its real
+status and authority, then press `Enter` to open that lane's Codex session. `Ctrl+G` returns from the
+session to the dashboard; `q` or `Esc` returns to Claude Code.
+
+![Fleet Console v0.1.7 dashboard with four sanitized fixture lanes and live KITE motion](docs/assets/fleet-console-dashboard.gif)
+
+The recording is generated from the v0.1.7 renderer with sanitized fixture lanes. It is not a UI
+mockup or a claim about a live external account.
+
 ## Why this exists
 
 Existing integrations can ask Codex to do a task, but a fleet creates harder questions:
@@ -77,11 +88,8 @@ essential controls. The masthead shows the loaded integration version; if that v
 the installed plugin, SessionStart offers the deterministic upgrade instead of leaving an old launcher
 silently active.
 
-![Fleet Console running four sanitized fixture lanes with KITE motion](docs/assets/fleet-console-kite-v3.gif)
-
-This recording comes from the real renderer with sanitized fixture lanes. The PTY E2E opens the
-preserved editor, returns to the fake Claude host, compares the draft byte-for-byte and confirms
-that no owned child remains. It is not a product mockup or a claim about a live external account.
+The PTY E2E opens the preserved editor, returns to the fake Claude host, compares the draft
+byte-for-byte and confirms that no owned child remains.
 
 Core navigation is designed around:
 
@@ -97,6 +105,18 @@ Core navigation is designed around:
 | `p` | Pause or resume KITE motion |
 | `Ctrl+G` | Close the Codex thread view back to Fleet; also opens Fleet from Claude Code |
 | `q` / `Esc` | Return from the Fleet dashboard to Claude Code |
+
+### Work inside the real Codex thread
+
+`Enter` opens the selected lane's app-server thread rather than starting a nested Codex CLI. The
+session view shows sanitized user and Codex messages, immutable admission provenance, hidden activity
+counts and a fixed composer. Sending continues the terminal lane or steers an active turn on that same
+thread; it does not create an unrelated worker.
+
+![Fleet Console embedded Codex session with transcript, provenance and follow-up composer](docs/assets/fleet-console-session.png)
+
+This image is generated from the same production renderer with a sanitized transcript and identifiers;
+reasoning, raw command output, credentials and private paths are intentionally absent.
 
 Mouse input is an optional convenience. Every essential operation remains available from the
 keyboard. Linear plain-text status, monochrome output, reduced motion and narrow layouts are
