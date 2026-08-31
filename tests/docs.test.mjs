@@ -68,3 +68,15 @@ test("operator docs cover exact contract transport, status recovery, and externa
   assert.match(combined, /stale MCP/is);
   assert.match(combined, /two (update )?surfaces.*plugin.*runtime/is);
 });
+
+test("README distinguishes current release labels from historical live evidence", async () => {
+  const readme = await read("README.md");
+
+  assert.match(readme, /current Fleet source release.*v0\.2\.0/isu);
+  assert.match(readme, /Claude Code v2\.1\.252/iu);
+  assert.match(readme, /Codex CLI 0\.147\.0/iu);
+  for (const match of readme.matchAll(/0\.1\.7/gu)) {
+    const context = readme.slice(Math.max(0, match.index - 80), match.index + 100);
+    assert.match(context, /historical|recording|field report/iu);
+  }
+});

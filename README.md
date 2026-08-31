@@ -30,10 +30,11 @@ Press `Ctrl+G` to open the operator console in the same terminal. Select a lane,
 status and authority, then press `Enter` to open that lane's Codex session. `Ctrl+G` returns from the
 session to the dashboard; `q` or `Esc` returns to Claude Code.
 
-![Fleet Console v0.1.7 dashboard with four sanitized fixture lanes and live KITE motion](docs/assets/fleet-console-dashboard.gif)
+![Historical Fleet Console v0.1.7 field-report dashboard with four sanitized fixture lanes and live KITE motion](docs/assets/fleet-console-dashboard.gif)
 
-The recording is generated from the v0.1.7 renderer with sanitized fixture lanes. It is not a UI
-mockup or a claim about a live external account.
+This historical field-report recording was generated from the v0.1.7 renderer with sanitized fixture
+lanes. It is not a UI mockup or a claim about a live external account. The current Fleet source release
+is v0.2.0; its renderer is covered by the current preview and golden tests.
 
 ## Why this exists
 
@@ -258,6 +259,7 @@ matrix.
 | Surface | Status |
 | --- | --- |
 | Windows live terminal handoff | **Proven** on Claude Code v2.1.234 in a disposable profile |
+| Current Claude plugin validation | Passing locally with Claude Code v2.1.252 |
 | Windows runtime and PTY fixture | Passing: installed launcher, exact draft, restored terminal, zero owned child |
 | macOS Intel and Apple Silicon | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |

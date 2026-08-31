@@ -29,7 +29,7 @@ const OWNERSHIP_REMEDIATION =
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.1.7"
+  version: "0.2.0"
 });
 
 const CAPABILITIES = Object.freeze({

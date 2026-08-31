@@ -36,7 +36,7 @@ jobs:
         run: npm ci
 
       - name: Install the validated Claude Code CLI
-        run: npm install --global @anthropic-ai/claude-code@2.1.234
+        run: npm install --global @anthropic-ai/claude-code@2.1.252
 
       - name: Run the release-quality gate
         run: npm run verify
@@ -61,7 +61,7 @@ jobs:
         run: npm ci
 
       - name: Install the validated Claude Code CLI
-        run: npm install --global @anthropic-ai/claude-code@2.1.234
+        run: npm install --global @anthropic-ai/claude-code@2.1.252
 
       - name: Run release gate
         run: npm run verify
