@@ -454,6 +454,30 @@ test("screen-reader mode is linear and excludes decorative formation output", ()
   assert.match(output, /Lane 2 of 4: console-build, running/);
 });
 
+test("58-lane viewport renders the selected lane and its visible range", () => {
+  const lanes = Array.from({ length: 58 }, (_, index) => lane({
+    id: `lane-${String(index + 1).padStart(2, "0")}`,
+    label: `Lane ${index + 1}`,
+    status: index === 57 ? "running" : "outcome_unknown"
+  }));
+  const view = buildViewModel(
+    fleetSnapshot({ lanes }),
+    "lane-58",
+    "detail",
+    { viewportOffset: 50, visibleLaneCapacity: 8, observation: "stale" }
+  );
+  const output = stripAnsi(renderScreen(
+    view,
+    { columns: 120, rows: 24 },
+    plainPreferences()
+  ));
+
+  assert.match(output, /lane-58/iu);
+  assert.match(output, /VISIBLE 51[–-]58 \/ 58/iu);
+  assert.match(output, /OBSERVATION STALE/iu);
+  assert.doesNotMatch(output, /lane-01/iu);
+});
+
 test("view model preserves truthful status and chooses an existing lane", () => {
   const view = buildViewModel(fleetSnapshot(), "missing-lane", "authority");
 

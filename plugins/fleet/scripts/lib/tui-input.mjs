@@ -25,12 +25,18 @@ const CSI_EVENTS = Object.freeze({
   B: Object.freeze({ type: "move", delta: 1 }),
   C: Object.freeze({ type: "cyclePanel", delta: 1 }),
   D: Object.freeze({ type: "cyclePanel", delta: -1 }),
+  H: Object.freeze({ type: "home" }),
+  F: Object.freeze({ type: "end" }),
   Z: Object.freeze({ type: "cyclePanel", delta: -1 })
 });
 
 const COMPLETE_ESCAPE_EVENTS = Object.freeze({
   "\u001bOP": Object.freeze({ type: "help" }),
-  "\u001b[11~": Object.freeze({ type: "help" })
+  "\u001b[11~": Object.freeze({ type: "help" }),
+  "\u001b[5~": Object.freeze({ type: "page", delta: -1 }),
+  "\u001b[6~": Object.freeze({ type: "page", delta: 1 }),
+  "\u001b[1~": Object.freeze({ type: "home" }),
+  "\u001b[4~": Object.freeze({ type: "end" })
 });
 
 function positiveInteger(value, fallback) {
@@ -175,14 +181,38 @@ function wrapIndex(value, count) {
   return ((value % count) + count) % count;
 }
 
+function viewportFor(selectedIndex, offset, capacity, count) {
+  if (count <= 0) return 0;
+  const safeCapacity = Math.max(1, Math.min(capacity, count));
+  const maximumOffset = Math.max(0, count - safeCapacity);
+  let nextOffset = Math.max(0, Math.min(offset, maximumOffset));
+  if (selectedIndex < nextOffset) nextOffset = selectedIndex;
+  if (selectedIndex >= nextOffset + safeCapacity) {
+    nextOffset = selectedIndex - safeCapacity + 1;
+  }
+  return Math.max(0, Math.min(nextOffset, maximumOffset));
+}
+
 export function reduceInput(state, event) {
   const source = state && typeof state === "object" ? state : {};
   const next = { ...source };
   if (!event || typeof event !== "object") return next;
+  const count = Number.isInteger(source.laneCount) ? source.laneCount : 0;
+  const current = Number.isInteger(source.selectedIndex) ? source.selectedIndex : 0;
+  const capacity = Number.isInteger(source.visibleLaneCapacity)
+    ? Math.max(1, source.visibleLaneCapacity)
+    : 1;
   if (event.type === "move") {
-    const count = Number.isInteger(source.laneCount) ? source.laneCount : 0;
-    const current = Number.isInteger(source.selectedIndex) ? source.selectedIndex : 0;
     next.selectedIndex = wrapIndex(current + (event.delta < 0 ? -1 : 1), count);
+  } else if (event.type === "page") {
+    next.selectedIndex = Math.max(
+      0,
+      Math.min(Math.max(0, count - 1), current + (event.delta < 0 ? -capacity : capacity))
+    );
+  } else if (event.type === "home") {
+    next.selectedIndex = 0;
+  } else if (event.type === "end") {
+    next.selectedIndex = Math.max(0, count - 1);
   } else if (event.type === "cyclePanel") {
     const count = Number.isInteger(source.panelCount) ? source.panelCount : 0;
     const current = Number.isInteger(source.panelIndex) ? source.panelIndex : 0;
@@ -191,6 +221,14 @@ export function reduceInput(state, event) {
     next.motion = source.motion !== false ? false : true;
   } else if (event.type === "quit") {
     next.exitRequested = true;
+  }
+  if (["move", "page", "home", "end"].includes(event.type)) {
+    next.viewportOffset = viewportFor(
+      next.selectedIndex,
+      Number.isInteger(source.viewportOffset) ? source.viewportOffset : 0,
+      capacity,
+      count
+    );
   }
   return next;
 }

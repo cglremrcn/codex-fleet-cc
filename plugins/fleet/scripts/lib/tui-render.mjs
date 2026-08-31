@@ -222,13 +222,26 @@ function normalizeLane(value, index) {
   };
 }
 
-export function buildViewModel(snapshot, selection, panel = "detail") {
+export function buildViewModel(snapshot, selection, panel = "detail", viewport = {}) {
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
   const lanes = Array.isArray(source.lanes) ? source.lanes.map(normalizeLane) : [];
   const selectedIndex = typeof selection === "number"
     ? Math.max(0, Math.min(lanes.length - 1, selection))
     : Math.max(0, lanes.findIndex((lane) => lane.id === selection));
   const selectedLane = lanes[selectedIndex] ?? null;
+  const visibleLaneCapacity = Number.isInteger(viewport.visibleLaneCapacity)
+    ? Math.max(1, viewport.visibleLaneCapacity)
+    : Math.max(1, lanes.length);
+  const maximumOffset = Math.max(0, lanes.length - visibleLaneCapacity);
+  let viewportOffset = Number.isInteger(viewport.viewportOffset)
+    ? Math.max(0, Math.min(viewport.viewportOffset, maximumOffset))
+    : 0;
+  if (selectedIndex < viewportOffset) viewportOffset = selectedIndex;
+  if (selectedIndex >= viewportOffset + visibleLaneCapacity) {
+    viewportOffset = selectedIndex - visibleLaneCapacity + 1;
+  }
+  viewportOffset = Math.max(0, Math.min(viewportOffset, maximumOffset));
+  const visibleLanes = lanes.slice(viewportOffset, viewportOffset + visibleLaneCapacity);
   const totals = Object.fromEntries(Object.keys(STATUS_PRESENTATION).map((status) => [
     status,
     lanes.filter((lane) => lane.status === status).length
@@ -250,6 +263,12 @@ export function buildViewModel(snapshot, selection, panel = "detail") {
     },
     updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : null,
     lanes,
+    visibleLanes,
+    visibleLaneCapacity,
+    viewportOffset,
+    observation: ["loading", "stale"].includes(viewport.observation)
+      ? viewport.observation
+      : "fresh",
     selectedIndex,
     selectedLane,
     totals,
@@ -282,7 +301,8 @@ function usageText(usage) {
 function laneLines(view, width, useUnicode) {
   if (view.lanes.length === 0) return ["No lanes yet", "Start a bounded lane from Claude Code."];
   const lines = [];
-  view.lanes.forEach((lane, index) => {
+  view.visibleLanes.forEach((lane, visibleIndex) => {
+    const index = view.viewportOffset + visibleIndex;
     const selected = index === view.selectedIndex;
     const marker = selected ? BORDERS[useUnicode ? "unicode" : "ascii"].selected : " ";
     const number = String(index + 1).padStart(2, "0");
@@ -292,6 +312,19 @@ function laneLines(view, width, useUnicode) {
     lines.push(truncate(`     ${metadata}`, width));
   });
   return lines;
+}
+
+function visibleRange(view) {
+  if (view.lanes.length === 0) return "VISIBLE 0–0 / 0";
+  const first = view.viewportOffset + 1;
+  const last = view.viewportOffset + view.visibleLanes.length;
+  return `VISIBLE ${first}–${last} / ${view.lanes.length}`;
+}
+
+function lanePanelLabel(view) {
+  return view.visibleLanes.length < view.lanes.length
+    ? `LANES ${view.lanes.length} · ${visibleRange(view)}`
+    : `LANES  ${view.lanes.length}`;
 }
 
 function detailLines(lane, width) {
@@ -563,6 +596,7 @@ function wideMasthead(view, columns, preferences) {
       columns
     ),
     `RUNTIME ${view.runtime.health.toUpperCase()} · PROTOCOL ${view.runtime.protocol.toUpperCase()} · ACTIVE LIMIT ${limit} · KITE ${motion}`
+      + (view.observation === "fresh" ? "" : ` · OBSERVATION ${view.observation.toUpperCase()}`)
   ];
 }
 
@@ -618,7 +652,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ...wideMasthead(view, terminal.columns, preferences),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
-      `LANES  ${view.lanes.length}`,
+      lanePanelLabel(view),
       middleLabel,
       panelLabel("AUTHORITY", "authority", view.panel)
     ], widths, border),
@@ -653,10 +687,11 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
       mark,
       terminal.columns
     ),
-    `${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences)}`,
+    `${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences)}`
+      + (view.observation === "fresh" ? "" : `  OBSERVATION ${view.observation.toUpperCase()}`),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
-      `LANES  ${view.lanes.length}`,
+      lanePanelLabel(view),
       panelLabel(rightTitle, rightPanel, view.panel)
     ], widths, border),
     divider(widths, border),
@@ -683,7 +718,8 @@ function panelLines(view, width, useUnicode) {
 }
 
 function renderNarrow(view, terminal, border, useUnicode, preferences) {
-  const title = `VIEW ${view.panel.toUpperCase()} · ${view.selectedLane?.id ?? "NO LANE"}`;
+  const title = `VIEW ${view.panel.toUpperCase()} · ${view.selectedLane?.id ?? "NO LANE"}`
+    + (view.observation === "fresh" ? "" : ` · OBSERVATION ${view.observation.toUpperCase()}`);
   const bodyHeight = Math.max(3, terminal.rows - 7);
   const mark = renderCompactMark(view, preferences);
   return [
