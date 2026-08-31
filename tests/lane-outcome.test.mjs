@@ -31,13 +31,65 @@ test("lane outcome schema is strict and requires evidence-bearing fields", () =>
       "outcome",
       "summary",
       "workPerformed",
-      "evidenceRefs",
-      "artifactRefs",
-      "verification",
-      "controllerRequest",
-      "stopReason"
+      "evidenceRefs"
     ])
   );
+});
+
+test("controller outcomes normalize omitted optional evidence fields", () => {
+  const result = parseLaneOutcome(JSON.stringify({
+    outcome: "needs_controller",
+    summary: "Build must run outside this sandbox.",
+    workPerformed: ["Implemented the requested code."],
+    evidenceRefs: ["tests/build.test.mjs"],
+    controllerRequest: {
+      kind: "runtime_blocker",
+      question: "Run npm run build in the controller environment."
+    }
+  }));
+
+  assert.deepEqual(result.artifactRefs, []);
+  assert.deepEqual(result.verification, []);
+  assert.deepEqual(result.commitRefs, []);
+  assert.deepEqual(result.configChanges, []);
+  assert.equal(result.stopReason, null);
+});
+
+test("schema diagnostics name missing and unknown root fields", () => {
+  assert.throws(
+    () => parseLaneOutcome(JSON.stringify({
+      outcome: "blocked",
+      summary: "Stopped.",
+      workPerformed: [],
+      evidenceRef: []
+    })),
+    /missing: evidenceRefs.*unknown: evidenceRef/iu
+  );
+});
+
+test("optional commit and config evidence stays bounded and workspace-relative", () => {
+  const result = parseLaneOutcome(payload({
+    commitRefs: ["abcdef1", "0123456789abcdef0123456789abcdef01234567"],
+    configChanges: [".github/workflows/release.yml"]
+  }));
+  assert.deepEqual(result.commitRefs, ["abcdef1", "0123456789abcdef0123456789abcdef01234567"]);
+  assert.deepEqual(result.configChanges, [".github/workflows/release.yml"]);
+
+  assert.throws(() => parseLaneOutcome(payload({ commitRefs: ["not-a-commit"] })), /commit/iu);
+  assert.throws(() => parseLaneOutcome(payload({ configChanges: ["../outside.env"] })), /config/iu);
+});
+
+test("blocked outcomes may identify a controller request instead of a stop reason", () => {
+  const result = parseLaneOutcome(payload({
+    outcome: "blocked",
+    controllerRequest: {
+      kind: "missing_input",
+      question: "Provide the missing deployment target."
+    },
+    stopReason: null
+  }));
+  assert.equal(result.controllerRequest.kind, "missing_input");
+  assert.equal(result.stopReason, null);
 });
 
 test("accomplished requires concrete work and verification before complete", () => {

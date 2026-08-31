@@ -25,21 +25,29 @@ const CONTROLLER_ONLY_REQUESTS = new Set([
   "user_choice",
   "runtime_blocker"
 ]);
-const ROOT_FIELDS = new Set([
+const REQUIRED_ROOT_FIELDS = new Set([
   "outcome",
   "summary",
   "workPerformed",
-  "evidenceRefs",
-  "artifactRefs",
-  "verification",
-  "controllerRequest",
-  "stopReason"
+  "evidenceRefs"
+]);
+const OPTIONAL_ROOT_DEFAULTS = Object.freeze({
+  artifactRefs: Object.freeze([]),
+  verification: Object.freeze([]),
+  commitRefs: Object.freeze([]),
+  configChanges: Object.freeze([]),
+  controllerRequest: null,
+  stopReason: null
+});
+const ROOT_FIELDS = new Set([
+  ...REQUIRED_ROOT_FIELDS,
+  ...Object.keys(OPTIONAL_ROOT_DEFAULTS)
 ]);
 
 export const LANE_OUTCOME_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
-  required: [...ROOT_FIELDS],
+  required: [...REQUIRED_ROOT_FIELDS],
   properties: {
     outcome: { type: "string", enum: [...OUTCOMES] },
     summary: { type: "string", minLength: 1, maxLength: 2_000 },
@@ -62,6 +70,16 @@ export const LANE_OUTCOME_SCHEMA = Object.freeze({
       type: "array",
       maxItems: 32,
       items: { type: "string", minLength: 1, maxLength: 512 }
+    },
+    commitRefs: {
+      type: "array",
+      maxItems: 64,
+      items: { type: "string", pattern: "^[a-fA-F0-9]{7,64}$" }
+    },
+    configChanges: {
+      type: "array",
+      maxItems: 64,
+      items: { type: "string", minLength: 1, maxLength: 256 }
     },
     controllerRequest: {
       anyOf: [
@@ -104,19 +122,27 @@ function boundedList(value, label, maximumItems) {
   )));
 }
 
-function artifactList(value) {
-  const artifacts = boundedList(value, "artifactRefs", 64);
-  for (const artifact of artifacts) {
-    const normalized = artifact.replaceAll("\\", "/");
+function workspacePathList(value, label) {
+  const paths = boundedList(value, label, 64);
+  for (const candidate of paths) {
+    const normalized = candidate.replaceAll("\\", "/");
     if (
       path.posix.isAbsolute(normalized)
-      || path.win32.isAbsolute(artifact)
+      || path.win32.isAbsolute(candidate)
       || normalized.split("/").includes("..")
     ) {
-      throw new TypeError("Lane artifact references must be workspace-relative paths.");
+      throw new TypeError(`Lane ${label} must contain workspace-relative paths.`);
     }
   }
-  return artifacts;
+  return paths;
+}
+
+function commitList(value) {
+  const commits = boundedList(value, "commitRefs", 64);
+  if (commits.some((commit) => !/^[a-f0-9]{7,64}$/iu.test(commit))) {
+    throw new TypeError("Lane commitRefs must contain hexadecimal Git commit references.");
+  }
+  return commits;
 }
 
 function optionalText(value, label) {
@@ -152,8 +178,14 @@ export function parseLaneOutcome(source) {
     throw new TypeError("Lane structured outcome must be an object.");
   }
   const keys = Object.keys(value);
-  if (keys.some((key) => !ROOT_FIELDS.has(key)) || keys.length !== ROOT_FIELDS.size) {
-    throw new TypeError("Lane structured outcome fields do not match the required schema.");
+  const missing = [...REQUIRED_ROOT_FIELDS].filter((key) => !keys.includes(key)).sort();
+  const unknown = keys.filter((key) => !ROOT_FIELDS.has(key)).sort();
+  if (missing.length > 0 || unknown.length > 0) {
+    const diagnostics = [
+      missing.length > 0 ? `missing: ${missing.join(", ")}` : null,
+      unknown.length > 0 ? `unknown: ${unknown.join(", ")}` : null
+    ].filter(Boolean).join("; ");
+    throw new TypeError(`Lane structured outcome fields do not match the schema (${diagnostics}).`);
   }
   if (!OUTCOMES.includes(value.outcome)) {
     throw new TypeError("Lane structured outcome has an unsupported outcome.");
@@ -163,10 +195,26 @@ export function parseLaneOutcome(source) {
     summary: boundedText(value.summary, "summary", 2_000),
     workPerformed: boundedList(value.workPerformed, "workPerformed", 32),
     evidenceRefs: boundedList(value.evidenceRefs, "evidenceRefs", 64),
-    artifactRefs: artifactList(value.artifactRefs),
-    verification: boundedList(value.verification, "verification", 32),
-    controllerRequest: parseControllerRequest(value.controllerRequest),
-    stopReason: optionalText(value.stopReason, "stopReason")
+    artifactRefs: workspacePathList(
+      value.artifactRefs === undefined ? OPTIONAL_ROOT_DEFAULTS.artifactRefs : value.artifactRefs,
+      "artifactRefs"
+    ),
+    verification: boundedList(
+      value.verification === undefined ? OPTIONAL_ROOT_DEFAULTS.verification : value.verification,
+      "verification",
+      32
+    ),
+    commitRefs: commitList(
+      value.commitRefs === undefined ? OPTIONAL_ROOT_DEFAULTS.commitRefs : value.commitRefs
+    ),
+    configChanges: workspacePathList(
+      value.configChanges === undefined ? OPTIONAL_ROOT_DEFAULTS.configChanges : value.configChanges,
+      "configChanges"
+    ),
+    controllerRequest: parseControllerRequest(
+      value.controllerRequest ?? OPTIONAL_ROOT_DEFAULTS.controllerRequest
+    ),
+    stopReason: optionalText(value.stopReason ?? OPTIONAL_ROOT_DEFAULTS.stopReason, "stopReason")
   };
   if (result.outcome === "accomplished" && result.controllerRequest !== null) {
     throw new TypeError("An accomplished lane cannot request controller action.");
@@ -174,8 +222,12 @@ export function parseLaneOutcome(source) {
   if (result.outcome === "needs_controller" && result.controllerRequest === null) {
     throw new TypeError("A needs_controller outcome requires controllerRequest.");
   }
-  if (result.outcome === "blocked" && result.stopReason === null) {
-    throw new TypeError("A blocked outcome requires stopReason.");
+  if (
+    result.outcome === "blocked"
+    && result.stopReason === null
+    && result.controllerRequest === null
+  ) {
+    throw new TypeError("A blocked outcome requires stopReason or controllerRequest.");
   }
   return Object.freeze(result);
 }
