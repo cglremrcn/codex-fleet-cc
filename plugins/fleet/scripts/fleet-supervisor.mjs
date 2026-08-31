@@ -281,7 +281,12 @@ export function createControlPlane(options) {
         }));
         const lanes = await Promise.all(admissions);
         monitorActive();
-        return { schemaVersion: 1, background: true, lanes };
+        return {
+          schemaVersion: 1,
+          background: true,
+          lanes,
+          admissionIds: lanes.map((lane) => lane.admissionId)
+        };
       }
       if (method === "followUp") {
         options.onActivity?.();

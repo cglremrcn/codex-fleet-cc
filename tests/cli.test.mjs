@@ -11,6 +11,7 @@ import {
 } from "./upstream/fake-codex-fixture.mjs";
 import { runCli } from "../plugins/fleet/scripts/lib/cli.mjs";
 import { workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
+import { SupervisorRequestTimeoutError } from "../plugins/fleet/scripts/lib/supervisor-protocol.mjs";
 import { validateStartContract } from "../plugins/fleet/scripts/lib/start-contract.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -513,6 +514,133 @@ test("read-only start accepts a null confirmation reference", async (t) => {
 
   assert.equal(code, 0, stderr.join(""));
   assert.equal(JSON.parse(stdout.join("")).background, true);
+});
+
+test("start reconciles exact, absent, and partial state after a post-send timeout", async (t) => {
+  const scope = fixture(t);
+  const key = await workspaceKey(scope.workspace);
+  const raw = {
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    confirmationRef: null,
+    lanes: ["one", "two"].map((suffix) => ({
+      id: `timeout-${suffix}`,
+      role: "investigator",
+      label: `Inspect timeout ${suffix}`,
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      prompt: `Inspect bounded timeout surface ${suffix}.`,
+      priority: "normal",
+      authority: {
+        sandbox: "read-only",
+        network: "off",
+        process: { start: true, stopOwned: true }
+      }
+    }))
+  };
+  const contract = validateStartContract(raw);
+  const admittedAt = "2026-09-01T10:00:01.000Z";
+  const persisted = contract.lanes.map((lane, index) => ({
+    ...lane,
+    checkoutKey: lane.checkoutKey ?? key,
+    admissionId: `admission-${index + 1}`,
+    admissionSource: "fleet-supervisor",
+    admittedAt,
+    status: "running",
+    phase: "running"
+  }));
+
+  for (const [mode, lanes, expectedCode] of [
+    ["exact", persisted, 0],
+    ["absent", [], 5],
+    ["partial", persisted.slice(0, 1), 5]
+  ]) {
+    const stdout = [];
+    const stderr = [];
+    const code = await runCli(["start", "--stdin", "--json"], {
+      cwd: scope.workspace,
+      env: fixtureEnv(scope),
+      home: scope.root,
+      readStdin: async () => Buffer.from(JSON.stringify(raw)),
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+      dependencies: {
+        now: () => Date.parse("2026-09-01T10:00:00.000Z"),
+        ensureSupervisor: async () => ({ address: "memory", token: "token" }),
+        requestSupervisor: async () => {
+          throw new SupervisorRequestTimeoutError({
+            requestId: `request-${mode}`,
+            requestSent: true,
+            timeoutMs: 100
+          });
+        },
+        readStateWithoutCreating: async () => ({
+          schemaVersion: 1,
+          lanes,
+          updatedAt: admittedAt
+        })
+      }
+    });
+    const payload = JSON.parse(stdout.join(""));
+
+    assert.equal(code, expectedCode, mode);
+    assert.equal(stderr.join(""), "", mode);
+    assert.equal(payload.retrySafe, false, mode);
+    assert.equal(payload.admissionRecovered, mode === "exact", mode);
+    assert.deepEqual(
+      payload.admissionIds,
+      mode === "exact" ? ["admission-1", "admission-2"] : [],
+      mode
+    );
+  }
+});
+
+test("human timeout reconciliation warns against repeating start", async (t) => {
+  const scope = fixture(t);
+  const stdout = [];
+  const raw = {
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    confirmationRef: null,
+    lanes: [{
+      id: "timeout-human",
+      role: "investigator",
+      label: "Inspect timeout recovery",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      prompt: "Inspect the bounded timeout recovery surface.",
+      priority: "normal",
+      authority: {
+        sandbox: "read-only",
+        network: "off",
+        process: { start: true, stopOwned: true }
+      }
+    }]
+  };
+  const code = await runCli(["start", "--stdin"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify(raw)),
+    stdout: (text) => stdout.push(text),
+    stderr: () => undefined,
+    dependencies: {
+      now: () => Date.parse("2026-09-01T10:00:00.000Z"),
+      ensureSupervisor: async () => ({ address: "memory", token: "token" }),
+      requestSupervisor: async () => {
+        throw new SupervisorRequestTimeoutError({
+          requestId: "request-human",
+          requestSent: true,
+          timeoutMs: 100
+        });
+      },
+      readStateWithoutCreating: async () => ({ schemaVersion: 1, lanes: [], updatedAt: null })
+    }
+  });
+
+  assert.equal(code, 5);
+  assert.match(stdout.join(""), /run status/iu);
+  assert.match(stdout.join(""), /do not repeat start/iu);
 });
 
 test("database write authority requires confirmation before supervisor admission", async (t) => {

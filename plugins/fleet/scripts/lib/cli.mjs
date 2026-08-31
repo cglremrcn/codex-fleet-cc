@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { isTerminalStatus } from "./domain.mjs";
 import {
@@ -23,6 +24,7 @@ import {
 } from "./setup.mjs";
 import { previewSupportBundle, writeSupportBundle } from "./support-bundle.mjs";
 import {
+  SupervisorRequestTimeoutError,
   ensureSupervisor,
   requestSupervisor
 } from "./supervisor-protocol.mjs";
@@ -458,10 +460,63 @@ async function requestLiveSupervisor(context, method, params, io, dependencies) 
 
 async function runStart(contract, io, dependencies) {
   const context = await stateContext(contract.workspacePath, io);
-  const payload = await requestLiveSupervisor(context, "start", contract, io, dependencies);
+  const requestStartedAt = new Date((dependencies.now ?? Date.now)()).toISOString();
+  let payload;
+  try {
+    payload = await requestLiveSupervisor(context, "start", contract, io, dependencies);
+  } catch (error) {
+    if (!(error instanceof SupervisorRequestTimeoutError) || error.requestSent !== true) {
+      throw error;
+    }
+    const readState = dependencies.readStateWithoutCreating ?? readStateWithoutCreating;
+    const state = await readState(context.root);
+    const persistedById = new Map(state.lanes.map((lane) => [lane.id, lane]));
+    const matches = contract.lanes.map((lane) => {
+      const persisted = persistedById.get(lane.id);
+      const admittedAt = Date.parse(persisted?.admittedAt ?? "");
+      const exact = persisted
+        && persisted.id === lane.id
+        && persisted.role === lane.role
+        && persisted.label === lane.label
+        && persisted.model === lane.model
+        && persisted.effort === lane.effort
+        && persisted.checkoutKey === (lane.checkoutKey ?? context.key)
+        && isDeepStrictEqual(persisted.authority, lane.authority)
+        && typeof persisted.admissionId === "string"
+        && persisted.admissionId.length > 0
+        && Number.isFinite(admittedAt)
+        && admittedAt >= Date.parse(requestStartedAt);
+      return exact ? persisted : null;
+    }).filter(Boolean);
+    const recovered = matches.length === contract.lanes.length;
+    return {
+      exitCode: recovered ? EXIT_CODES.success : EXIT_CODES.outcomeUnknown,
+      payload: {
+        schemaVersion: 1,
+        background: true,
+        workspaceKey: context.key,
+        admissionRecovered: recovered,
+        retrySafe: false,
+        admissionIds: recovered ? matches.map((lane) => lane.admissionId) : [],
+        matchedLaneIds: matches.map((lane) => lane.id),
+        missingLaneIds: contract.lanes
+          .filter((lane) => !matches.some((match) => match.id === lane.id))
+          .map((lane) => lane.id),
+        requestId: error.requestId
+      }
+    };
+  }
   return {
     exitCode: EXIT_CODES.success,
-    payload: { ...payload, workspaceKey: context.key }
+    payload: {
+      ...payload,
+      workspaceKey: context.key,
+      admissionRecovered: false,
+      retrySafe: false,
+      admissionIds: (
+        payload.admissionIds ?? payload.lanes?.map((lane) => lane.admissionId) ?? []
+      ).filter((admissionId) => typeof admissionId === "string")
+    }
   };
 }
 
@@ -712,6 +767,11 @@ function humanSummary(command, payload) {
   }
   if (command === "status") {
     return renderPlainStatus(payload).trimEnd();
+  }
+  if (command === "start" && payload.retrySafe === false && payload.requestId) {
+    return payload.admissionRecovered
+      ? `Fleet recovered ${payload.admissionIds.length} admitted lane(s) after the response timeout.`
+      : "Fleet could not prove complete admission after the response timeout. Run status; do not repeat start.";
   }
   if (command === "export") {
     return payload.written

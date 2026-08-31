@@ -29,6 +29,17 @@ const REQUEST_FIELDS = new Set([
   "params"
 ]);
 
+export class SupervisorRequestTimeoutError extends Error {
+  constructor({ requestId, requestSent, timeoutMs }) {
+    super("Supervisor response timed out after the request was sent; do not retry blindly.");
+    this.name = "SupervisorRequestTimeoutError";
+    this.code = "SUPERVISOR_RESPONSE_TIMEOUT";
+    this.requestId = requestId;
+    this.requestSent = requestSent;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 function assertAbsoluteDirectory(value) {
   if (typeof value !== "string" || !path.isAbsolute(value)) {
     throw new TypeError("Supervisor data directory must be absolute.");
@@ -469,6 +480,7 @@ export async function requestSupervisor(options = {}) {
     const socket = net.createConnection(options.address);
     let buffered = Buffer.alloc(0);
     let settled = false;
+    let requestSent = false;
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
@@ -478,11 +490,13 @@ export async function requestSupervisor(options = {}) {
       else resolve(value);
     };
     const timer = setTimeout(
-      () => finish(new Error("Supervisor request timed out.")),
+      () => finish(new SupervisorRequestTimeoutError({ requestId, requestSent, timeoutMs })),
       timeoutMs
     );
     timer.unref?.();
-    socket.once("connect", () => socket.write(serialized));
+    socket.once("connect", () => socket.write(serialized, () => {
+      requestSent = true;
+    }));
     socket.once("error", (error) => finish(error));
     socket.on("data", (chunk) => {
       buffered = Buffer.concat([buffered, chunk]);

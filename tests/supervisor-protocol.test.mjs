@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   MAX_SUPERVISOR_MESSAGE_BYTES,
+  SupervisorRequestTimeoutError,
   createSupervisorServer,
   ensureSupervisor,
   requestSupervisor,
@@ -62,6 +63,44 @@ test("authenticated local supervisor accepts only its workspace and token", asyn
     method: "ping",
     params: {}
   }), /workspace mismatch/i);
+});
+
+test("post-send timeout exposes immutable request acceptance metadata", async (t) => {
+  const dataDir = makeTempDir("fleet-supervisor-timeout-");
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const paths = supervisorPaths({ dataDir, workspaceKey: WORKSPACE_KEY });
+  let acceptedRequest = null;
+  const server = await createSupervisorServer({
+    ...paths,
+    workspaceKey: WORKSPACE_KEY,
+    token: TOKEN,
+    handleRequest: async (request) => {
+      acceptedRequest = request;
+      return new Promise(() => undefined);
+    }
+  });
+  t.after(() => server.close());
+
+  await assert.rejects(
+    requestSupervisor({
+      address: server.address,
+      workspaceKey: WORKSPACE_KEY,
+      token: TOKEN,
+      method: "start",
+      params: { lanes: [] },
+      requestId: "request-timeout-1",
+      timeoutMs: 100
+    }),
+    (error) => {
+      assert.equal(error instanceof SupervisorRequestTimeoutError, true);
+      assert.equal(error.code, "SUPERVISOR_RESPONSE_TIMEOUT");
+      assert.equal(error.requestId, "request-timeout-1");
+      assert.equal(error.requestSent, true);
+      assert.equal(error.timeoutMs, 100);
+      return true;
+    }
+  );
+  assert.equal(acceptedRequest.requestId, "request-timeout-1");
 });
 
 test("supervisor protocol rejects oversized requests before dispatch", async (t) => {
