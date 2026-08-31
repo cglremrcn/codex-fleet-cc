@@ -67,7 +67,7 @@ cannot change. `Tab` displays the focused panel in brackets. `Enter` or `m` open
 thread; type directly and press `Enter` to send. `Ctrl+G` closes that session back to Fleet, then `q` or
 `Esc` returns to Claude Code. Use `h` or `F1` when `?` is awkward on a Turkish keyboard. `p` pauses or
 resumes KITE and shows an explicit notice; completed lanes visibly move while awaiting verification,
-while verified, blocked, failed, and unknown states remain locked.
+while verified, blocked, failed, interrupted, and unknown states remain locked.
 
 ## Desktop Browser or Computer Use is missing in a lane
 

@@ -157,7 +157,7 @@ test("Codex lane agent accepts one immutable contract and only calls Fleet CLI",
   assert.match(source, /already-granted authority/i);
   assert.match(source, /Ctrl\+G/i);
   assert.match(source, /poll.*status.*result/is);
-  assert.match(source, /complete.*verified.*blocked.*failed.*cancelled.*outcome_unknown/is);
+  assert.match(source, /complete.*verified.*blocked.*failed.*cancelled.*interrupted.*outcome_unknown/is);
   assert.doesNotMatch(source, /curl|Invoke-WebRequest|Start-Process/);
 });
 

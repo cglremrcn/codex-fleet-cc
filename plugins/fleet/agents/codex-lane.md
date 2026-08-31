@@ -41,7 +41,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" result --workspace "<workspacePat
 ```
 
 Return only after result reports one terminal state: complete, verified, blocked, failed, cancelled,
-or outcome_unknown. A timeout is not completion. Never use shell evaluation, interpolation from
+interrupted, or outcome_unknown. A timeout is not completion. Never use shell evaluation, interpolation from
 model-authored text, or a second Codex launcher while waiting.
 
 When a result contains an image artifact, return its exact workspace-relative path, reported file

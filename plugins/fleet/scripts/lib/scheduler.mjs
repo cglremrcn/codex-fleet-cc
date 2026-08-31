@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 
 import { normalizeAuthority } from "./authority.mjs";
 import { createLane } from "./domain.mjs";
@@ -15,8 +17,10 @@ const TERMINAL_STATUSES = new Set([
   "blocked",
   "failed",
   "cancelled",
+  "interrupted",
   "outcome_unknown"
 ]);
+const RECOVERABLE_ACTIVE_STATUSES = new Set(["queued", "starting", "running"]);
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 
 function defaultClock() {
@@ -117,6 +121,48 @@ function persistedControllerRequest(value) {
   });
 }
 
+function defaultObserveWorkspace(workspacePath, checkedAt) {
+  if (typeof workspacePath !== "string" || !path.isAbsolute(workspacePath)) {
+    return Object.freeze({ dirty: null, checkedAt: null });
+  }
+  const result = spawnSync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+    cwd: workspacePath,
+    shell: false,
+    timeout: 2_000,
+    maxBuffer: 65_536,
+    windowsHide: true,
+    encoding: "utf8"
+  });
+  return Object.freeze({
+    dirty: result.status === 0 && result.error === undefined
+      ? result.stdout.trim().length > 0
+      : null,
+    checkedAt
+  });
+}
+
+function collectWorkspaceObservation(records, options = {}) {
+  const needsObservation = records.some((record) => (
+    RECOVERABLE_ACTIVE_STATUSES.has(record?.status)
+  ));
+  if (!needsObservation) {
+    const prior = options.workspaceObservation;
+    return Object.freeze({
+      dirty: typeof prior?.dirty === "boolean" ? prior.dirty : null,
+      checkedAt: typeof prior?.checkedAt === "string" ? prior.checkedAt : null
+    });
+  }
+  const checkedAt = new Date(options.clock.now()).toISOString();
+  const observed = (options.observeWorkspace ?? defaultObserveWorkspace)(
+    options.workspacePath,
+    checkedAt
+  );
+  return Object.freeze({
+    dirty: typeof observed?.dirty === "boolean" ? observed.dirty : null,
+    checkedAt: typeof observed?.checkedAt === "string" ? observed.checkedAt : checkedAt
+  });
+}
+
 function persistedOutcomeDiagnostics(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return Object.freeze({
@@ -193,7 +239,9 @@ function hydratePersistedRecord(record, sequence, clock) {
   const originalStatus = record.status;
   const status = TERMINAL_STATUSES.has(originalStatus)
     ? originalStatus
-    : hasExternalEffect(authority) ? "outcome_unknown" : "failed";
+    : RECOVERABLE_ACTIVE_STATUSES.has(originalStatus)
+      ? "interrupted"
+      : hasExternalEffect(authority) ? "outcome_unknown" : "failed";
   return {
     id: validated.id,
     role: validated.role,
@@ -257,6 +305,13 @@ export function recoverPersistedRecords(records, options = {}) {
     throw new TypeError("Scheduler initial records must be an array.");
   }
   const clock = { now: options.now ?? Date.now };
+  const workspaceObservation = collectWorkspaceObservation(records, {
+    clock,
+    workspacePath: options.workspacePath,
+    workspaceObservation: options.workspaceObservation,
+    observeWorkspace: options.observeWorkspace
+  });
+  options.onWorkspaceObservation?.(workspaceObservation);
   const seen = new Set();
   return Object.freeze(records.map((record, index) => {
     const item = hydratePersistedRecord(record, index + 1, clock);
@@ -275,7 +330,16 @@ function sortQueue(left, right) {
 }
 
 class FleetScheduler {
-  constructor({ runtime, store, limits, clock, workspacePath, initialRecords }) {
+  constructor({
+    runtime,
+    store,
+    limits,
+    clock,
+    workspacePath,
+    workspaceObservation,
+    observeWorkspace,
+    initialRecords
+  }) {
     assertDependency(
       runtime,
       ["startLane", "continueLane", "resumeLane", "inspectLane", "interruptLane"],
@@ -295,6 +359,12 @@ class FleetScheduler {
     this.lastStartedAt = null;
     this.drainPromise = null;
     this.workspacePath = workspacePath ?? null;
+    this.workspaceObservation = collectWorkspaceObservation(initialRecords ?? [], {
+      clock,
+      workspacePath: this.workspacePath,
+      workspaceObservation,
+      observeWorkspace
+    });
     this.hydrate(initialRecords ?? []);
   }
 
@@ -411,9 +481,9 @@ class FleetScheduler {
     if (!original) {
       throw new Error(`Retry source is not in scheduler history: ${item.retryOf}.`);
     }
-    if (original.status === "outcome_unknown" && !item.reconciliationRef) {
+    if (["outcome_unknown", "interrupted"].includes(original.status) && !item.reconciliationRef) {
       throw new Error(
-        `Lane ${item.retryOf} has an unknown external outcome; reconciliation evidence is required.`
+        `Lane ${item.retryOf} requires reconciliation evidence before retry.`
       );
     }
   }
@@ -803,7 +873,8 @@ class FleetScheduler {
         this.queue.slice().sort(sortQueue).map((item) => publicRecord(item, "queued"))
       ),
       active: Object.freeze([...this.active.values()].map((item) => publicRecord(item))),
-      history: Object.freeze([...this.history.values()].map((item) => publicRecord(item)))
+      history: Object.freeze([...this.history.values()].map((item) => publicRecord(item))),
+      workspaceObservation: this.workspaceObservation
     });
   }
 
@@ -819,6 +890,8 @@ export function createScheduler(options = {}) {
     limits: options.limits,
     clock: options.clock ?? defaultClock(),
     workspacePath: options.workspacePath,
+    workspaceObservation: options.workspaceObservation,
+    observeWorkspace: options.observeWorkspace,
     initialRecords: options.initialRecords
   });
 }

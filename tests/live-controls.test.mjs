@@ -194,7 +194,7 @@ test("a fresh supervisor reconciles an interrupted read-only lane", async (t) =>
   scope.manifests.push(scope.manifest);
 
   const recovered = await request(scope, "result", { laneId: "crash-recovery" });
-  assert.equal(recovered.status, "failed");
+  assert.equal(recovered.status, "interrupted");
   assert.match(recovered.exitReason, /previous fleet supervisor ended/iu);
 });
 

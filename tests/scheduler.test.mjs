@@ -657,20 +657,24 @@ test("unknown external outcomes block retry until reconciliation evidence exists
   assert.doesNotMatch(JSON.stringify(store.writes), /Run send-original/);
 });
 
-test("interrupted mutable capability lanes become external unknown outcomes", () => {
+test("supervisor loss recovers active mutable lanes as interrupted with one workspace observation", async () => {
   const cases = [
     { id: "image-interrupted", image: { generate: true, edit: false } },
     { id: "browser-interrupted", browser: { inspect: true, mutate: true } },
     { id: "database-interrupted", database: { read: true, write: true } }
   ];
-
-  for (const { id, ...grants } of cases) {
-    const recovered = createScheduler({
-      runtime: recordingRuntime(),
-      store: memoryStore(),
-      limits: { staggerMs: 0 },
-      clock: deterministicClock(),
-      initialRecords: [{
+  let observationCalls = 0;
+  const scheduler = createScheduler({
+    runtime: recordingRuntime(),
+    store: memoryStore(),
+    limits: { staggerMs: 0 },
+    clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    observeWorkspace() {
+      observationCalls += 1;
+      return { dirty: true, checkedAt: "2026-08-19T10:00:02.000Z" };
+    },
+    initialRecords: cases.map(({ id, ...grants }) => ({
         ...writer(id, "mutable-surface", {
           authority: {
             sandbox: "workspace-write",
@@ -681,14 +685,32 @@ test("interrupted mutable capability lanes become external unknown outcomes", ()
         }),
         status: "running",
         phase: "running",
+        threadId: `thread-${id}`,
         enqueuedAt: "2026-08-19T10:00:00.000Z",
         startedAt: "2026-08-19T10:00:01.000Z"
-      }]
-    }).snapshot().history[0];
+    }))
+  });
+  const snapshot = scheduler.snapshot();
+
+  for (const { id } of cases) {
+    const recovered = snapshot.history.find((lane) => lane.id === id);
 
     assert.equal(recovered.externalEffect, true, id);
-    assert.equal(recovered.status, "outcome_unknown", id);
+    assert.equal(recovered.status, "interrupted", id);
+    assert.equal(recovered.threadId, `thread-${id}`, id);
+    assert.match(recovered.exitReason, /supervisor ended/iu, id);
   }
+  assert.deepEqual(snapshot.workspaceObservation, {
+    dirty: true,
+    checkedAt: "2026-08-19T10:00:02.000Z"
+  });
+  assert.equal(observationCalls, 1);
+  await assert.rejects(
+    scheduler.enqueue(writer("retry-without-reconciliation", "mutable-surface", {
+      retryOf: "image-interrupted"
+    })),
+    /reconciliation evidence/iu
+  );
 });
 
 test("state persistence failure rolls back admission before Codex starts", async () => {

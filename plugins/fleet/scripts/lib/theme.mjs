@@ -31,6 +31,7 @@ export const STATUS_PRESENTATION = Object.freeze({
   blocked: { label: "BLOCKED", unicode: "!", ascii: "!", tone: "running" },
   failed: { label: "FAILED", unicode: "×", ascii: "X", tone: "danger" },
   cancelled: { label: "CANCELLED", unicode: "–", ascii: "-", tone: "muted" },
+  interrupted: { label: "INTERRUPTED", unicode: "‖", ascii: "I", tone: "running" },
   outcome_unknown: { label: "OUTCOME UNKNOWN", unicode: "?", ascii: "?", tone: "danger" }
 });
 

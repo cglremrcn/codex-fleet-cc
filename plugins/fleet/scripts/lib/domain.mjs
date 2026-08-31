@@ -6,6 +6,7 @@ export const LANE_STATUSES = Object.freeze([
   "blocked",
   "failed",
   "cancelled",
+  "interrupted",
   "outcome_unknown"
 ]);
 
@@ -15,6 +16,7 @@ export const TERMINAL_STATUSES = Object.freeze([
   "blocked",
   "failed",
   "cancelled",
+  "interrupted",
   "outcome_unknown"
 ]);
 
@@ -33,13 +35,14 @@ export const LANE_ROLES = Object.freeze([
 const LANE_ROLE_SET = new Set(LANE_ROLES);
 
 const TRANSITIONS = Object.freeze({
-  queued: new Set(["running", "blocked", "failed", "cancelled"]),
-  running: new Set(["complete", "blocked", "failed", "cancelled", "outcome_unknown"]),
+  queued: new Set(["running", "blocked", "failed", "cancelled", "interrupted"]),
+  running: new Set(["complete", "blocked", "failed", "cancelled", "interrupted", "outcome_unknown"]),
   complete: new Set(["verified"]),
   verified: new Set(),
   blocked: new Set(["queued", "failed", "cancelled"]),
   failed: new Set(["queued", "cancelled"]),
   cancelled: new Set(),
+  interrupted: new Set(["complete", "failed", "cancelled", "outcome_unknown"]),
   outcome_unknown: new Set(["queued", "complete", "failed", "cancelled"])
 });
 

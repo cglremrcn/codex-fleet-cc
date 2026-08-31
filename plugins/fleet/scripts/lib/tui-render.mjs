@@ -20,6 +20,7 @@ const STATUS_EXPLANATIONS = Object.freeze({
   blocked: "Progress needs an input or capability that is not available.",
   failed: "The lane stopped without a usable result.",
   cancelled: "The owned lane turn was cancelled.",
+  interrupted: "The supervisor ended; controller reconciliation is required before retry.",
   outcome_unknown: "An external effect is unresolved; blind retry is blocked."
 });
 
@@ -233,7 +234,7 @@ export function buildViewModel(snapshot, selection, panel = "detail") {
     lanes.filter((lane) => lane.status === status).length
   ]));
   totals.active = totals.queued + totals.running;
-  totals.attention = totals.blocked + totals.failed + totals.outcome_unknown;
+  totals.attention = totals.blocked + totals.failed + totals.interrupted + totals.outcome_unknown;
 
   return deepFreeze({
     workspace: {
@@ -459,6 +460,7 @@ function kiteFeatures(status, frame, useUnicode) {
       blocked: ["-", "-", "!", "!"],
       failed: ["x", "x", "-", "X"],
       cancelled: [".", ".", "-", "-"],
+      interrupted: ["-", "-", "|", "I"],
       outcome_unknown: ["?", "?", ".", "?"]
     };
     return states[status] ?? states.blocked;
@@ -474,6 +476,7 @@ function kiteFeatures(status, frame, useUnicode) {
     blocked: ["─", "─", "!", "!"],
     failed: ["×", "×", "─", "×"],
     cancelled: ["·", "·", "─", "–"],
+    interrupted: ["─", "─", "│", "‖"],
     outcome_unknown: ["?", "?", "·", "?"]
   };
   return states[status] ?? states.blocked;
@@ -513,7 +516,12 @@ export function renderFleetMark(view, preferences = {}) {
       `\\        ${mouth}        /`,
       `\\===    ${core}    ===/`
     ];
-  const posture = (status === "blocked" || status === "failed" || status === "outcome_unknown")
+  const posture = (
+    status === "blocked"
+    || status === "failed"
+    || status === "interrupted"
+    || status === "outcome_unknown"
+  )
     ? [orbits[0][0], center("╲             ╱", KITE_WIDTH), ...body]
     : [...orbits[frame], ...body];
   return posture.map((line) => center(line, KITE_WIDTH));

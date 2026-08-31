@@ -62,7 +62,7 @@ function safeTerminal(value = {}) {
 function selectedFormationFrame(status, tick) {
   if (MOTION_STATUSES.has(status)) return tick % 4;
   if (status === "blocked") return 3;
-  if (status === "failed" || status === "outcome_unknown") return 0;
+  if (status === "failed" || status === "interrupted" || status === "outcome_unknown") return 0;
   return 2;
 }
 

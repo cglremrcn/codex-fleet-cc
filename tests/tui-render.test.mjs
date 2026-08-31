@@ -160,6 +160,29 @@ test("semantic status survives monochrome output without color", () => {
   assert.doesNotMatch(output, /[┌┐└┘│─━▶]/u);
 });
 
+test("interrupted lanes are visible controller-attention states", () => {
+  const view = viewFixture({
+    selection: "lost-supervisor",
+    snapshot: {
+      lanes: [lane({
+        id: "lost-supervisor",
+        status: "interrupted",
+        phase: "interrupted"
+      })]
+    }
+  });
+  const output = stripAnsi(renderScreen(
+    view,
+    { columns: 120, rows: 28 },
+    plainPreferences({ unicode: false })
+  ));
+
+  assert.equal(view.totals.interrupted, 1);
+  assert.equal(view.totals.attention, 1);
+  assert.match(output, /INTERRUPTED/iu);
+  assert.match(output, /controller reconciliation/iu);
+});
+
 test("display width handles ANSI, wide glyphs, combining marks, and emoji", () => {
   assert.equal(displayWidth("\u001b[36mFLEET\u001b[0m"), 5);
   assert.equal(displayWidth("İ"), 1);
