@@ -39,6 +39,9 @@ it exists only to verify the terminal handoff.
 7. Fleet Console reads that state. Viewing does not start a model turn.
 8. A fresh verifier can promote `COMPLETE` to `VERIFIED` only with evidence references.
 
+Claude background agents/tasks and Fleet lanes are distinct background systems. Fleet admission returns
+before a lane finishes; Claude's background-task manager neither displays nor owns the Fleet supervisor.
+
 ## Authority model
 
 Role names are descriptive. They grant nothing. Filesystem writes, network, browser inspection,
@@ -55,6 +58,16 @@ has an active owned turn.
 
 Claude controls lanes only through Fleet's start, status, result, follow-up and cancellation-preview
 surface. A follow-up resumes the persisted Codex thread without changing its admitted authority.
+
+The adapter sends an explicit app-server sandbox policy on thread start/resume and every turn. Read-only
+lanes use `readOnly`, full workspace read access and `networkAccess: false`; workspace writers receive
+only their workspace root and the contract's exact network boolean. The Windows build probe uses the
+sandboxed `command/exec` exact argv surface with a 10-second command timeout. It has no unsandboxed
+fallback and does not claim that an unavailable probe proves build capability.
+
+Supervisor requests carry immutable request IDs. A post-send timeout is not redispatched: start reads
+persisted state and proves all admission IDs or returns unknown. Recovery maps formerly non-terminal
+persisted lanes to `INTERRUPTED`, preserves their thread/evidence, and requires reconciliation.
 
 ## State and privacy
 
@@ -84,6 +97,16 @@ The renderer is pure. Wide, compact, narrow, monochrome, reduced-motion and scre
 share one view model. KITE motion is derived from lane state and capped at four frames per second.
 `COMPLETE` remains subtly active while awaiting independent verification; `VERIFIED` and attention
 states are locked. Panel focus and motion changes always produce visible text feedback.
+
+Snapshot refresh is bounded to 750 ms and never blocks local navigation or quit. A late read cannot
+replace a newer generation; the renderer keeps the last good snapshot and marks stale observation.
+
+## Installation version boundary
+
+Updates have two surfaces: the installed plugin package and the owned integration runtime/launcher.
+SessionStart observes both but changes neither without confirmation. Setup stages and atomically swaps
+the runtime surface; the update is complete only when plugin metadata, ownership manifest and masthead
+runtime version agree.
 
 ## Verification boundary
 

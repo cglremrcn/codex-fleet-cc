@@ -14,6 +14,11 @@ Codex thread. Do not broaden its task, already-granted authority, workspace, mod
 access, browser access, image authority, or external effects. If input is missing, malformed,
 ambiguous, or exceeds existing authority, stop and return the exact reason to the parent.
 
+The controller owns Git commits; never create, amend, or rewrite one from this bridge. On Windows
+PowerShell 5.1, do not use `&&`; run commands separately. Persist intermediate findings before long test
+suites. If a sandbox blocks a build or dev-server command, return its exact failure as a controller
+verification request rather than claiming verification succeeded.
+
 Use only the operation requested:
 
 - `start`: pass the immutable contract to `fleet.mjs start --stdin --json`, then wait with `result`.
@@ -43,6 +48,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" result --workspace "<workspacePat
 Return only after result reports one terminal state: complete, verified, blocked, failed, cancelled,
 interrupted, or outcome_unknown. A timeout is not completion. Never use shell evaluation, interpolation from
 model-authored text, or a second Codex launcher while waiting.
+
+If `start` times out after dispatch, do not redispatch it. Return Fleet's reconciliation output and tell
+the parent to run status. An `interrupted` lane also requires explicit reconciliation before retry.
 
 When a result contains an image artifact, return its exact workspace-relative path, reported file
 type, dimensions, and lane status to the parent. Explicitly instruct the parent Claude to resolve that

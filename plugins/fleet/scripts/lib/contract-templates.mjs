@@ -1,5 +1,7 @@
 import path from "node:path";
 
+import { executionPostureLines } from "./lane-outcome.mjs";
+
 const DEFINITIONS = Object.freeze([
   Object.freeze({
     name: "research",
@@ -29,9 +31,10 @@ const DEFINITIONS = Object.freeze([
 
 const BY_NAME = new Map(DEFINITIONS.map((definition) => [definition.name, definition]));
 
-const EXECUTION_POSTURE = "Execution posture: The admitted Fleet contract is authorization to execute "
-  + "and verify this objective now; do not stop at a plan or ask for redundant approval. Never widen "
-  + "authority; report genuine missing authority or input to the controller.";
+const EXECUTION_POSTURE = [
+  "Execution posture:",
+  ...executionPostureLines().map((line) => `- ${line}`)
+].join("\n");
 
 function authority({ writable = false, imageGenerate = false } = {}) {
   return {

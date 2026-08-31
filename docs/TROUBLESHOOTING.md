@@ -48,6 +48,19 @@ Do not retry it. The prior request may already have sent, deployed, paid or dele
 Inspect the external system, record reconciliation evidence, then decide whether a new operation is
 safe.
 
+If `start` reports a post-send timeout, do not repeat or redispatch `start`. The supervisor may have
+accepted it. Fleet compares persisted admission IDs and reports whether every requested lane was
+recovered. Inspect without creating work:
+
+```bash
+node plugins/fleet/scripts/fleet.mjs status --workspace . --all
+node plugins/fleet/scripts/fleet.mjs result --workspace . --lane <lane-id> --summary
+```
+
+An `interrupted` lane means the prior supervisor ended while work was non-terminal. Preserve its thread
+and evidence, inspect workspace-level dirty-state observation, then attach an explicit reconciliation
+reference before retry. Do not relabel it failed or assume its mutations belong to that lane.
+
 ## Cancellation is denied
 
 Fleet cancels only an owned Codex turn or a process whose PID and process-start identity still
@@ -68,6 +81,8 @@ thread; type directly and press `Enter` to send. `Ctrl+G` closes that session ba
 `Esc` returns to Claude Code. Use `h` or `F1` when `?` is awkward on a Turkish keyboard. `p` pauses or
 resumes KITE and shows an explicit notice; completed lanes visibly move while awaiting verification,
 while verified, blocked, failed, interrupted, and unknown states remain locked.
+For a long list, `PageUp`/`PageDown` move one visible page and `Home`/`End` jump to the first/last
+filtered lane. The selected lane ID remains stable when attention sorting refreshes the list.
 
 ## Desktop Browser or Computer Use is missing in a lane
 
@@ -77,17 +92,37 @@ non-mutating capability smoke. If the exact tool is absent, Fleet must stop or r
 Claude fallback; it must not substitute Playwright, Chrome DevTools, generic web search, or a fresh browser
 profile and claim the same signed-in session.
 
+Playwright profile concurrency is an external limitation: only one mutable operator may own a profile
+at a time. A separate Playwright profile is not evidence of the same signed-in session. A stale MCP entry
+can remain visible after its server or tool changed; reload plugins/restart the host, then prove the exact
+callable surface with a fresh lane-local smoke.
+
 ## Status shows no lanes
 
 Status is workspace-scoped. Confirm the `--workspace` path and check the platform data directory.
 Do not copy another workspace's state file. Run doctor to distinguish absent state from unreadable
 or corrupt state.
 
+`status --all` removes the default human display limit. Use repeatable `--status`, a `--since` duration,
+or `--limit 1..256` to narrow it. JSON status has no implicit limit. Use `result --summary` for a readable
+terminal result or `result --pretty` for decoded structured JSON.
+
+## A contract file is rejected
+
+`start --contract` accepts one regular, non-symbolic-link file containing exactly one UTF-8 JSON object
+up to 128 KiB. Re-save the file explicitly as UTF-8; do not paste shell text around the JSON. Writes,
+image work, browser/database mutation, or external effects require a non-empty root `confirmationRef`
+from the visible approval. Approval text inside a lane prompt is not authority.
+
 ## Codex or the broker is unavailable
 
 Run `codex --version` and confirm the Codex CLI is authenticated in the same user session. Fleet
 uses the existing local Codex configuration; it does not accept a replacement API key. A protocol
 mismatch leaves read-only inspection available where safe but blocks new lane mutations.
+
+Fleet has two update surfaces: the installed plugin and the owned integration runtime. Reloading a newer
+plugin without accepting the setup upgrade can leave the old runtime active. Confirm the plugin version
+and the Fleet masthead version match; then run doctor. Do not copy runtime files manually.
 
 ## A support bundle is needed
 

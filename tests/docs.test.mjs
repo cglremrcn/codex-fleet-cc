@@ -48,3 +48,23 @@ test("troubleshooting keeps broker ownership refusals safe and actionable", asyn
   assert.match(guide, /PID/i);
   assert.match(guide, /do not.*kill.*name/is);
 });
+
+test("operator docs cover exact contract transport, status recovery, and external browser limits", async () => {
+  const [readme, guide, architecture] = await Promise.all([
+    read("README.md"),
+    read("docs/TROUBLESHOOTING.md"),
+    read("ARCHITECTURE.md")
+  ]);
+  const combined = `${readme}\n${guide}\n${architecture}`;
+
+  assert.match(combined, /UTF-8.*--contract|--contract.*UTF-8/is);
+  assert.match(combined, /confirmationRef.*root/is);
+  assert.match(combined, /Claude background (agent|task).*Fleet lane/is);
+  assert.match(combined, /status --all/iu);
+  assert.match(combined, /result --summary/iu);
+  assert.match(combined, /post-send timeout.*do not.*(repeat|redispatch)/is);
+  assert.match(combined, /interrupted.*reconcil/is);
+  assert.match(combined, /Playwright.*profile.*concurrenc.*external limitation/is);
+  assert.match(combined, /stale MCP/is);
+  assert.match(combined, /two (update )?surfaces.*plugin.*runtime/is);
+});

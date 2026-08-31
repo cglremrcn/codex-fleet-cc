@@ -17,12 +17,20 @@ When an external mutation may have crossed the boundary but no terminal result w
 Never perform a blind retry after an unknown outcome. “No local response” is not proof that nothing
 happened remotely.
 
+A post-send timeout has unknown acceptance. Fleet reconciles the immutable admission against persisted
+admission IDs. If every lane matches, it reports recovered admission; otherwise it returns unknown.
+In either case, do not redispatch or repeat `start`; run read-only `status --all` and reconcile first.
+
 ## Broker or process interruption
 
 Read stored lane/thread state before starting anything. Reconnect to an existing owned thread when the
 runtime proves identity. Stop only an owned process whose recorded identifier and start identity match;
 never kill by broad name, port, glob, or unrelated PID. If ownership is uncertain, leave it running and
 report the ambiguity.
+
+Persisted `queued`, `starting`, or `running` work found after supervisor loss becomes `interrupted`, not
+failed. Preserve its thread and evidence. An interrupted lane requires controller reconciliation before
+any retry; workspace dirtiness is only a workspace-level observation and is not attributed to that lane.
 
 ## Capability denial
 

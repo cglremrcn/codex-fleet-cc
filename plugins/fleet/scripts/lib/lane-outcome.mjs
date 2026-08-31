@@ -4,6 +4,20 @@ import { redactText } from "./redaction.mjs";
 
 export const MAX_AUTOMATIC_CONTINUATIONS = 2;
 
+const EXECUTION_POSTURE_LINES = Object.freeze([
+  "This admitted Fleet contract is authorization from the controller for work inside its exact authority.",
+  "Execute and verify the work in this turn; do not stop at a plan or request redundant approval.",
+  "The controller owns Git commits; do not create, amend, or rewrite commits in a lane.",
+  "On Windows PowerShell 5.1, do not use `&&`; run each command separately and inspect each exit result.",
+  "Persist intermediate findings and evidence before long-running test suites so an interruption does not erase them.",
+  "If the sandbox blocks a build or dev-server command, report the exact blocked command and request controller verification; do not claim the check passed.",
+  "Never widen authority. If genuinely required authority or input is missing, report it in the structured outcome so the controller can decide."
+]);
+
+export function executionPostureLines() {
+  return [...EXECUTION_POSTURE_LINES];
+}
+
 const OUTCOMES = Object.freeze([
   "accomplished",
   "continue_within_authority",
@@ -385,9 +399,6 @@ export function buildExecutionPrompt(prompt) {
     prompt,
     "",
     "Fleet execution posture:",
-    "- This admitted contract is the controller's authorization for work inside its exact authority.",
-    "- Execute and verify the work in this turn; do not stop at a plan or request redundant approval.",
-    "- Never widen authority. If genuinely required authority or input is missing, report it in the",
-    "  structured outcome so the controller can decide."
+    ...executionPostureLines().map((line) => `- ${line}`)
   ].join("\n");
 }

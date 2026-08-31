@@ -72,3 +72,14 @@ test("every local Markdown link resolves inside the repository", async () => {
 
   assert.equal(report.ok, true, JSON.stringify(report.broken));
 });
+
+test("public guidance names scalable status and readable result commands", async () => {
+  const [readme, troubleshooting] = await Promise.all([
+    fs.readFile(path.join(ROOT, "README.md"), "utf8"),
+    fs.readFile(path.join(ROOT, "docs", "TROUBLESHOOTING.md"), "utf8")
+  ]);
+
+  assert.match(readme, /PageUp.*PageDown.*Home.*End/is);
+  assert.match(troubleshooting, /status --all/iu);
+  assert.match(troubleshooting, /result --summary/iu);
+});

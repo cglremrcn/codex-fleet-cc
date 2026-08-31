@@ -7,6 +7,10 @@ import {
   buildStartContractTemplate,
   listContractTemplates
 } from "../plugins/fleet/scripts/lib/contract-templates.mjs";
+import {
+  buildExecutionPrompt,
+  executionPostureLines
+} from "../plugins/fleet/scripts/lib/lane-outcome.mjs";
 
 const skillRoot = new URL(
   "../plugins/fleet/skills/codex-fleet-orchestrator/",
@@ -102,6 +106,30 @@ test("every init template executes immediately without a redundant approval gate
   }
 });
 
+test("writable templates and runtime turns share the hardened execution posture", () => {
+  const required = [
+    /controller owns Git commits/iu,
+    /PowerShell 5\.1.*do not use `&&`/isu,
+    /persist intermediate findings.*before long.*suite/isu,
+    /build or dev-server.*controller verification/isu
+  ];
+  const posture = executionPostureLines().join("\n");
+  const runtimePrompt = buildExecutionPrompt("Implement the bounded change.");
+  for (const pattern of required) {
+    assert.match(posture, pattern);
+    assert.match(runtimePrompt, pattern);
+  }
+  for (const name of ["implementation", "image-generation"]) {
+    const prompt = buildStartContractTemplate({
+      name,
+      objective: "Implement and verify the approved bounded change.",
+      workspacePath: process.cwd(),
+      confirmationRef: "user-approved"
+    }).lanes[0].prompt;
+    for (const pattern of required) assert.match(prompt, pattern, name);
+  }
+});
+
 test("orchestrator safely continues redundant approval gates in the same Codex task", async () => {
   const skill = await read("SKILL.md");
 
@@ -167,6 +195,8 @@ test("recovery prevents blind retry after an unknown outcome", async () => {
   assert.match(recovery, /reconcil/i);
   assert.match(recovery, /never.*blind.*retry/i);
   assert.match(recovery, /owned process/i);
+  assert.match(recovery, /post-send timeout.*do not.*redispatch/is);
+  assert.match(recovery, /interrupted.*reconciliation/is);
 });
 
 test("forward cases cover the mandatory fleet routing surfaces", async () => {
