@@ -30,6 +30,18 @@ test("successful CLI diagnostics may report status on stderr", () => {
   );
 });
 
+test("app-server smoke exposes only the sandboxed exact-argv command probe", async () => {
+  const source = await fs.readFile(
+    path.resolve("scripts", "run-app-server-smoke.mjs"),
+    "utf8"
+  );
+
+  assert.match(source, /--probe-command-exec/u);
+  assert.match(source, /command\/exec/u);
+  assert.match(source, /timeoutMs:\s*10_000/u);
+  assert.doesNotMatch(source, /process\/spawn/u);
+});
+
 test("live smoke refuses to touch the real account without exact opt-in", () => {
   assert.throws(() => parseLiveSmokeArguments([]), /--confirm-live-account/u);
   assert.throws(

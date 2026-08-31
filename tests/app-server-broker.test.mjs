@@ -140,3 +140,32 @@ test("broker marks a timed-out post-send request as acceptance unknown", async (
     await broker.close();
   }
 });
+
+test("broker preserves exact argv for sandboxed command execution", async (t) => {
+  const fake = startFakeCodex(t);
+  const broker = await createAppServerBroker({
+    codexCommand: fake.command,
+    cwd: fake.workspace,
+    env: fake.env
+  });
+  try {
+    const command = [process.execPath, "-e", "process.stdout.write(process.version)"];
+    const sandboxPolicy = {
+      type: "workspaceWrite",
+      writableRoots: [fake.workspace],
+      networkAccess: false
+    };
+    const result = await broker.request("command/exec", {
+      command,
+      cwd: fake.workspace,
+      sandboxPolicy,
+      timeoutMs: 10_000
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(fake.readState().lastCommandExec.command, command);
+    assert.deepEqual(fake.readState().lastCommandExec.sandboxPolicy, sandboxPolicy);
+  } finally {
+    await broker.close();
+  }
+});

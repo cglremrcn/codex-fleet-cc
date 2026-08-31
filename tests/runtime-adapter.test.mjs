@@ -63,6 +63,46 @@ test("one adapter reuses one broker for two read-only lanes", async (t) => {
     "item/reasoning/summaryPartAdded",
     "item/reasoning/textDelta"
   ]);
+  assert.deepEqual(fixture.readState().lastThreadStart.sandboxPolicy, {
+    type: "readOnly",
+    access: { type: "fullAccess" },
+    networkAccess: false
+  });
+  assert.deepEqual(fixture.readState().lastTurnStart.sandboxPolicy, {
+    type: "readOnly",
+    access: { type: "fullAccess" },
+    networkAccess: false
+  });
+});
+
+test("workspace-write live authority reaches thread and turn sandbox policies", async (t) => {
+  const fixture = startFakeCodex(t);
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-live-writer", {
+    authority: {
+      sandbox: "workspace-write",
+      network: "live",
+      process: { start: true, stopOwned: true }
+    }
+  }));
+  await waitFor(
+    () => runtime.inspectLane("lane-live-writer")?.status === "complete",
+    "live writer completion"
+  );
+  const expected = {
+    type: "workspaceWrite",
+    writableRoots: [fixture.workspace],
+    networkAccess: true
+  };
+
+  assert.deepEqual(fixture.readState().lastThreadStart.sandboxPolicy, expected);
+  assert.deepEqual(fixture.readState().lastTurnStart.sandboxPolicy, expected);
 });
 
 test("image-authorized lanes discover and inject the enabled imagegen skill", async (t) => {
@@ -455,6 +495,16 @@ test("a fresh runtime resumes a controller-blocked lane on the same thread", asy
 
   assert.equal(resumed, true);
   assert.equal(secondRuntime.inspectLane("lane-controller-resume").threadId, blocked.threadId);
+  assert.deepEqual(fixture.readState().lastThreadResume.sandboxPolicy, {
+    type: "readOnly",
+    access: { type: "fullAccess" },
+    networkAccess: false
+  });
+  assert.deepEqual(fixture.readState().lastTurnStart.sandboxPolicy, {
+    type: "readOnly",
+    access: { type: "fullAccess" },
+    networkAccess: false
+  });
 });
 
 test("runtime events are lane-scoped, monotonic, and omit reasoning deltas", async (t) => {

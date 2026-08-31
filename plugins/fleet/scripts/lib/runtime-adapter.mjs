@@ -49,6 +49,24 @@ function needsImageSkill(authority) {
   return authority?.image?.generate === true || authority?.image?.edit === true;
 }
 
+export function sandboxPolicyForLane(lane) {
+  if (!lane || typeof lane !== "object" || !path.isAbsolute(lane.workspacePath ?? "")) {
+    throw new TypeError("Lane sandbox policy requires an absolute workspace path.");
+  }
+  if (lane.authority?.sandbox === "workspace-write") {
+    return Object.freeze({
+      type: "workspaceWrite",
+      writableRoots: Object.freeze([path.resolve(lane.workspacePath)]),
+      networkAccess: lane.authority.network === "live"
+    });
+  }
+  return Object.freeze({
+    type: "readOnly",
+    access: Object.freeze({ type: "fullAccess" }),
+    networkAccess: false
+  });
+}
+
 function imageSkillCandidates(response) {
   const groups = Array.isArray(response?.data) ? response.data : [];
   return groups.flatMap((group) => Array.isArray(group?.skills) ? group.skills : []);
@@ -650,7 +668,7 @@ class FleetRuntime {
         cwd: lane.workspacePath,
         model: lane.model,
         approvalPolicy: "never",
-        sandbox: lane.authority.sandbox,
+        sandboxPolicy: sandboxPolicyForLane(lane),
         serviceName: "codex_fleet_cc",
         ephemeral: lane.ephemeral
       });
@@ -673,6 +691,9 @@ class FleetRuntime {
       );
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
+        cwd: lane.workspacePath,
+        approvalPolicy: "never",
+        sandboxPolicy: sandboxPolicyForLane(lane),
         input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
         effort: lane.effort,
@@ -712,6 +733,9 @@ class FleetRuntime {
     try {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
+        cwd: lane.workspacePath,
+        approvalPolicy: "never",
+        sandboxPolicy: sandboxPolicyForLane(lane),
         input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
         effort: lane.effort,
@@ -785,6 +809,9 @@ class FleetRuntime {
     try {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
+        cwd: lane.workspacePath,
+        approvalPolicy: "never",
+        sandboxPolicy: sandboxPolicyForLane(lane),
         input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
         effort: lane.effort,
@@ -876,7 +903,7 @@ class FleetRuntime {
       cwd: lane.workspacePath,
       model: lane.model,
       approvalPolicy: "never",
-      sandbox: lane.authority.sandbox
+      sandboxPolicy: sandboxPolicyForLane(lane)
     });
     return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
   }

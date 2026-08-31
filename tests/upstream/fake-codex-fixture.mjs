@@ -442,6 +442,8 @@ rl.on("line", (line) => {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
+        state.lastThreadStart = message.params;
+        saveState(state);
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
         send({ method: "thread/started", params: { thread: { id: thread.id } } });
@@ -486,6 +488,8 @@ rl.on("line", (line) => {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
+        state.lastThreadResume = message.params;
+        saveState(state);
         const thread = ensureThread(state, message.params.threadId);
         if (thread.ephemeral) {
           throw new Error("no rollout found for thread id " + thread.id);
@@ -599,11 +603,14 @@ rl.on("line", (line) => {
 	          clientId: null,
 	          content: message.params.input || []
 	        }]));
-	        state.lastTurnStart = {
+        state.lastTurnStart = {
 	          threadId: message.params.threadId,
 	          turnId,
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
+	          cwd: message.params.cwd ?? null,
+	          approvalPolicy: message.params.approvalPolicy ?? null,
+	          sandboxPolicy: message.params.sandboxPolicy ?? null,
 	          input: message.params.input || [],
 	          prompt,
 	          structuredOutcome: Boolean(
@@ -788,6 +795,13 @@ rl.on("line", (line) => {
 	        }
 	        break;
 	      }
+
+      case "command/exec": {
+        state.lastCommandExec = message.params;
+        saveState(state);
+        send({ id: message.id, result: { exitCode: 0, stdout: "probe-ok", stderr: "" } });
+        break;
+      }
 
 	      case "turn/steer": {
 	        const thread = ensureThread(state, message.params.threadId);
