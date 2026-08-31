@@ -6,8 +6,10 @@ import test from "node:test";
 
 import {
   assertDisposableWorkspace,
+  assertResumableLiveLane,
   buildLiveSmokeContracts,
   cleanupDisposableRun,
+  codexInvocation,
   commandOutput,
   parseLiveSmokeArguments,
   sanitizeLiveEvidence
@@ -27,6 +29,32 @@ test("successful CLI diagnostics may report status on stderr", () => {
   assert.equal(
     commandOutput({ stdout: "codex-cli 0.147.0\n", stderr: "ignored" }),
     "codex-cli 0.147.0"
+  );
+});
+
+test("Windows live diagnostics invoke the same resolved Codex wrapper as Fleet", () => {
+  assert.deepEqual(codexInvocation(
+    "C:\\Users\\Emc\\AppData\\Roaming\\npm\\codex.cmd",
+    ["login", "status"],
+    {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+    }
+  ), {
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      "C:\\Users\\Emc\\AppData\\Roaming\\npm\\codex.cmd login status"
+    ]
+  });
+  assert.throws(
+    () => codexInvocation("C:\\codex.cmd", ["status&whoami"], {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+    }),
+    /safe literal/iu
   );
 });
 
@@ -63,6 +91,25 @@ test("live smoke workspace must be a strict child of its disposable root", () =>
   assert.throws(
     () => assertDisposableWorkspace(path.join(root, "..", "outside"), root),
     /strict child/iu
+  );
+});
+
+test("live smoke reports the bounded lane state before attempting follow-up", () => {
+  assert.doesNotThrow(() => assertResumableLiveLane({
+    id: "live-investigator",
+    status: "complete",
+    phase: "complete"
+  }));
+  assert.throws(
+    () => assertResumableLiveLane({
+      id: "live-investigator",
+      status: "failed",
+      phase: "failed",
+      outcome: "blocked",
+      exitReason: "Requested model is unavailable.",
+      outcomeDiagnostics: { invalid: ["summary"] }
+    }),
+    /status=failed phase=failed outcome=blocked reason=Requested model is unavailable\. diagnostics=/u
   );
 });
 

@@ -2,10 +2,25 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { createRuntime } from "../plugins/fleet/scripts/lib/runtime-adapter.mjs";
+import {
+  createRuntime,
+  turnFailureReason
+} from "../plugins/fleet/scripts/lib/runtime-adapter.mjs";
 import { startFakeCodex } from "./fixtures/fake-codex-app-server.mjs";
 
 const WORKSPACE_KEY = "0123456789abcdef0123456789abcdef";
+
+test("turn failures retain a bounded safe app-server reason", () => {
+  assert.equal(
+    turnFailureReason({
+      status: "failed",
+      error: { message: "Requested model is unavailable for this account." }
+    }),
+    "Requested model is unavailable for this account."
+  );
+  assert.equal(turnFailureReason({ status: "failed", error: null }), "failed");
+  assert.equal(turnFailureReason({ status: "interrupted", error: null }), "interrupted");
+});
 
 function readOnlyContract(fixture, id, overrides = {}) {
   return {

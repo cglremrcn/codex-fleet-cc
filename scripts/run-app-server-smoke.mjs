@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { createAppServerBroker } from "../plugins/fleet/scripts/app-server-broker.mjs";
+import {
+  createAppServerBroker,
+  resolveExecutable
+} from "../plugins/fleet/scripts/app-server-broker.mjs";
+import { codexInvocation, commandOutput } from "./run-live-smoke.mjs";
 
 const args = process.argv.slice(2);
 const supportedArgs = new Set(["--probe-command-exec"]);
@@ -16,14 +20,17 @@ if (unknownArgs.length > 0) {
 const probeCommandExec = args.includes("--probe-command-exec");
 
 function detectCliVersion() {
-  const result = spawnSync("codex", ["--version"], {
+  const executable = resolveExecutable("codex", { env: process.env });
+  const invocation = codexInvocation(executable, ["--version"], { env: process.env });
+  const result = spawnSync(invocation.command, invocation.args, {
     encoding: "utf8",
+    env: process.env,
     maxBuffer: 65_536,
     shell: false,
     timeout: 2_000,
     windowsHide: true
   });
-  const version = typeof result.stdout === "string" ? result.stdout.trim().split(/\r?\n/u)[0] : "";
+  const version = commandOutput(result).split(/\r?\n/u)[0];
   return version.slice(0, 128) || "unknown";
 }
 

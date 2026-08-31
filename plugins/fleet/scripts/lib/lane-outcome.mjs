@@ -62,7 +62,7 @@ const DIAGNOSTIC_FIELDS = Object.freeze([...ROOT_FIELDS, "json"]);
 export const LANE_OUTCOME_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
-  required: [...REQUIRED_ROOT_FIELDS],
+  required: [...ROOT_FIELDS],
   properties: {
     outcome: { type: "string", enum: [...OUTCOMES] },
     summary: { type: "string", minLength: 1, maxLength: 2_000 },

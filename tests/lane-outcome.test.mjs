@@ -22,17 +22,12 @@ function payload(overrides = {}) {
   });
 }
 
-test("lane outcome schema is strict and requires evidence-bearing fields", () => {
+test("lane outcome wire schema requires every declared field for strict Structured Outputs", () => {
   assert.equal(LANE_OUTCOME_SCHEMA.type, "object");
   assert.equal(LANE_OUTCOME_SCHEMA.additionalProperties, false);
   assert.deepEqual(
     new Set(LANE_OUTCOME_SCHEMA.required),
-    new Set([
-      "outcome",
-      "summary",
-      "workPerformed",
-      "evidenceRefs"
-    ])
+    new Set(Object.keys(LANE_OUTCOME_SCHEMA.properties))
   );
 });
 

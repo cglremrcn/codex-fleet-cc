@@ -131,6 +131,16 @@ function runtimeBlocker(error) {
   };
 }
 
+export function turnFailureReason(turn) {
+  const status = typeof turn?.status === "string" && turn.status
+    ? turn.status
+    : "failed";
+  const message = typeof turn?.error?.message === "string"
+    ? turn.error.message.trim()
+    : "";
+  return redactText(message || status).slice(0, 2_000);
+}
+
 function copyLane(lane) {
   return Object.freeze({
     id: lane.id,
@@ -610,7 +620,7 @@ class FleetRuntime {
           {
             status,
             phase: status,
-            exitReason: turnStatus && status !== "complete" ? redactText(turnStatus) : null
+            exitReason: turnFailureReason(message.params?.turn)
           },
           `turn.${status}`,
           { threadId: lane.threadId, turnId: lane.turnId }
