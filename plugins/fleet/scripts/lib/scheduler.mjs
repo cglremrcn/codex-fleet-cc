@@ -117,6 +117,16 @@ function persistedControllerRequest(value) {
   });
 }
 
+function persistedOutcomeDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return Object.freeze({
+    code: "invalid_lane_outcome",
+    missing: persistedList(value.missing, 32),
+    unknown: persistedList(value.unknown, 32),
+    invalid: persistedList(value.invalid, 32)
+  });
+}
+
 function persistedPendingContinuation(value, recovering = false) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return Object.freeze({
@@ -157,6 +167,9 @@ function publicRecord(item, status = item.status) {
     evidenceRefs: item.evidenceRefs ?? Object.freeze([]),
     verification: item.verification ?? Object.freeze([]),
     artifactRefs: item.artifactRefs ?? Object.freeze([]),
+    commitRefs: item.commitRefs ?? Object.freeze([]),
+    configChanges: item.configChanges ?? Object.freeze([]),
+    outcomeDiagnostics: item.outcomeDiagnostics ?? null,
     controllerRequest: item.controllerRequest ?? null,
     stopReason: item.stopReason ?? null,
     automaticContinuations: item.automaticContinuations ?? 0,
@@ -222,6 +235,9 @@ function hydratePersistedRecord(record, sequence, clock) {
     evidenceRefs: persistedList(record.evidenceRefs),
     verification: persistedList(record.verification, 32),
     artifactRefs: persistedList(record.artifactRefs),
+    commitRefs: persistedList(record.commitRefs),
+    configChanges: persistedList(record.configChanges),
+    outcomeDiagnostics: persistedOutcomeDiagnostics(record.outcomeDiagnostics),
     controllerRequest: persistedControllerRequest(record.controllerRequest),
     stopReason: typeof record.stopReason === "string" ? record.stopReason.slice(0, 2_000) : null,
     automaticContinuations: Number.isSafeInteger(record.automaticContinuations)
@@ -351,6 +367,9 @@ class FleetScheduler {
       evidenceRefs: Object.freeze([]),
       verification: Object.freeze([]),
       artifactRefs: Object.freeze([]),
+      commitRefs: Object.freeze([]),
+      configChanges: Object.freeze([]),
+      outcomeDiagnostics: null,
       controllerRequest: null,
       stopReason: null,
       automaticContinuations: 0,
@@ -519,6 +538,9 @@ class FleetScheduler {
         item.evidenceRefs = started.evidenceRefs ?? Object.freeze([]);
         item.verification = started.verification ?? Object.freeze([]);
         item.artifactRefs = started.artifactRefs ?? Object.freeze([]);
+        item.commitRefs = started.commitRefs ?? Object.freeze([]);
+        item.configChanges = started.configChanges ?? Object.freeze([]);
+        item.outcomeDiagnostics = started.outcomeDiagnostics ?? null;
         item.controllerRequest = started.controllerRequest ?? null;
         item.stopReason = started.stopReason ?? null;
         item.automaticContinuations = started.automaticContinuations ?? 0;
@@ -535,6 +557,9 @@ class FleetScheduler {
           item.exitReason = current.exitReason ?? item.exitReason;
           item.controllerRequest = current.controllerRequest ?? item.controllerRequest;
           item.stopReason = current.stopReason ?? item.stopReason;
+          item.commitRefs = current.commitRefs ?? item.commitRefs;
+          item.configChanges = current.configChanges ?? item.configChanges;
+          item.outcomeDiagnostics = current.outcomeDiagnostics ?? item.outcomeDiagnostics;
         }
         this.release(
           item,
@@ -636,6 +661,9 @@ class FleetScheduler {
     item.evidenceRefs = resumed.evidenceRefs ?? Object.freeze([]);
     item.verification = resumed.verification ?? Object.freeze([]);
     item.artifactRefs = resumed.artifactRefs ?? Object.freeze([]);
+    item.commitRefs = resumed.commitRefs ?? Object.freeze([]);
+    item.configChanges = resumed.configChanges ?? Object.freeze([]);
+    item.outcomeDiagnostics = resumed.outcomeDiagnostics ?? null;
     item.controllerRequest = resumed.controllerRequest ?? null;
     item.stopReason = resumed.stopReason ?? null;
     item.automaticContinuations = resumed.automaticContinuations ?? 0;
@@ -751,6 +779,9 @@ class FleetScheduler {
       item.evidenceRefs = current.evidenceRefs ?? item.evidenceRefs;
       item.verification = current.verification ?? item.verification;
       item.artifactRefs = current.artifactRefs ?? item.artifactRefs;
+      item.commitRefs = current.commitRefs ?? item.commitRefs;
+      item.configChanges = current.configChanges ?? item.configChanges;
+      item.outcomeDiagnostics = current.outcomeDiagnostics ?? item.outcomeDiagnostics;
       item.controllerRequest = current.controllerRequest ?? item.controllerRequest;
       item.stopReason = current.stopReason ?? item.stopReason;
       item.automaticContinuations = current.automaticContinuations

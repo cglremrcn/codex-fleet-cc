@@ -233,6 +233,41 @@ test("runtime requires a structured evidence-bearing outcome", async (t) => {
   assert.match(completed.lastMessage, /handled the requested task/iu);
 });
 
+test("runtime retains config evidence and blocks an unverified commit claim", async (t) => {
+  const fixture = startFakeCodex(t, "unresolvable-commit");
+  const checked = [];
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env,
+    verifyCommitRef(workspacePath, sha) {
+      checked.push({ workspacePath, sha });
+      return false;
+    }
+  });
+  t.after(() => runtime.close());
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-invalid-commit"));
+  const blocked = await waitFor(
+    () => runtime.inspectLane("lane-invalid-commit")?.status === "blocked"
+      ? runtime.inspectLane("lane-invalid-commit")
+      : null,
+    "unverified commit controller block"
+  );
+
+  assert.deepEqual(checked, [{ workspacePath: fixture.workspace, sha: "deadbee" }]);
+  assert.deepEqual(blocked.commitRefs, []);
+  assert.deepEqual(blocked.configChanges, ["config/fleet.json"]);
+  assert.deepEqual(blocked.outcomeDiagnostics, {
+    code: "invalid_lane_outcome",
+    missing: [],
+    unknown: [],
+    invalid: ["commitRefs:deadbee"]
+  });
+  assert.equal(blocked.controllerRequest.kind, "runtime_blocker");
+  assert.match(blocked.controllerRequest.question, /commit.*deadbee.*could not be verified/iu);
+});
+
 test("redundant plan approval is recovered on the same Codex thread", async (t) => {
   const fixture = startFakeCodex(t, "plan-then-execute");
   const runtime = await createRuntime({
@@ -305,6 +340,12 @@ test("malformed output from a mutable lane becomes outcome unknown without anoth
 
   assert.equal(unknown.phase, "outcome_unknown");
   assert.equal(unknown.automaticContinuations, 0);
+  assert.deepEqual(unknown.outcomeDiagnostics, {
+    code: "invalid_lane_outcome",
+    missing: [],
+    unknown: [],
+    invalid: ["json"]
+  });
   assert.equal(fixture.readState().threads[0].turns.length, 1);
 });
 

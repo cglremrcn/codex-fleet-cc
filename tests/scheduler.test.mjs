@@ -388,6 +388,15 @@ test("structured outcome evidence survives scheduler recovery", () => {
     evidenceRefs: ["tests/runtime.test.mjs"],
     verification: ["Focused tests passed."],
     artifactRefs: ["src/runtime.mjs"],
+    commitRefs: ["abcdef1"],
+    configChanges: ["config/fleet.json"],
+    outcomeDiagnostics: {
+      code: "invalid_lane_outcome",
+      missing: [],
+      unknown: [],
+      invalid: ["commitRefs:deadbee"],
+      rawOutput: "must not survive"
+    },
     controllerRequest: null,
     stopReason: null,
     automaticContinuations: 1,
@@ -403,6 +412,14 @@ test("structured outcome evidence survives scheduler recovery", () => {
   assert.deepEqual(recovered.evidenceRefs, ["tests/runtime.test.mjs"]);
   assert.deepEqual(recovered.verification, ["Focused tests passed."]);
   assert.deepEqual(recovered.artifactRefs, ["src/runtime.mjs"]);
+  assert.deepEqual(recovered.commitRefs, ["abcdef1"]);
+  assert.deepEqual(recovered.configChanges, ["config/fleet.json"]);
+  assert.deepEqual(recovered.outcomeDiagnostics, {
+    code: "invalid_lane_outcome",
+    missing: [],
+    unknown: [],
+    invalid: ["commitRefs:deadbee"]
+  });
   assert.equal(recovered.automaticContinuations, 1);
 });
 

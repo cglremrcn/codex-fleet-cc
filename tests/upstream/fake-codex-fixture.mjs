@@ -306,6 +306,20 @@ function structuredLanePayload(turnCount) {
       stopReason: null
     });
   }
+  if (BEHAVIOR === "unresolvable-commit") {
+    return JSON.stringify({
+      outcome: "accomplished",
+      summary: "Handled the requested task and reported a commit.",
+      workPerformed: ["Completed the bounded task."],
+      evidenceRefs: ["README.md"],
+      verification: ["Focused verification completed."],
+      artifactRefs: [],
+      commitRefs: ["deadbee"],
+      configChanges: ["config/fleet.json"],
+      controllerRequest: null,
+      stopReason: null
+    });
+  }
   return JSON.stringify({
     outcome: "accomplished",
     summary: "Handled the requested task and verified the result.",

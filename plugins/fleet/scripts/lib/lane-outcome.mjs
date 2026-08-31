@@ -43,6 +43,7 @@ const ROOT_FIELDS = new Set([
   ...REQUIRED_ROOT_FIELDS,
   ...Object.keys(OPTIONAL_ROOT_DEFAULTS)
 ]);
+const DIAGNOSTIC_FIELDS = Object.freeze([...ROOT_FIELDS, "json"]);
 
 export const LANE_OUTCOME_SCHEMA = Object.freeze({
   type: "object",
@@ -167,12 +168,41 @@ function parseControllerRequest(value) {
   });
 }
 
+function outcomeDiagnostic({ missing = [], unknown = [], invalid = [] } = {}) {
+  return Object.freeze({
+    code: "invalid_lane_outcome",
+    missing: Object.freeze([...missing].sort()),
+    unknown: Object.freeze([...unknown].sort()),
+    invalid: Object.freeze([...invalid].filter((field) => DIAGNOSTIC_FIELDS.includes(field)).sort())
+  });
+}
+
+function attachOutcomeDiagnostic(error, diagnostic) {
+  Object.defineProperty(error, "outcomeDiagnostics", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: outcomeDiagnostic(diagnostic)
+  });
+  return error;
+}
+
+function diagnosticForError(error) {
+  if (error?.outcomeDiagnostics) return error.outcomeDiagnostics;
+  const message = String(error?.message ?? "").toLowerCase();
+  const invalid = [...ROOT_FIELDS].filter((field) => message.includes(field.toLowerCase()));
+  return outcomeDiagnostic({ invalid: invalid.length > 0 ? invalid : ["outcome"] });
+}
+
 export function parseLaneOutcome(source) {
   let value;
   try {
     value = JSON.parse(source);
   } catch {
-    throw new TypeError("Lane result must be valid structured outcome JSON.");
+    throw attachOutcomeDiagnostic(
+      new TypeError("Lane result must be valid structured outcome JSON."),
+      { invalid: ["json"] }
+    );
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("Lane structured outcome must be an object.");
@@ -185,7 +215,10 @@ export function parseLaneOutcome(source) {
       missing.length > 0 ? `missing: ${missing.join(", ")}` : null,
       unknown.length > 0 ? `unknown: ${unknown.join(", ")}` : null
     ].filter(Boolean).join("; ");
-    throw new TypeError(`Lane structured outcome fields do not match the schema (${diagnostics}).`);
+    throw attachOutcomeDiagnostic(
+      new TypeError(`Lane structured outcome fields do not match the schema (${diagnostics}).`),
+      { missing, unknown }
+    );
   }
   if (!OUTCOMES.includes(value.outcome)) {
     throw new TypeError("Lane structured outcome has an unsupported outcome.");
@@ -251,21 +284,23 @@ function recoveryPrompt(reason) {
   ].join(" ");
 }
 
-function continuationOrController(attempts, reason) {
+function continuationOrController(attempts, reason, diagnostics = null) {
   if (attempts < MAX_AUTOMATIC_CONTINUATIONS) {
-    return Object.freeze({ action: "continue", prompt: recoveryPrompt(reason) });
+    return Object.freeze({ action: "continue", prompt: recoveryPrompt(reason), diagnostics });
   }
   return Object.freeze({
     action: "needs-controller",
-    reason: "Codex did not produce a complete structured outcome after automatic recovery."
+    reason: "Codex did not produce a complete structured outcome after automatic recovery.",
+    diagnostics
   });
 }
 
-function unknownOutcome(reason, result = null) {
+function unknownOutcome(reason, result = null, diagnostics = null) {
   return Object.freeze({
     action: "outcome-unknown",
     reason: redactText(reason).slice(0, 2_000),
-    result
+    result,
+    diagnostics
   });
 }
 
@@ -277,12 +312,15 @@ export function decideLaneOutcome(source, attempts = 0, options = {}) {
   } catch (error) {
     if (mutationRisk) {
       return unknownOutcome(
-        `Mutable lane returned an invalid result; effects require reconciliation: ${error.message}`
+        `Mutable lane returned an invalid result; effects require reconciliation: ${error.message}`,
+        null,
+        diagnosticForError(error)
       );
     }
     return continuationOrController(
       attempts,
-      `The prior response was invalid: ${boundedText(error.message, "error", 512)}`
+      `The prior response was invalid: ${boundedText(error.message, "error", 512)}`,
+      diagnosticForError(error)
     );
   }
 

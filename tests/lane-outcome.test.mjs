@@ -56,15 +56,29 @@ test("controller outcomes normalize omitted optional evidence fields", () => {
 });
 
 test("schema diagnostics name missing and unknown root fields", () => {
+  let error;
   assert.throws(
-    () => parseLaneOutcome(JSON.stringify({
-      outcome: "blocked",
-      summary: "Stopped.",
-      workPerformed: [],
-      evidenceRef: []
-    })),
+    () => {
+      try {
+        parseLaneOutcome(JSON.stringify({
+          outcome: "blocked",
+          summary: "Stopped.",
+          workPerformed: [],
+          evidenceRef: []
+        }));
+      } catch (caught) {
+        error = caught;
+        throw caught;
+      }
+    },
     /missing: evidenceRefs.*unknown: evidenceRef/iu
   );
+  assert.deepEqual(error.outcomeDiagnostics, {
+    code: "invalid_lane_outcome",
+    missing: ["evidenceRefs"],
+    unknown: ["evidenceRef"],
+    invalid: []
+  });
 });
 
 test("optional commit and config evidence stays bounded and workspace-relative", () => {
@@ -145,6 +159,16 @@ test("malformed or repeatedly incomplete outcomes never become complete", () => 
   const exhausted = decideLaneOutcome("not json", 2);
   assert.equal(exhausted.action, "needs-controller");
   assert.match(exhausted.reason, /structured outcome/iu);
+});
+
+test("semantic failures expose only bounded field diagnostics", () => {
+  const decision = decideLaneOutcome(payload({ outcome: "unsupported" }), 2);
+  assert.deepEqual(decision.diagnostics, {
+    code: "invalid_lane_outcome",
+    missing: [],
+    unknown: [],
+    invalid: ["outcome"]
+  });
 });
 
 test("ambiguous mutable results become unknown instead of automatic retries", () => {

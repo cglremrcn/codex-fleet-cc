@@ -1,4 +1,5 @@
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import {
   BROKER_PROTOCOL_VERSION,
@@ -23,6 +24,26 @@ const IGNORED_NOTIFICATION_METHODS = new Set([
   "item/reasoning/summaryPartAdded",
   "item/reasoning/textDelta"
 ]);
+
+function defaultVerifyCommitRef(workspacePath, sha) {
+  const result = spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
+    cwd: workspacePath,
+    shell: false,
+    timeout: 2_000,
+    maxBuffer: 65_536,
+    windowsHide: true
+  });
+  return result.status === 0 && result.error === undefined;
+}
+
+function commitDiagnostic(unverified) {
+  return Object.freeze({
+    code: "invalid_lane_outcome",
+    missing: Object.freeze([]),
+    unknown: Object.freeze([]),
+    invalid: Object.freeze(unverified.map((sha) => `commitRefs:${sha}`))
+  });
+}
 
 function needsImageSkill(authority) {
   return authority?.image?.generate === true || authority?.image?.edit === true;
@@ -114,6 +135,9 @@ function copyLane(lane) {
     evidenceRefs: lane.evidenceRefs,
     verification: lane.verification,
     artifactRefs: lane.artifactRefs,
+    commitRefs: lane.commitRefs,
+    configChanges: lane.configChanges,
+    outcomeDiagnostics: lane.outcomeDiagnostics,
     controllerRequest: lane.controllerRequest,
     stopReason: lane.stopReason,
     automaticContinuations: lane.automaticContinuations
@@ -266,6 +290,7 @@ class FleetRuntime {
     this.pendingTurnNotifications = new Map();
     this.nextSequence = 1;
     this.closed = false;
+    this.verifyCommitRef = options.verifyCommitRef ?? defaultVerifyCommitRef;
     this.connectedProtocolVersion = options.brokerProtocolVersion
       ?? broker.protocolVersion;
     broker.setEventHandler((message) => this.handleNotification(message));
@@ -281,6 +306,24 @@ class FleetRuntime {
     if (this.closed) {
       throw new Error("Fleet runtime is closed.");
     }
+  }
+
+  verifyReportedCommits(lane, result) {
+    const verified = [];
+    const unverified = [];
+    for (const sha of result.commitRefs) {
+      let valid = false;
+      try {
+        valid = this.verifyCommitRef(lane.workspacePath, sha) === true;
+      } catch {
+        valid = false;
+      }
+      (valid ? verified : unverified).push(sha);
+    }
+    return Object.freeze({
+      verified: Object.freeze(verified),
+      unverified: Object.freeze(unverified)
+    });
   }
 
   async prepareSkillInputs(lane) {
@@ -438,6 +481,37 @@ class FleetRuntime {
             lane.automaticContinuations,
             { authority: lane.authority }
           );
+          const commits = decision.result
+            ? this.verifyReportedCommits(lane, decision.result)
+            : Object.freeze({ verified: Object.freeze([]), unverified: Object.freeze([]) });
+          if (commits.unverified.length > 0) {
+            const result = decision.result;
+            const question = redactText(
+              `Reported commit ${commits.unverified.join(", ")} could not be verified in the admitted workspace.`
+            );
+            this.updateLane(
+              lane,
+              {
+                status: "blocked",
+                phase: "needs-controller",
+                exitReason: question,
+                outcome: result.outcome,
+                lastMessage: result.summary,
+                workPerformed: result.workPerformed,
+                evidenceRefs: result.evidenceRefs,
+                verification: result.verification,
+                artifactRefs: result.artifactRefs,
+                commitRefs: commits.verified,
+                configChanges: result.configChanges,
+                outcomeDiagnostics: commitDiagnostic(commits.unverified),
+                controllerRequest: Object.freeze({ kind: "runtime_blocker", question }),
+                stopReason: question
+              },
+              "turn.blocked",
+              { threadId: lane.threadId, turnId: lane.turnId }
+            );
+            break;
+          }
           if (decision.action === "complete") {
             const result = decision.result;
             this.updateLane(
@@ -452,6 +526,9 @@ class FleetRuntime {
                 evidenceRefs: result.evidenceRefs,
                 verification: result.verification,
                 artifactRefs: result.artifactRefs,
+                commitRefs: commits.verified,
+                configChanges: result.configChanges,
+                outcomeDiagnostics: null,
                 controllerRequest: null,
                 stopReason: result.stopReason
               },
@@ -472,6 +549,9 @@ class FleetRuntime {
                 evidenceRefs: decision.result?.evidenceRefs ?? Object.freeze([]),
                 verification: decision.result?.verification ?? Object.freeze([]),
                 artifactRefs: decision.result?.artifactRefs ?? Object.freeze([]),
+                commitRefs: commits.verified,
+                configChanges: decision.result?.configChanges ?? Object.freeze([]),
+                outcomeDiagnostics: decision.diagnostics ?? null,
                 controllerRequest: decision.result?.controllerRequest ?? null,
                 stopReason: decision.result?.stopReason ?? redactText(decision.reason)
               },
@@ -490,6 +570,13 @@ class FleetRuntime {
                 phase: "needs-controller",
                 exitReason: redactText(decision.reason),
                 outcome: decision.result?.outcome ?? null,
+                workPerformed: decision.result?.workPerformed ?? Object.freeze([]),
+                evidenceRefs: decision.result?.evidenceRefs ?? Object.freeze([]),
+                verification: decision.result?.verification ?? Object.freeze([]),
+                artifactRefs: decision.result?.artifactRefs ?? Object.freeze([]),
+                commitRefs: commits.verified,
+                configChanges: decision.result?.configChanges ?? Object.freeze([]),
+                outcomeDiagnostics: decision.diagnostics ?? null,
                 controllerRequest,
                 stopReason: decision.result?.stopReason ?? redactText(decision.reason)
               },
@@ -546,6 +633,9 @@ class FleetRuntime {
       evidenceRefs: Object.freeze([]),
       verification: Object.freeze([]),
       artifactRefs: Object.freeze([]),
+      commitRefs: Object.freeze([]),
+      configChanges: Object.freeze([]),
+      outcomeDiagnostics: null,
       controllerRequest: null,
       stopReason: null,
       automaticContinuations: 0,
@@ -661,6 +751,9 @@ class FleetRuntime {
       evidenceRefs: lane.evidenceRefs,
       verification: lane.verification,
       artifactRefs: lane.artifactRefs,
+      commitRefs: lane.commitRefs,
+      configChanges: lane.configChanges,
+      outcomeDiagnostics: lane.outcomeDiagnostics,
       controllerRequest: lane.controllerRequest,
       stopReason: lane.stopReason,
       automaticContinuations: lane.automaticContinuations,
@@ -679,6 +772,9 @@ class FleetRuntime {
         evidenceRefs: Object.freeze([]),
         verification: Object.freeze([]),
         artifactRefs: Object.freeze([]),
+        commitRefs: Object.freeze([]),
+        configChanges: Object.freeze([]),
+        outcomeDiagnostics: null,
         controllerRequest: null,
         stopReason: null,
         automaticContinuations: 0
@@ -764,6 +860,9 @@ class FleetRuntime {
       evidenceRefs: Object.freeze(record.evidenceRefs ?? []),
       verification: Object.freeze(record.verification ?? []),
       artifactRefs: Object.freeze(record.artifactRefs ?? []),
+      commitRefs: Object.freeze(record.commitRefs ?? []),
+      configChanges: Object.freeze(record.configChanges ?? []),
+      outcomeDiagnostics: record.outcomeDiagnostics ?? null,
       controllerRequest: record.controllerRequest ?? null,
       stopReason: record.stopReason ?? null,
       automaticContinuations: 0,
