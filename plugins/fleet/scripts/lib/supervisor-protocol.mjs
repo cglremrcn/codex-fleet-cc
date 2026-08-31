@@ -520,6 +520,35 @@ export async function requestSupervisor(options = {}) {
   });
 }
 
+export async function probeExistingSupervisor(options = {}) {
+  const manifest = await readSupervisorManifest(options);
+  if (!manifest) {
+    return Object.freeze({ health: "not-running", protocol: "compatible", active: 0 });
+  }
+  const observeStart = options.observeStart ?? observeProcessStart;
+  const observedStart = await observeStart(manifest.process.pid, options);
+  if (observedStart !== manifest.process.recordedStart) {
+    return Object.freeze({ health: "stale", protocol: "compatible", active: 0 });
+  }
+  try {
+    const response = await requestSupervisor({
+      address: manifest.address,
+      workspaceKey: manifest.workspaceKey,
+      token: manifest.token,
+      method: "ping",
+      params: {},
+      timeoutMs: Math.min(options.timeoutMs ?? 2_000, 2_000)
+    });
+    return Object.freeze({
+      health: response?.ready === true ? "ready" : "unavailable",
+      protocol: "compatible",
+      active: Number.isSafeInteger(response?.active) && response.active >= 0 ? response.active : 0
+    });
+  } catch {
+    return Object.freeze({ health: "unavailable", protocol: "unknown", active: 0 });
+  }
+}
+
 export async function ensureSupervisor(options = {}) {
   const paths = supervisorPaths(options);
   const workspacePath = assertAbsoluteDirectory(options.workspacePath);

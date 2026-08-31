@@ -8,6 +8,7 @@ import {
   SupervisorRequestTimeoutError,
   createSupervisorServer,
   ensureSupervisor,
+  probeExistingSupervisor,
   requestSupervisor,
   stopSupervisor,
   supervisorPaths
@@ -172,6 +173,22 @@ test("supervisor paths stay private and deterministic per workspace", async (t) 
     platform: "darwin"
   });
   assert.equal(portable.address, null);
+});
+
+test("existing-supervisor probe never creates an absent runtime", async (t) => {
+  const dataDir = makeTempDir("fleet-supervisor-probe-");
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const result = await probeExistingSupervisor({
+    dataDir,
+    workspaceKey: WORKSPACE_KEY,
+    timeoutMs: 100
+  });
+
+  assert.deepEqual(result, { health: "not-running", protocol: "compatible", active: 0 });
+  await assert.rejects(
+    fs.readFile(supervisorPaths({ dataDir, workspaceKey: WORKSPACE_KEY }).manifestPath, "utf8"),
+    /ENOENT/u
+  );
 });
 
 test("supervisor root rejects a symbolic-link ancestor", async (t) => {
