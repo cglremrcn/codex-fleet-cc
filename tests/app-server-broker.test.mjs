@@ -9,6 +9,24 @@ import { startFakeCodex } from "./fixtures/fake-codex-app-server.mjs";
 
 const LOST_RESPONSE_TIMEOUT_MS = 1_000;
 
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && processIsRunning(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return !processIsRunning(pid);
+}
+
 test("protocol diagnostics retain shape without ids, text, errors, or secrets", () => {
   const secret = "never-retain-protocol-content";
   const summary = summarizeProtocolMessage({
@@ -49,6 +67,32 @@ test("broker close first lets app-server exit naturally on stdin EOF", async (t)
   await broker.close();
 
   assert.equal(stopCalls, 0);
+});
+
+test("failed initialization closes the app-server process", async (t) => {
+  const fake = startFakeCodex(t);
+  let ownedPid = null;
+  try {
+    await assert.rejects(
+      createAppServerBroker({
+        codexCommand: fake.command,
+        cwd: fake.workspace,
+        env: fake.env,
+        requestTimeoutMs: 0,
+        captureOwnedProcess: async (pid) => {
+          ownedPid = pid;
+          return { pid, recordedStart: "test-owned-process" };
+        }
+      }),
+      /timed out.*initialize/iu
+    );
+
+    assert.equal(await waitForProcessExit(ownedPid), true);
+  } finally {
+    if (Number.isSafeInteger(ownedPid) && processIsRunning(ownedPid)) {
+      process.kill(ownedPid, "SIGTERM");
+    }
+  }
 });
 
 test("broker close terminates its exact owned process tree after graceful timeout", async (t) => {

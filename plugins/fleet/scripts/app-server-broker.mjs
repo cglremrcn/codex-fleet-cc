@@ -292,12 +292,24 @@ class AppServerBroker {
       });
     }
 
-    await this.request("initialize", {
-      clientInfo: CLIENT_INFO,
-      capabilities: CAPABILITIES
-    });
-    this.notify("initialized", {});
-    return this;
+    try {
+      await this.request("initialize", {
+        clientInfo: CLIENT_INFO,
+        capabilities: CAPABILITIES
+      });
+      this.notify("initialized", {});
+      return this;
+    } catch (error) {
+      try {
+        await this.close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `${error.message} App-server cleanup also failed.`
+        );
+      }
+      throw error;
+    }
   }
 
   setEventHandler(handler) {
