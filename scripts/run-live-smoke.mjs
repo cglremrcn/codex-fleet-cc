@@ -65,10 +65,9 @@ export function codexInvocation(executable, args, options = {}) {
   if (/["%!^&|<>]/u.test(executable)) {
     throw new Error("The resolved Codex wrapper path is unsafe for cmd.exe.");
   }
-  const suffix = args.length > 0 ? ` ${args.join(" ")}` : "";
   return {
     command: commandProcessor,
-    args: ["/d", "/s", "/c", `${executable}${suffix}`]
+    args: ["/d", "/s", "/c", "call", executable, ...args]
   };
 }
 

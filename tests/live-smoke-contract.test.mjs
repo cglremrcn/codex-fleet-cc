@@ -46,9 +46,27 @@ test("Windows live diagnostics invoke the same resolved Codex wrapper as Fleet",
       "/d",
       "/s",
       "/c",
-      "C:\\Users\\Emc\\AppData\\Roaming\\npm\\codex.cmd login status"
+      "call",
+      "C:\\Users\\Emc\\AppData\\Roaming\\npm\\codex.cmd",
+      "login",
+      "status"
     ]
   });
+  assert.deepEqual(codexInvocation(
+    "C:\\Program Files\\Codex CLI\\codex.cmd",
+    ["--version"],
+    {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+    }
+  ).args, [
+    "/d",
+    "/s",
+    "/c",
+    "call",
+    "C:\\Program Files\\Codex CLI\\codex.cmd",
+    "--version"
+  ]);
   assert.throws(
     () => codexInvocation("C:\\codex.cmd", ["status&whoami"], {
       platform: "win32",
