@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.0 — 2026-09-01
+
+- Normalize lane results around four required fields while retaining optional artifact, verification,
+  commit and configuration evidence. Git commit claims are resolved in the admitted workspace before
+  completion can be accepted.
+- Reconcile a timed-out post-send `start` by exact admission ID and immutable lane identity. Partial or
+  absent evidence returns outcome unknown and explicitly forbids blind redispatch.
+- Recover formerly non-terminal persisted work as `interrupted`, preserve its thread/evidence and record
+  workspace dirtiness only as a workspace-level observation pending controller reconciliation.
+- Propagate each lane's read-only/workspace-write and network authority to app-server thread, resume and
+  turn policies. Add a Windows exact-argv `command/exec` diagnostic with a bounded kill switch and no
+  unsandboxed fallback.
+- Add complete JSON status, attention-first human status, `--all`, `--limit`, repeatable `--status`,
+  `--since`, and decoded `result --pretty` / `result --summary` output.
+- Add PageUp/PageDown, Home/End, stable lane-ID selection and visible-range paging for large fleets.
+  Snapshot reads are bounded; stale reads retain the last good frame without blocking input or quit.
+- Centralize lane execution posture: the controller owns commits, PowerShell 5.1 commands avoid `&&`,
+  intermediate evidence is persisted before long suites and sandbox-blocked build/dev-server checks are
+  returned for controller verification.
+- Pin the validated Claude Code CLI at 2.1.252 and align all release/default surfaces at 0.2.0.
+
+Known limitations: desktop MCP discovery is not proof of lane injection; Playwright signed-in profile
+concurrency remains external and single-operator; interrupted or externally uncertain effects require
+manual reconciliation; a plugin reload does not by itself upgrade the owned terminal runtime.
+
+Migration: reload/install the 0.2.0 plugin, accept the versioned Fleet setup upgrade for the second
+runtime surface, restart Claude Code, confirm `v0.2.0` in the Fleet masthead and run `/fleet:doctor`.
+
 ## 0.1.7 — 2026-08-20
 
 - Replace internal five-panel counters with three named operator views and explicit keyboard

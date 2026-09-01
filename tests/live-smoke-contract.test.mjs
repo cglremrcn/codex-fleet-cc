@@ -6,8 +6,10 @@ import test from "node:test";
 
 import {
   assertDisposableWorkspace,
+  assertResumableLiveLane,
   buildLiveSmokeContracts,
   cleanupDisposableRun,
+  codexInvocation,
   commandOutput,
   parseLiveSmokeArguments,
   sanitizeLiveEvidence
@@ -28,6 +30,62 @@ test("successful CLI diagnostics may report status on stderr", () => {
     commandOutput({ stdout: "codex-cli 0.147.0\n", stderr: "ignored" }),
     "codex-cli 0.147.0"
   );
+});
+
+test("Windows live diagnostics invoke the same resolved Codex wrapper as Fleet", () => {
+  assert.deepEqual(codexInvocation(
+    "C:\\Users\\Emc\\AppData\\Roaming\\npm\\codex.cmd",
+    ["login", "status"],
+    {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+    }
+  ), {
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      "call",
+      "C:\\Users\\Emc\\AppData\\Roaming\\npm\\codex.cmd",
+      "login",
+      "status"
+    ]
+  });
+  assert.deepEqual(codexInvocation(
+    "C:\\Program Files\\Codex CLI\\codex.cmd",
+    ["--version"],
+    {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+    }
+  ).args, [
+    "/d",
+    "/s",
+    "/c",
+    "call",
+    "C:\\Program Files\\Codex CLI\\codex.cmd",
+    "--version"
+  ]);
+  assert.throws(
+    () => codexInvocation("C:\\codex.cmd", ["status&whoami"], {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" }
+    }),
+    /safe literal/iu
+  );
+});
+
+test("app-server smoke exposes only the sandboxed exact-argv command probe", async () => {
+  const source = await fs.readFile(
+    path.resolve("scripts", "run-app-server-smoke.mjs"),
+    "utf8"
+  );
+
+  assert.match(source, /--probe-command-exec/u);
+  assert.match(source, /command\/exec/u);
+  assert.match(source, /timeoutMs:\s*10_000/u);
+  assert.doesNotMatch(source, /process\/spawn/u);
 });
 
 test("live smoke refuses to touch the real account without exact opt-in", () => {
@@ -51,6 +109,25 @@ test("live smoke workspace must be a strict child of its disposable root", () =>
   assert.throws(
     () => assertDisposableWorkspace(path.join(root, "..", "outside"), root),
     /strict child/iu
+  );
+});
+
+test("live smoke reports the bounded lane state before attempting follow-up", () => {
+  assert.doesNotThrow(() => assertResumableLiveLane({
+    id: "live-investigator",
+    status: "complete",
+    phase: "complete"
+  }));
+  assert.throws(
+    () => assertResumableLiveLane({
+      id: "live-investigator",
+      status: "failed",
+      phase: "failed",
+      outcome: "blocked",
+      exitReason: "Requested model is unavailable.",
+      outcomeDiagnostics: { invalid: ["summary"] }
+    }),
+    /status=failed phase=failed outcome=blocked reason=Requested model is unavailable\. diagnostics=/u
   );
 });
 

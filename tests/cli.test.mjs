@@ -11,6 +11,7 @@ import {
 } from "./upstream/fake-codex-fixture.mjs";
 import { runCli } from "../plugins/fleet/scripts/lib/cli.mjs";
 import { workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
+import { SupervisorRequestTimeoutError } from "../plugins/fleet/scripts/lib/supervisor-protocol.mjs";
 import { validateStartContract } from "../plugins/fleet/scripts/lib/start-contract.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -138,6 +139,157 @@ test("duplicate flags and unknown commands fail with invalid-input exit code", (
   assert.match(unknown.stderr, /unknown command/i);
   assert.equal(misplaced.code, 2);
   assert.match(misplaced.stderr, /not valid for status/i);
+});
+
+test("status flags validate limits, durations, contradictions, and repeatable statuses", async (t) => {
+  const scope = fixture(t);
+  const base = {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    stdout: () => undefined,
+    stderr: () => undefined,
+    dependencies: {
+      readStateWithoutCreating: async () => ({ schemaVersion: 1, lanes: [], updatedAt: null }),
+      probeExistingSupervisor: async () => ({ health: "not-running", protocol: "compatible" }),
+      inspectBranch: () => "main"
+    }
+  };
+
+  assert.equal(await runCli(["status", "--all", "--limit", "3"], base), 2);
+  assert.equal(await runCli(["status", "--limit", "0"], base), 2);
+  assert.equal(await runCli(["status", "--limit", "257"], base), 2);
+  assert.equal(await runCli(["status", "--since", "0m"], base), 2);
+  assert.equal(await runCli(["status", "--since", "366d"], base), 2);
+  assert.equal(await runCli(["status", "--status", "imaginary"], base), 2);
+  assert.equal(
+    await runCli(["status", "--status", "running", "--status", "blocked"], base),
+    0
+  );
+});
+
+test("human status limits attention-first while JSON status is complete by default", async (t) => {
+  const scope = fixture(t);
+  const lanes = Array.from({ length: 57 }, (_, index) => ({
+    id: `old-${index + 1}`,
+    role: "investigator",
+    status: "outcome_unknown",
+    label: "Old uncertain work",
+    finishedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString()
+  }));
+  lanes.push({
+    id: "active-last-in-storage",
+    role: "implementer",
+    status: "running",
+    label: "Must remain visible",
+    startedAt: "2026-09-01T12:00:00.000Z"
+  });
+  const dependencies = {
+    readStateWithoutCreating: async () => ({
+      schemaVersion: 1,
+      lanes,
+      updatedAt: "2026-09-01T12:00:00.000Z"
+    }),
+    probeExistingSupervisor: async () => ({ health: "ready", protocol: "compatible" }),
+    inspectBranch: () => "codex/reliability",
+    now: () => Date.parse("2026-09-01T12:30:00.000Z")
+  };
+  const human = [];
+  const humanCode = await runCli(["status"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    stdout: (text) => human.push(text),
+    stderr: () => undefined,
+    dependencies
+  });
+  const machine = [];
+  const machineCode = await runCli(["status", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    stdout: (text) => machine.push(text),
+    stderr: () => undefined,
+    dependencies
+  });
+
+  assert.equal(humanCode, 5);
+  assert.match(human.join(""), /Showing 32\/58 lanes/iu);
+  assert.match(human.join(""), /active-last-in-storage/iu);
+  assert.match(human.join(""), /outcome_unknown=26/iu);
+  assert.equal(machineCode, 5);
+  assert.equal(JSON.parse(machine.join("")).lanes.length, 58);
+});
+
+test("status observes the branch and existing supervisor without creating one", async (t) => {
+  const scope = fixture(t);
+  const stdout = [];
+  let ensureCalls = 0;
+  const code = await runCli(["status", "--json"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    stdout: (text) => stdout.push(text),
+    stderr: () => undefined,
+    dependencies: {
+      readStateWithoutCreating: async () => ({ schemaVersion: 1, lanes: [], updatedAt: null }),
+      inspectBranch: () => "detached",
+      probeExistingSupervisor: async () => ({ health: "not-running", protocol: "compatible" }),
+      ensureSupervisor: async () => {
+        ensureCalls += 1;
+        throw new Error("status must not create a supervisor");
+      }
+    }
+  });
+
+  assert.equal(code, 0);
+  assert.equal(ensureCalls, 0);
+  assert.equal(JSON.parse(stdout.join("")).workspace.branch, "detached");
+  assert.equal(JSON.parse(stdout.join("")).runtime.health, "not-running");
+});
+
+test("result pretty and summary modes decode nested JSON messages", async (t) => {
+  const scope = fixture(t);
+  const lane = {
+    id: "result-lane",
+    role: "implementer",
+    status: "complete",
+    label: "Readable result",
+    lastMessage: JSON.stringify({ summary: "Implemented safely", evidence: ["tests: pass"] })
+  };
+  const dependencies = {
+    readStateWithoutCreating: async () => ({
+      schemaVersion: 1,
+      lanes: [lane],
+      updatedAt: "2026-09-01T12:00:00.000Z"
+    }),
+    inspectBranch: () => "main"
+  };
+  const pretty = [];
+  const summary = [];
+  const common = {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    stderr: () => undefined,
+    dependencies
+  };
+
+  assert.equal(await runCli(
+    ["result", "--lane", "result-lane", "--pretty"],
+    { ...common, stdout: (text) => pretty.push(text) }
+  ), 0);
+  assert.equal(typeof JSON.parse(pretty.join("")).lanes[0].lastMessage, "object");
+  assert.equal(await runCli(
+    ["result", "--lane", "result-lane", "--summary"],
+    { ...common, stdout: (text) => summary.push(text) }
+  ), 0);
+  assert.match(summary.join(""), /Implemented safely/iu);
+  assert.equal(summary.join("").includes('\\"summary\\"'), false);
+  assert.equal(await runCli(
+    ["result", "--lane", "result-lane", "--pretty", "--summary"],
+    { ...common, stdout: () => undefined }
+  ), 2);
 });
 
 test("contract input rejects unknown properties and malformed UTF-8", (t) => {
@@ -513,6 +665,133 @@ test("read-only start accepts a null confirmation reference", async (t) => {
 
   assert.equal(code, 0, stderr.join(""));
   assert.equal(JSON.parse(stdout.join("")).background, true);
+});
+
+test("start reconciles exact, absent, and partial state after a post-send timeout", async (t) => {
+  const scope = fixture(t);
+  const key = await workspaceKey(scope.workspace);
+  const raw = {
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    confirmationRef: null,
+    lanes: ["one", "two"].map((suffix) => ({
+      id: `timeout-${suffix}`,
+      role: "investigator",
+      label: `Inspect timeout ${suffix}`,
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      prompt: `Inspect bounded timeout surface ${suffix}.`,
+      priority: "normal",
+      authority: {
+        sandbox: "read-only",
+        network: "off",
+        process: { start: true, stopOwned: true }
+      }
+    }))
+  };
+  const contract = validateStartContract(raw);
+  const admittedAt = "2026-09-01T10:00:01.000Z";
+  const persisted = contract.lanes.map((lane, index) => ({
+    ...lane,
+    checkoutKey: lane.checkoutKey ?? key,
+    admissionId: `admission-${index + 1}`,
+    admissionSource: "fleet-supervisor",
+    admittedAt,
+    status: "running",
+    phase: "running"
+  }));
+
+  for (const [mode, lanes, expectedCode] of [
+    ["exact", persisted, 0],
+    ["absent", [], 5],
+    ["partial", persisted.slice(0, 1), 5]
+  ]) {
+    const stdout = [];
+    const stderr = [];
+    const code = await runCli(["start", "--stdin", "--json"], {
+      cwd: scope.workspace,
+      env: fixtureEnv(scope),
+      home: scope.root,
+      readStdin: async () => Buffer.from(JSON.stringify(raw)),
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+      dependencies: {
+        now: () => Date.parse("2026-09-01T10:00:00.000Z"),
+        ensureSupervisor: async () => ({ address: "memory", token: "token" }),
+        requestSupervisor: async () => {
+          throw new SupervisorRequestTimeoutError({
+            requestId: `request-${mode}`,
+            requestSent: true,
+            timeoutMs: 100
+          });
+        },
+        readStateWithoutCreating: async () => ({
+          schemaVersion: 1,
+          lanes,
+          updatedAt: admittedAt
+        })
+      }
+    });
+    const payload = JSON.parse(stdout.join(""));
+
+    assert.equal(code, expectedCode, mode);
+    assert.equal(stderr.join(""), "", mode);
+    assert.equal(payload.retrySafe, false, mode);
+    assert.equal(payload.admissionRecovered, mode === "exact", mode);
+    assert.deepEqual(
+      payload.admissionIds,
+      mode === "exact" ? ["admission-1", "admission-2"] : [],
+      mode
+    );
+  }
+});
+
+test("human timeout reconciliation warns against repeating start", async (t) => {
+  const scope = fixture(t);
+  const stdout = [];
+  const raw = {
+    schemaVersion: 1,
+    workspacePath: scope.workspace,
+    confirmationRef: null,
+    lanes: [{
+      id: "timeout-human",
+      role: "investigator",
+      label: "Inspect timeout recovery",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      prompt: "Inspect the bounded timeout recovery surface.",
+      priority: "normal",
+      authority: {
+        sandbox: "read-only",
+        network: "off",
+        process: { start: true, stopOwned: true }
+      }
+    }]
+  };
+  const code = await runCli(["start", "--stdin"], {
+    cwd: scope.workspace,
+    env: fixtureEnv(scope),
+    home: scope.root,
+    readStdin: async () => Buffer.from(JSON.stringify(raw)),
+    stdout: (text) => stdout.push(text),
+    stderr: () => undefined,
+    dependencies: {
+      now: () => Date.parse("2026-09-01T10:00:00.000Z"),
+      ensureSupervisor: async () => ({ address: "memory", token: "token" }),
+      requestSupervisor: async () => {
+        throw new SupervisorRequestTimeoutError({
+          requestId: "request-human",
+          requestSent: true,
+          timeoutMs: 100
+        });
+      },
+      readStateWithoutCreating: async () => ({ schemaVersion: 1, lanes: [], updatedAt: null })
+    }
+  });
+
+  assert.equal(code, 5);
+  assert.match(stdout.join(""), /run status/iu);
+  assert.match(stdout.join(""), /do not repeat start/iu);
 });
 
 test("database write authority requires confirmation before supervisor admission", async (t) => {

@@ -49,5 +49,5 @@ result from `complete` to `verified`.
 6. Cleanup and external-effect reconciliation state.
 
 Label each statement as observed fact, worker claim, verifier finding, or inference when the distinction
-is material. Match alarm language to evidence strength. Preserve `blocked`, `failed`, `cancelled`, and
+is material. Match alarm language to evidence strength. Preserve `blocked`, `failed`, `cancelled`, `interrupted`, and
 `OUTCOME_UNKNOWN` as distinct terminal states.

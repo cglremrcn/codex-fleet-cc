@@ -105,7 +105,8 @@ function serializeStateStore(root) {
       const state = {
         schemaVersion: 1,
         updatedAt: new Date().toISOString(),
-        lanes: [...snapshot.queued, ...snapshot.active, ...snapshot.history]
+        lanes: [...snapshot.queued, ...snapshot.active, ...snapshot.history],
+        workspaceObservation: snapshot.workspaceObservation
       };
       writes = writes.then(() => writeWorkspaceState(root, state));
       return writes;
@@ -158,6 +159,7 @@ export function createControlPlane(options) {
         store: serializeStateStore(root),
         limits,
         workspacePath: options.workspacePath,
+        workspaceObservation: state.workspaceObservation,
         initialRecords: state.lanes
       });
       return scheduler;
@@ -203,20 +205,30 @@ export function createControlPlane(options) {
     if (recoveringPersisted) return recoveringPersisted;
     recoveringPersisted = (async () => {
       const state = await readWorkspaceState(root);
-      const history = recoverPersistedRecords(state.lanes);
-      const changed = history.some((lane, index) => lane.status !== state.lanes[index]?.status);
+      let workspaceObservation = state.workspaceObservation ?? null;
+      const history = recoverPersistedRecords(state.lanes, {
+        workspacePath: options.workspacePath,
+        workspaceObservation,
+        onWorkspaceObservation(observation) {
+          workspaceObservation = observation;
+        }
+      });
+      const changed = history.some((lane, index) => lane.status !== state.lanes[index]?.status)
+        || JSON.stringify(workspaceObservation) !== JSON.stringify(state.workspaceObservation ?? null);
       if (changed) {
         await writeWorkspaceState(root, {
           schemaVersion: 1,
           updatedAt: new Date().toISOString(),
-          lanes: history
+          lanes: history,
+          workspaceObservation
         });
       }
       return {
         schemaVersion: 1,
         queued: [],
         active: [],
-        history
+        history,
+        workspaceObservation
       };
     })().finally(() => {
       recoveringPersisted = null;
@@ -269,7 +281,12 @@ export function createControlPlane(options) {
         }));
         const lanes = await Promise.all(admissions);
         monitorActive();
-        return { schemaVersion: 1, background: true, lanes };
+        return {
+          schemaVersion: 1,
+          background: true,
+          lanes,
+          admissionIds: lanes.map((lane) => lane.admissionId)
+        };
       }
       if (method === "followUp") {
         options.onActivity?.();

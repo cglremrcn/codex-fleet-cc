@@ -160,6 +160,29 @@ test("semantic status survives monochrome output without color", () => {
   assert.doesNotMatch(output, /[┌┐└┘│─━▶]/u);
 });
 
+test("interrupted lanes are visible controller-attention states", () => {
+  const view = viewFixture({
+    selection: "lost-supervisor",
+    snapshot: {
+      lanes: [lane({
+        id: "lost-supervisor",
+        status: "interrupted",
+        phase: "interrupted"
+      })]
+    }
+  });
+  const output = stripAnsi(renderScreen(
+    view,
+    { columns: 120, rows: 28 },
+    plainPreferences({ unicode: false })
+  ));
+
+  assert.equal(view.totals.interrupted, 1);
+  assert.equal(view.totals.attention, 1);
+  assert.match(output, /INTERRUPTED/iu);
+  assert.match(output, /controller reconciliation/iu);
+});
+
 test("display width handles ANSI, wide glyphs, combining marks, and emoji", () => {
   assert.equal(displayWidth("\u001b[36mFLEET\u001b[0m"), 5);
   assert.equal(displayWidth("İ"), 1);
@@ -429,6 +452,30 @@ test("screen-reader mode is linear and excludes decorative formation output", ()
   assert.doesNotMatch(output, /\u001b\[/);
   assert.doesNotMatch(output, /KITE|◆|◇|╲|╱|▼|●|╾|╼/u);
   assert.match(output, /Lane 2 of 4: console-build, running/);
+});
+
+test("58-lane viewport renders the selected lane and its visible range", () => {
+  const lanes = Array.from({ length: 58 }, (_, index) => lane({
+    id: `lane-${String(index + 1).padStart(2, "0")}`,
+    label: `Lane ${index + 1}`,
+    status: index === 57 ? "running" : "outcome_unknown"
+  }));
+  const view = buildViewModel(
+    fleetSnapshot({ lanes }),
+    "lane-58",
+    "detail",
+    { viewportOffset: 50, visibleLaneCapacity: 8, observation: "stale" }
+  );
+  const output = stripAnsi(renderScreen(
+    view,
+    { columns: 120, rows: 24 },
+    plainPreferences()
+  ));
+
+  assert.match(output, /lane-58/iu);
+  assert.match(output, /VISIBLE 51[–-]58 \/ 58/iu);
+  assert.match(output, /OBSERVATION STALE/iu);
+  assert.doesNotMatch(output, /lane-01/iu);
 });
 
 test("view model preserves truthful status and chooses an existing lane", () => {

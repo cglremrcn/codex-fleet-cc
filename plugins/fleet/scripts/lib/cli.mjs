@@ -1,10 +1,12 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
-import { isTerminalStatus } from "./domain.mjs";
+import { isTerminalStatus, LANE_STATUSES } from "./domain.mjs";
 import {
   buildStartContractTemplate,
   contractTemplateDefinition,
@@ -12,7 +14,7 @@ import {
 } from "./contract-templates.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
-import { renderPlainStatus } from "./plain-status.mjs";
+import { renderPlainStatus, selectStatusLanes } from "./plain-status.mjs";
 import { createRuntime } from "./runtime-adapter.mjs";
 import { readWorkspaceState } from "./safe-state.mjs";
 import {
@@ -23,7 +25,9 @@ import {
 } from "./setup.mjs";
 import { previewSupportBundle, writeSupportBundle } from "./support-bundle.mjs";
 import {
+  SupervisorRequestTimeoutError,
   ensureSupervisor,
+  probeExistingSupervisor,
   requestSupervisor
 } from "./supervisor-protocol.mjs";
 import {
@@ -52,7 +56,16 @@ const COMMANDS = new Set([
   "setup",
   "uninstall"
 ]);
-const BOOLEAN_FLAGS = new Set(["--json", "--stdin", "--confirm", "--wait", "--list"]);
+const BOOLEAN_FLAGS = new Set([
+  "--json",
+  "--stdin",
+  "--confirm",
+  "--wait",
+  "--list",
+  "--all",
+  "--pretty",
+  "--summary"
+]);
 const VALUE_FLAGS = new Set([
   "--contract",
   "--workspace",
@@ -62,7 +75,10 @@ const VALUE_FLAGS = new Set([
   "--timeout-ms",
   "--template",
   "--objective",
-  "--confirmation-ref"
+  "--confirmation-ref",
+  "--limit",
+  "--status",
+  "--since"
 ]);
 const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
 const COMMAND_FLAGS = Object.freeze({
@@ -76,8 +92,23 @@ const COMMAND_FLAGS = Object.freeze({
     "--confirmation-ref"
   ]),
   start: new Set(["--json", "--stdin", "--contract"]),
-  status: new Set(["--json", "--workspace"]),
-  result: new Set(["--json", "--workspace", "--lane", "--wait", "--timeout-ms"]),
+  status: new Set([
+    "--json",
+    "--workspace",
+    "--all",
+    "--limit",
+    "--status",
+    "--since"
+  ]),
+  result: new Set([
+    "--json",
+    "--workspace",
+    "--lane",
+    "--wait",
+    "--timeout-ms",
+    "--pretty",
+    "--summary"
+  ]),
   "follow-up": new Set(["--json", "--stdin", "--contract"]),
   cancel: new Set(["--json", "--stdin", "--contract", "--confirm"]),
   export: new Set(["--json", "--workspace", "--output", "--confirm-token"]),
@@ -154,7 +185,7 @@ function parseArguments(argv) {
     if (!BOOLEAN_FLAGS.has(token) && !VALUE_FLAGS.has(token)) {
       throw new InvalidInputError(`Unknown flag for ${command}: ${token}.`);
     }
-    if (flags.has(token)) {
+    if (flags.has(token) && token !== "--status") {
       throw new InvalidInputError(`Duplicate flag: ${token}.`);
     }
     if (BOOLEAN_FLAGS.has(token)) {
@@ -165,7 +196,11 @@ function parseArguments(argv) {
     if (value === undefined || value.startsWith("--")) {
       throw new InvalidInputError(`Flag ${token} requires a value.`);
     }
-    flags.set(token, value);
+    if (token === "--status") {
+      flags.set(token, [...(flags.get(token) ?? []), value]);
+    } else {
+      flags.set(token, value);
+    }
     index += 1;
   }
 
@@ -194,6 +229,12 @@ function parseArguments(argv) {
     }
   } else if (flags.has("--stdin") || flags.has("--contract") || flags.has("--confirm")) {
     throw new InvalidInputError(`Structured input flags are not valid for ${command}.`);
+  }
+  if (flags.has("--all") && flags.has("--limit")) {
+    throw new InvalidInputError("Use either --all or --limit, not both.");
+  }
+  if (flags.has("--pretty") && flags.has("--summary")) {
+    throw new InvalidInputError("Use either --pretty or --summary, not both.");
   }
 
   return { command, flags };
@@ -307,6 +348,112 @@ function boundedTimeout(value) {
     throw new InvalidInputError("--timeout-ms must be between 100 and 3600000.");
   }
   return milliseconds;
+}
+
+function boundedStatusLimit(value) {
+  if (!/^\d+$/u.test(value ?? "")) {
+    throw new InvalidInputError("--limit must be an integer.");
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
+    throw new InvalidInputError("--limit must be between 1 and 256.");
+  }
+  return limit;
+}
+
+function boundedSinceDuration(value) {
+  const match = /^(\d+)([mhd])$/u.exec(value ?? "");
+  if (!match) {
+    throw new InvalidInputError("--since must use an integer duration such as 30m, 12h, or 7d.");
+  }
+  const multipliers = { m: 60_000, h: 3_600_000, d: 86_400_000 };
+  const duration = Number(match[1]) * multipliers[match[2]];
+  const maximum = 365 * multipliers.d;
+  if (!Number.isSafeInteger(duration) || duration < multipliers.m || duration > maximum) {
+    throw new InvalidInputError("--since must be between 1m and 365d.");
+  }
+  return duration;
+}
+
+function statusSelectionOptions(parsed, dependencies) {
+  const statuses = parsed.flags.get("--status") ?? [];
+  const invalid = statuses.filter((status) => !LANE_STATUSES.includes(status));
+  if (invalid.length > 0) {
+    throw new InvalidInputError(
+      `Invalid --status value: ${invalid.join(", ")}. Choose: ${LANE_STATUSES.join(", ")}.`
+    );
+  }
+  const duration = parsed.flags.has("--since")
+    ? boundedSinceDuration(parsed.flags.get("--since"))
+    : null;
+  const limit = parsed.flags.has("--all")
+    ? undefined
+    : parsed.flags.has("--limit")
+      ? boundedStatusLimit(parsed.flags.get("--limit"))
+      : parsed.flags.has("--json")
+        ? undefined
+        : 32;
+  return {
+    statuses,
+    sinceMs: duration === null ? undefined : (dependencies.now ?? Date.now)() - duration,
+    limit
+  };
+}
+
+function inspectGitBranch(workspace) {
+  const result = spawnSync("git", ["symbolic-ref", "--short", "HEAD"], {
+    cwd: workspace,
+    encoding: "utf8",
+    maxBuffer: 65_536,
+    shell: false,
+    timeout: 2_000,
+    windowsHide: true
+  });
+  if (result.status === 0) {
+    const branch = result.stdout.trim().split(/\r?\n/u)[0];
+    return branch && branch.length <= 256 ? branch : "unknown";
+  }
+  if (!result.error && result.status === 1 && !/not a git repository/iu.test(result.stderr ?? "")) {
+    return "detached";
+  }
+  return "unknown";
+}
+
+function decodeJsonMessage(value) {
+  if (typeof value !== "string" || value.length > MAX_CONTRACT_BYTES) return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function decodedResult(payload) {
+  return {
+    ...payload,
+    lanes: payload.lanes.map((lane) => ({
+      ...lane,
+      lastMessage: decodeJsonMessage(lane.lastMessage)
+    }))
+  };
+}
+
+function renderResultSummary(payload) {
+  const lane = decodedResult(payload).lanes[0];
+  const lines = [
+    `Lane ${String(lane.id)}: ${String(lane.status)}.`,
+    `${String(lane.label ?? lane.role ?? "Fleet result")}.`
+  ];
+  if (lane.lastMessage !== undefined && lane.lastMessage !== null) {
+    lines.push(
+      typeof lane.lastMessage === "string"
+        ? lane.lastMessage
+        : JSON.stringify(lane.lastMessage, null, 2)
+    );
+  }
+  return lines.join("\n");
 }
 
 async function stateContext(workspacePath, io) {
@@ -458,10 +605,63 @@ async function requestLiveSupervisor(context, method, params, io, dependencies) 
 
 async function runStart(contract, io, dependencies) {
   const context = await stateContext(contract.workspacePath, io);
-  const payload = await requestLiveSupervisor(context, "start", contract, io, dependencies);
+  const requestStartedAt = new Date((dependencies.now ?? Date.now)()).toISOString();
+  let payload;
+  try {
+    payload = await requestLiveSupervisor(context, "start", contract, io, dependencies);
+  } catch (error) {
+    if (!(error instanceof SupervisorRequestTimeoutError) || error.requestSent !== true) {
+      throw error;
+    }
+    const readState = dependencies.readStateWithoutCreating ?? readStateWithoutCreating;
+    const state = await readState(context.root);
+    const persistedById = new Map(state.lanes.map((lane) => [lane.id, lane]));
+    const matches = contract.lanes.map((lane) => {
+      const persisted = persistedById.get(lane.id);
+      const admittedAt = Date.parse(persisted?.admittedAt ?? "");
+      const exact = persisted
+        && persisted.id === lane.id
+        && persisted.role === lane.role
+        && persisted.label === lane.label
+        && persisted.model === lane.model
+        && persisted.effort === lane.effort
+        && persisted.checkoutKey === (lane.checkoutKey ?? context.key)
+        && isDeepStrictEqual(persisted.authority, lane.authority)
+        && typeof persisted.admissionId === "string"
+        && persisted.admissionId.length > 0
+        && Number.isFinite(admittedAt)
+        && admittedAt >= Date.parse(requestStartedAt);
+      return exact ? persisted : null;
+    }).filter(Boolean);
+    const recovered = matches.length === contract.lanes.length;
+    return {
+      exitCode: recovered ? EXIT_CODES.success : EXIT_CODES.outcomeUnknown,
+      payload: {
+        schemaVersion: 1,
+        background: true,
+        workspaceKey: context.key,
+        admissionRecovered: recovered,
+        retrySafe: false,
+        admissionIds: recovered ? matches.map((lane) => lane.admissionId) : [],
+        matchedLaneIds: matches.map((lane) => lane.id),
+        missingLaneIds: contract.lanes
+          .filter((lane) => !matches.some((match) => match.id === lane.id))
+          .map((lane) => lane.id),
+        requestId: error.requestId
+      }
+    };
+  }
   return {
     exitCode: EXIT_CODES.success,
-    payload: { ...payload, workspaceKey: context.key }
+    payload: {
+      ...payload,
+      workspaceKey: context.key,
+      admissionRecovered: false,
+      retrySafe: false,
+      admissionIds: (
+        payload.admissionIds ?? payload.lanes?.map((lane) => lane.admissionId) ?? []
+      ).filter((admissionId) => typeof admissionId === "string")
+    }
   };
 }
 
@@ -617,7 +817,8 @@ async function execute(parsed, io, dependencies) {
 
   if (parsed.command === "status" || parsed.command === "result" || parsed.command === "export") {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
-    let state = await readStateWithoutCreating(context.root);
+    const readState = dependencies.readStateWithoutCreating ?? readStateWithoutCreating;
+    let state = await readState(context.root);
     if (parsed.command === "export") {
       return runExport(parsed, context, state, io, dependencies);
     }
@@ -650,7 +851,7 @@ async function execute(parsed, io, dependencies) {
           lanes = [liveLane];
           if (isTerminalStatus(liveLane.status)) break;
           await new Promise((resolve) => setTimeout(resolve, 250));
-          state = await readStateWithoutCreating(context.root);
+          state = await readState(context.root);
           const persisted = state.lanes.find((lane) => lane.id === laneId);
           if (!persisted) {
             throw new RuntimeUnavailableError(
@@ -661,16 +862,39 @@ async function execute(parsed, io, dependencies) {
         }
       }
     }
-    const unknown = lanes.some((lane) => lane.status === "outcome_unknown");
+    let selection = null;
+    if (parsed.command === "status") {
+      selection = selectStatusLanes(lanes, statusSelectionOptions(parsed, dependencies));
+      lanes = selection.lanes;
+    }
+    const branchReader = dependencies.inspectBranch ?? inspectGitBranch;
+    const branch = await branchReader(context.workspace);
+    let runtime = { health: "unknown", protocol: "unknown" };
+    if (parsed.command === "status") {
+      const probe = dependencies.probeExistingSupervisor ?? probeExistingSupervisor;
+      runtime = await probe({
+        dataDir: context.dataDir,
+        workspaceKey: context.key,
+        platform: io.platform,
+        timeoutMs: 2_000
+      }).catch(() => ({ health: "unavailable", protocol: "unknown", active: 0 }));
+    }
+    const unknown = parsed.command === "status"
+      ? selection.hasOutcomeUnknown
+      : lanes.some((lane) => lane.status === "outcome_unknown");
+    const selectionSummary = selection
+      ? Object.fromEntries(Object.entries(selection).filter(([key]) => key !== "lanes"))
+      : undefined;
     return {
       exitCode: unknown ? EXIT_CODES.outcomeUnknown : EXIT_CODES.success,
       payload: {
         schemaVersion: 1,
         workspaceKey: context.key,
-        workspace: { name: path.basename(context.workspace), branch: "unknown" },
-        runtime: { health: "unknown", protocol: "unknown" },
+        workspace: { name: path.basename(context.workspace), branch },
+        runtime,
         updatedAt: state.updatedAt,
-        lanes
+        lanes,
+        ...(selectionSummary ? { selection: selectionSummary } : {})
       }
     };
   }
@@ -696,7 +920,7 @@ async function execute(parsed, io, dependencies) {
   throw new InvalidInputError(`Unsupported command: ${parsed.command}.`);
 }
 
-function humanSummary(command, payload) {
+function humanSummary(command, payload, flags) {
   if (command === "init") return JSON.stringify(payload, null, 2);
   if (command === "doctor") {
     const broker = payload.checks.find((check) => check.id === "broker");
@@ -712,6 +936,17 @@ function humanSummary(command, payload) {
   }
   if (command === "status") {
     return renderPlainStatus(payload).trimEnd();
+  }
+  if (command === "result" && flags.has("--pretty")) {
+    return JSON.stringify(decodedResult(payload), null, 2);
+  }
+  if (command === "result" && flags.has("--summary")) {
+    return renderResultSummary(payload);
+  }
+  if (command === "start" && payload.retrySafe === false && payload.requestId) {
+    return payload.admissionRecovered
+      ? `Fleet recovered ${payload.admissionIds.length} admitted lane(s) after the response timeout.`
+      : "Fleet could not prove complete admission after the response timeout. Run status; do not repeat start.";
   }
   if (command === "export") {
     return payload.written
@@ -742,7 +977,7 @@ export async function runCli(argv, options = {}) {
     const result = await execute(parsed, io, options.dependencies ?? {});
     const output = parsed.flags.has("--json")
       ? JSON.stringify(result.payload)
-      : humanSummary(parsed.command, result.payload);
+      : humanSummary(parsed.command, result.payload, parsed.flags);
     io.stdout(`${output}\n`);
     return result.exitCode;
   } catch (error) {

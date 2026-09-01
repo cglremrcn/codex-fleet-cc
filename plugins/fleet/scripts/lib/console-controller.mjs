@@ -11,6 +11,7 @@ const CANCELLABLE_STATUSES = new Set(["queued", "starting", "running"]);
 const MAX_FILTER_LENGTH = 64;
 const MAX_COMPOSER_LENGTH = 4_096;
 export const CONSOLE_TICK_MS = 250;
+export const SNAPSHOT_REFRESH_TIMEOUT_MS = 750;
 const ESCAPE_FLUSH_MS = 35;
 
 function defaultSnapshot(cwd) {
@@ -62,7 +63,7 @@ function safeTerminal(value = {}) {
 function selectedFormationFrame(status, tick) {
   if (MOTION_STATUSES.has(status)) return tick % 4;
   if (status === "blocked") return 3;
-  if (status === "failed" || status === "outcome_unknown") return 0;
+  if (status === "failed" || status === "interrupted" || status === "outcome_unknown") return 0;
   return 2;
 }
 
@@ -109,12 +110,19 @@ export function createConsoleController(options = {}) {
   const spawnEditor = options.spawnEditor;
   const draftPath = options.draftPath ?? null;
   const preferences = options.preferences ?? {};
+  const refreshTimeoutMs = Number.isInteger(options.refreshTimeoutMs)
+    ? Math.max(1, options.refreshTimeoutMs)
+    : SNAPSHOT_REFRESH_TIMEOUT_MS;
   let snapshot = normalizeSnapshot(options.snapshot, options.cwd);
   let terminal = safeTerminal(options.terminal);
+  const initialCapacity = Math.max(1, Math.floor(Math.max(4, terminal.rows - 7) / 2));
   let ui = {
     laneCount: snapshot.lanes.length,
     totalLaneCount: snapshot.lanes.length,
     selectedIndex: 0,
+    selectedLaneId: snapshot.lanes[0]?.id ?? null,
+    viewportOffset: 0,
+    visibleLaneCapacity: initialCapacity,
     panelIndex: 0,
     panelCount: PANELS.length,
     motion: preferences.reducedMotion !== true,
@@ -126,10 +134,13 @@ export function createConsoleController(options = {}) {
     confirmation: null,
     composer: null,
     session: null,
-    refreshTick: 0
+    refreshTick: 0,
+    refreshInFlight: false,
+    observation: options.initialObservation === "stale" ? "stale" : "fresh"
   };
   let previousScreen = null;
   let firstRender = true;
+  let refreshGeneration = 0;
 
   function visibleSnapshot() {
     return filteredSnapshot(snapshot, ui.filterQuery);
@@ -139,8 +150,28 @@ export function createConsoleController(options = {}) {
     const lanes = visibleSnapshot().lanes;
     ui.laneCount = lanes.length;
     ui.totalLaneCount = snapshot.lanes.length;
-    if (lanes.length === 0) ui.selectedIndex = 0;
-    else ui.selectedIndex = Math.max(0, Math.min(ui.selectedIndex, lanes.length - 1));
+    ui.visibleLaneCapacity = Math.max(
+      1,
+      Math.floor(Math.max(4, terminal.rows - 7) / 2)
+    );
+    if (lanes.length === 0) {
+      ui.selectedIndex = 0;
+      ui.selectedLaneId = null;
+      ui.viewportOffset = 0;
+      return;
+    }
+    const preservedIndex = lanes.findIndex((lane) => lane.id === ui.selectedLaneId);
+    ui.selectedIndex = preservedIndex >= 0
+      ? preservedIndex
+      : Math.max(0, Math.min(ui.selectedIndex, lanes.length - 1));
+    ui.selectedLaneId = lanes[ui.selectedIndex]?.id ?? null;
+    const capacity = Math.min(ui.visibleLaneCapacity, lanes.length);
+    const maximumOffset = Math.max(0, lanes.length - capacity);
+    ui.viewportOffset = Math.max(0, Math.min(ui.viewportOffset, maximumOffset));
+    if (ui.selectedIndex < ui.viewportOffset) ui.viewportOffset = ui.selectedIndex;
+    if (ui.selectedIndex >= ui.viewportOffset + capacity) {
+      ui.viewportOffset = ui.selectedIndex - capacity + 1;
+    }
   }
 
   function selectedLane() {
@@ -153,8 +184,13 @@ export function createConsoleController(options = {}) {
     const lane = selectedLane();
     const view = buildViewModel(
       visibleSnapshot(),
-      ui.selectedIndex,
-      PANELS[ui.panelIndex]
+      ui.selectedLaneId,
+      PANELS[ui.panelIndex],
+      {
+        viewportOffset: ui.viewportOffset,
+        visibleLaneCapacity: ui.visibleLaneCapacity,
+        observation: ui.observation
+      }
     );
     const frame = selectedFormationFrame(lane?.status, ui.frame);
     const screen = decorateFooter(render(view, terminal, {
@@ -331,24 +367,58 @@ export function createConsoleController(options = {}) {
 
   function selectMouseRow(event) {
     const firstLaneRow = 5;
-    const index = Math.floor((event.row - firstLaneRow) / 2);
-    if (event.row >= firstLaneRow && index >= 0 && index < ui.laneCount) {
+    const visibleIndex = Math.floor((event.row - firstLaneRow) / 2);
+    const index = ui.viewportOffset + visibleIndex;
+    if (event.row >= firstLaneRow && visibleIndex >= 0 && index < ui.laneCount) {
       ui.selectedIndex = index;
+      ui.selectedLaneId = visibleSnapshot().lanes[index]?.id ?? null;
       ui.notice = null;
     }
+  }
+
+  function startSnapshotRefresh() {
+    if (typeof readSnapshot !== "function" || ui.refreshInFlight) return;
+    ui.refreshInFlight = true;
+    const generation = ++refreshGeneration;
+    let timer = null;
+    let read;
+    try {
+      read = readSnapshot();
+    } catch {
+      read = Promise.reject(new Error("state-read-failed"));
+    }
+    const outcome = Promise.race([
+      Promise.resolve(read).then(
+        (value) => ({ state: "fresh", value }),
+        () => ({ state: "stale" })
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ state: "stale" }), refreshTimeoutMs);
+      })
+    ]);
+    outcome.then((result) => {
+      if (generation !== refreshGeneration) return;
+      if (timer !== null) clearTimeout(timer);
+      if (result.state === "fresh") {
+        snapshot = normalizeSnapshot(result.value, options.cwd);
+        ui.observation = "fresh";
+        clampSelection();
+      } else {
+        ui.observation = "stale";
+      }
+    }).finally(() => {
+      if (generation !== refreshGeneration) return;
+      ui.refreshInFlight = false;
+      renderCurrent().catch(() => undefined);
+    });
   }
 
   async function dispatch(event) {
     if (!event || typeof event !== "object") return { exit: false };
     if (event.type === "tick") {
       ui.refreshTick += 1;
-      if (typeof readSnapshot === "function") {
-        try {
-          snapshot = normalizeSnapshot(await readSnapshot(), options.cwd);
-        } catch {
-          setNotice("state-read-failed");
-        }
-      }
+      startSnapshotRefresh();
+      await Promise.resolve();
       if (ui.motion && MOTION_STATUSES.has(selectedLane()?.status)) ui.frame += 1;
       if (ui.session && ui.refreshTick % 4 === 0 && !ui.composer?.value) {
         await refreshSession();
@@ -364,21 +434,28 @@ export function createConsoleController(options = {}) {
     } else if (event.type === "text" && ui.filterEditing) {
       ui.filterQuery = `${ui.filterQuery}${event.value}`.slice(0, MAX_FILTER_LENGTH);
       ui.selectedIndex = 0;
+      ui.selectedLaneId = null;
+      ui.viewportOffset = 0;
     } else if (event.type === "backspace" && ui.composer) {
       ui.composer.value = Array.from(ui.composer.value).slice(0, -1).join("");
     } else if (event.type === "backspace" && ui.filterEditing) {
       ui.filterQuery = Array.from(ui.filterQuery).slice(0, -1).join("");
       ui.selectedIndex = 0;
+      ui.selectedLaneId = null;
+      ui.viewportOffset = 0;
     } else if (event.type === "applyFilter" && ui.filterEditing) {
       ui.filterEditing = false;
       setNotice(ui.filterQuery ? `FILTER ACTIVE · ${ui.filterQuery}` : "FILTER CLEARED");
     } else if (event.type === "clearFilter") {
       ui.filterEditing = false;
       ui.filterQuery = "";
+      ui.selectedLaneId = null;
+      ui.selectedIndex = 0;
+      ui.viewportOffset = 0;
       setNotice("FILTER CLEARED");
     } else if (event.type === "help") {
       setNotice(
-        "FLEET CONTROLS · ↑↓ select · Enter open agent · Tab change view · / search · X cancel · P motion · Ctrl+G return"
+        "FLEET CONTROLS · ↑↓ select · PgUp/PgDn page · Home/End jump · Enter open agent · Tab change view · / search · X cancel · P motion · Ctrl+G return"
       );
     } else if (event.type === "activate") {
       await openSession();
@@ -462,11 +539,12 @@ export function createConsoleController(options = {}) {
       const delta = event.delta < 0 ? 3 : -3;
       const maximum = Math.max(0, (ui.session.messages?.length ?? 1) * 8);
       ui.session.scroll = Math.max(0, Math.min(maximum, (ui.session.scroll ?? 0) + delta));
-    } else if (event.type === "move") {
+    } else if (["move", "page", "home", "end"].includes(event.type)) {
       if (ui.laneCount <= 1) {
         setNotice(`ONLY ${ui.laneCount} LANE · selection unchanged`);
       } else {
         ui = { ...ui, ...reduceInput(ui, event) };
+        ui.selectedLaneId = visibleSnapshot().lanes[ui.selectedIndex]?.id ?? null;
         ui.notice = null;
       }
     } else if (event.type === "cyclePanel") {
@@ -510,12 +588,43 @@ function removeEmitterListener(emitter, event, handler) {
   else if (typeof emitter.removeListener === "function") emitter.removeListener(event, handler);
 }
 
+async function readInitialSnapshot(readSnapshot, cwd, timeoutMs, clock) {
+  let timer = null;
+  let read;
+  try {
+    read = readSnapshot();
+  } catch {
+    return { snapshot: defaultSnapshot(cwd), observation: "stale" };
+  }
+  const schedule = clock.setTimeout ?? setTimeout;
+  const cancel = clock.clearTimeout ?? clearTimeout;
+  const outcome = await Promise.race([
+    Promise.resolve(read).then(
+      (value) => ({ snapshot: value, observation: "fresh" }),
+      () => ({ snapshot: defaultSnapshot(cwd), observation: "stale" })
+    ),
+    new Promise((resolve) => {
+      timer = schedule(() => resolve({
+        snapshot: defaultSnapshot(cwd),
+        observation: "stale"
+      }), timeoutMs);
+    })
+  ]);
+  if (timer !== null) cancel(timer);
+  return outcome;
+}
+
 export async function runConsole(options = {}) {
   const io = options.io ?? { stdin: process.stdin, stdout: process.stdout, lifecycle: process };
   const clock = options.clock ?? defaultClock();
   const terminalSession = options.terminalSession ?? withTerminalSession;
   const readSnapshot = options.readSnapshot ?? (async () => defaultSnapshot(options.cwd));
-  const initialSnapshot = await readSnapshot();
+  const refreshTimeoutMs = Number.isInteger(options.refreshTimeoutMs)
+    ? Math.max(1, options.refreshTimeoutMs)
+    : SNAPSHOT_REFRESH_TIMEOUT_MS;
+  const initial = options.snapshot
+    ? { snapshot: options.snapshot, observation: "fresh" }
+    : await readInitialSnapshot(readSnapshot, options.cwd, refreshTimeoutMs, clock);
 
   return terminalSession(io, async ({ signal, suspend }) => {
     const decoder = createInputDecoder();
@@ -530,7 +639,8 @@ export async function runConsole(options = {}) {
       : undefined;
     const controller = createConsoleController({
       ...options,
-      snapshot: initialSnapshot,
+      snapshot: initial.snapshot,
+      initialObservation: initial.observation,
       readSnapshot,
       spawnEditor: suspendedEditor,
       terminal: { columns: io.stdout.columns, rows: io.stdout.rows },

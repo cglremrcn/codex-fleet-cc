@@ -16,6 +16,8 @@ does not create a Claude or Codex model turn.
 
 Claude Code's `↓ to manage` hint belongs to Claude's own background-agent UI; it does not open or
 navigate Fleet. Use `Ctrl+G` for Fleet, then the arrow keys or `j`/`k` inside the console.
+Claude background agents/tasks and Fleet lanes are separate background systems: Claude's manager
+does not show Fleet lanes, and Fleet status does not create or control Claude background agents.
 
 > **Development preview:** the runtime, console, reversible setup, terminal handoff, live follow-up
 > and exact owned-lane cancellation are implemented. The release gate passes on Windows, macOS
@@ -28,10 +30,11 @@ Press `Ctrl+G` to open the operator console in the same terminal. Select a lane,
 status and authority, then press `Enter` to open that lane's Codex session. `Ctrl+G` returns from the
 session to the dashboard; `q` or `Esc` returns to Claude Code.
 
-![Fleet Console v0.1.7 dashboard with four sanitized fixture lanes and live KITE motion](docs/assets/fleet-console-dashboard.gif)
+![Historical Fleet Console v0.1.7 field-report dashboard with four sanitized fixture lanes and live KITE motion](docs/assets/fleet-console-dashboard.gif)
 
-The recording is generated from the v0.1.7 renderer with sanitized fixture lanes. It is not a UI
-mockup or a claim about a live external account.
+This historical field-report recording was generated from the v0.1.7 renderer with sanitized fixture
+lanes. It is not a UI mockup or a claim about a live external account. The current Fleet source release
+is v0.2.0; its renderer is covered by the current preview and golden tests.
 
 ## Why this exists
 
@@ -96,6 +99,8 @@ Core navigation is designed around:
 | Key | Action |
 | --- | --- |
 | `↑` / `↓`, `j` / `k` | Select a lane |
+| `PageUp` / `PageDown` | Move by one visible lane page |
+| `Home` / `End` | Select the first or last filtered lane |
 | `Enter` / `m` | Open the selected real Codex thread; `Enter` sends inside it |
 | `Tab` | Move between visibly labelled dashboard panels |
 | `/` | Filter lanes |
@@ -195,6 +200,24 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" init --template image-generation 
 ```
 
 The generated JSON can be reviewed, saved, or passed unchanged to `fleet.mjs start --stdin --json`.
+For a contract file, save exactly one UTF-8 JSON object and use
+`fleet.mjs start --contract <path> --json`; Fleet rejects malformed UTF-8, symbolic-link files and
+inputs over 128 KiB. A mutable contract carries the approval reference only in the root
+`confirmationRef`; a lane prompt or per-lane field cannot substitute for it.
+
+### Inspect status and results without starting work
+
+Status is read-only and never creates a supervisor. Human output keeps active and attention lanes
+visible first; machine JSON is complete by default. Useful forms include:
+
+```bash
+node plugins/fleet/scripts/fleet.mjs status --workspace . --all
+node plugins/fleet/scripts/fleet.mjs status --workspace . --status running --status blocked --since 24h
+node plugins/fleet/scripts/fleet.mjs result --workspace . --lane <lane-id> --summary
+```
+
+`--limit` accepts 1–256 lanes, while `--all` removes the human default limit. `result --pretty`
+decodes a structured nested result; `result --summary` gives the compact human form.
 
 ## Privacy and resource behavior
 
@@ -224,6 +247,9 @@ when the target app-server exposes the enabled `imagegen` system skill and Fleet
 Desktop Browser, Chrome, and Computer Use
 fall back only with explicit user approval and are never silently substituted with Playwright or a fresh
 browser profile.
+Playwright profile concurrency is an external limitation: one mutable profile must not be shared by
+parallel operators, and a new profile does not prove access to the same signed-in account. A stale MCP
+listing proves only old configuration; reload/restart and run a lane-local smoke before relying on it.
 
 ## Current status
 
@@ -233,6 +259,7 @@ matrix.
 | Surface | Status |
 | --- | --- |
 | Windows live terminal handoff | **Proven** on Claude Code v2.1.234 in a disposable profile |
+| Current Claude plugin validation | Passing locally with Claude Code v2.1.252 |
 | Windows runtime and PTY fixture | Passing: installed launcher, exact draft, restored terminal, zero owned child |
 | macOS Intel and Apple Silicon | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
@@ -267,6 +294,10 @@ the reversible integration itself. There is no command or integrity token to cop
 check is read-only; it cannot change settings before that explicit confirmation. Restart Claude Code
 once after setup, then press `Ctrl+G` to enter Fleet Console. Confirm the target version in the Fleet
 masthead and use `q` or `Esc` to return to the same Claude Code session.
+
+Fleet updates two surfaces—the installed plugin package and the owned integration runtime used by the
+terminal handoff. Reloading the plugin updates the first surface; accepting the versioned setup/upgrade
+updates the second. Completion requires the plugin version and Fleet masthead/runtime version to match.
 
 Run `/fleet:doctor` when you want an explicit capability report. `/fleet:setup` remains available as
 a manual recovery path, but it is not part of normal first-run onboarding.

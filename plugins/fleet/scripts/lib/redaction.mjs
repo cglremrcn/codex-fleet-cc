@@ -94,5 +94,27 @@ export function sanitizeLaneForPersistence(lane) {
   if (!lane || typeof lane !== "object" || Array.isArray(lane)) {
     throw new TypeError("Lane metadata must be an object.");
   }
-  return sanitizeValue(lane, new WeakSet());
+  const sanitized = sanitizeValue(lane, new WeakSet());
+  const boundedEvidence = (value, maximumItems, maximumLength = 512) => (
+    Array.isArray(value)
+      ? value
+        .slice(0, maximumItems)
+        .filter((item) => typeof item === "string" && !/[\u0000-\u001f\u007f]/u.test(item))
+        .map((item) => redactText(item).slice(0, maximumLength))
+      : []
+  );
+
+  sanitized.commitRefs = boundedEvidence(lane.commitRefs, 64, 64);
+  sanitized.configChanges = boundedEvidence(lane.configChanges, 64, 256);
+  if (lane.outcomeDiagnostics && typeof lane.outcomeDiagnostics === "object") {
+    sanitized.outcomeDiagnostics = {
+      code: "invalid_lane_outcome",
+      missing: boundedEvidence(lane.outcomeDiagnostics.missing, 32, 128),
+      unknown: boundedEvidence(lane.outcomeDiagnostics.unknown, 32, 128),
+      invalid: boundedEvidence(lane.outcomeDiagnostics.invalid, 32, 128)
+    };
+  } else {
+    sanitized.outcomeDiagnostics = null;
+  }
+  return sanitized;
 }

@@ -44,6 +44,22 @@ test("state round trip is atomic and sanitizes lane metadata", async () => {
   assert.deepEqual(files, ["state.json"]);
 });
 
+test("workspace recovery observation persists without lane attribution", async () => {
+  const root = await stateRoot();
+  await writeWorkspaceState(root, fixtureState({
+    workspaceObservation: {
+      dirty: true,
+      checkedAt: "2026-08-17T12:01:00.000Z",
+      laneId: "must-not-persist"
+    }
+  }));
+
+  assert.deepEqual((await readWorkspaceState(root)).workspaceObservation, {
+    dirty: true,
+    checkedAt: "2026-08-17T12:01:00.000Z"
+  });
+});
+
 test("Windows transient atomic replace failures are retried within a bound", async () => {
   const root = await stateRoot();
   const delays = [];

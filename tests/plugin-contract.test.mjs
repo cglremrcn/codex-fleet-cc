@@ -108,6 +108,19 @@ test("marketplace points to the portable Fleet plugin", async () => {
   assert.equal(marketplace.name, "codex-fleet-cc");
   assert.equal(entry.source, "./plugins/fleet");
   assert.equal(entry.category, "development");
+  assert.equal(entry.version, "0.2.0");
+  assert.equal(
+    entry.version,
+    JSON.parse(await read("plugins/fleet/.claude-plugin/plugin.json")).version
+  );
+});
+
+test("CI and release validate the locally proven Claude Code version", async () => {
+  for (const workflow of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
+    const source = await read(workflow);
+    assert.match(source, /@anthropic-ai\/claude-code@2\.1\.252/iu, workflow);
+    assert.doesNotMatch(source, /@anthropic-ai\/claude-code@2\.1\.234/iu, workflow);
+  }
 });
 
 test("user-only state changes cannot be invoked autonomously by the model", async () => {
@@ -157,7 +170,7 @@ test("Codex lane agent accepts one immutable contract and only calls Fleet CLI",
   assert.match(source, /already-granted authority/i);
   assert.match(source, /Ctrl\+G/i);
   assert.match(source, /poll.*status.*result/is);
-  assert.match(source, /complete.*verified.*blocked.*failed.*cancelled.*outcome_unknown/is);
+  assert.match(source, /complete.*verified.*blocked.*failed.*cancelled.*interrupted.*outcome_unknown/is);
   assert.doesNotMatch(source, /curl|Invoke-WebRequest|Start-Process/);
 });
 

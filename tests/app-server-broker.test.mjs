@@ -7,6 +7,26 @@ import {
 } from "../plugins/fleet/scripts/app-server-broker.mjs";
 import { startFakeCodex } from "./fixtures/fake-codex-app-server.mjs";
 
+const LOST_RESPONSE_TIMEOUT_MS = 1_000;
+
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && processIsRunning(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return !processIsRunning(pid);
+}
+
 test("protocol diagnostics retain shape without ids, text, errors, or secrets", () => {
   const secret = "never-retain-protocol-content";
   const summary = summarizeProtocolMessage({
@@ -47,6 +67,32 @@ test("broker close first lets app-server exit naturally on stdin EOF", async (t)
   await broker.close();
 
   assert.equal(stopCalls, 0);
+});
+
+test("failed initialization closes the app-server process", async (t) => {
+  const fake = startFakeCodex(t);
+  let ownedPid = null;
+  try {
+    await assert.rejects(
+      createAppServerBroker({
+        codexCommand: fake.command,
+        cwd: fake.workspace,
+        env: fake.env,
+        requestTimeoutMs: 0,
+        captureOwnedProcess: async (pid) => {
+          ownedPid = pid;
+          return { pid, recordedStart: "test-owned-process" };
+        }
+      }),
+      /timed out.*initialize/iu
+    );
+
+    assert.equal(await waitForProcessExit(ownedPid), true);
+  } finally {
+    if (Number.isSafeInteger(ownedPid) && processIsRunning(ownedPid)) {
+      process.kill(ownedPid, "SIGTERM");
+    }
+  }
 });
 
 test("broker close terminates its exact owned process tree after graceful timeout", async (t) => {
@@ -112,7 +158,7 @@ test("broker marks a timed-out post-send request as acceptance unknown", async (
     codexCommand: fake.command,
     cwd: fake.workspace,
     env: fake.env,
-    requestTimeoutMs: 50
+    requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
   try {
     const thread = await broker.request("thread/start", {
@@ -136,6 +182,35 @@ test("broker marks a timed-out post-send request as acceptance unknown", async (
       }
     );
     assert.equal(fake.readState().threads[0].turns.length, 1);
+  } finally {
+    await broker.close();
+  }
+});
+
+test("broker preserves exact argv for sandboxed command execution", async (t) => {
+  const fake = startFakeCodex(t);
+  const broker = await createAppServerBroker({
+    codexCommand: fake.command,
+    cwd: fake.workspace,
+    env: fake.env
+  });
+  try {
+    const command = [process.execPath, "-e", "process.stdout.write(process.version)"];
+    const sandboxPolicy = {
+      type: "workspaceWrite",
+      writableRoots: [fake.workspace],
+      networkAccess: false
+    };
+    const result = await broker.request("command/exec", {
+      command,
+      cwd: fake.workspace,
+      sandboxPolicy,
+      timeoutMs: 10_000
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(fake.readState().lastCommandExec.command, command);
+    assert.deepEqual(fake.readState().lastCommandExec.sandboxPolicy, sandboxPolicy);
   } finally {
     await broker.close();
   }

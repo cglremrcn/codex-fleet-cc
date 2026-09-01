@@ -48,6 +48,21 @@ test("decoder maps both common F1 sequences to help", () => {
   ]);
 });
 
+test("decoder maps page, home, and end navigation variants", () => {
+  const decoder = createInputDecoder();
+
+  assert.deepEqual(decoder.push(Buffer.from(
+    "\u001b[5~\u001b[6~\u001b[H\u001b[F\u001b[1~\u001b[4~"
+  )), [
+    { type: "page", delta: -1 },
+    { type: "page", delta: 1 },
+    { type: "home" },
+    { type: "end" },
+    { type: "home" },
+    { type: "end" }
+  ]);
+});
+
 test("decoder handles reverse panel navigation, mouse release, and wheel", () => {
   const decoder = createInputDecoder();
   const events = decoder.push(Buffer.from(
@@ -143,4 +158,24 @@ test("input reducer changes only local console state", () => {
     motion: true,
     exitRequested: false
   });
+});
+
+test("input reducer pages by visible capacity and supports home and end", () => {
+  const initial = {
+    laneCount: 58,
+    selectedIndex: 0,
+    viewportOffset: 0,
+    visibleLaneCapacity: 8
+  };
+
+  const paged = reduceInput(initial, { type: "page", delta: 1 });
+  const ended = reduceInput(paged, { type: "end" });
+  const homed = reduceInput(ended, { type: "home" });
+
+  assert.equal(paged.selectedIndex, 8);
+  assert.equal(paged.viewportOffset, 1);
+  assert.equal(ended.selectedIndex, 57);
+  assert.equal(ended.viewportOffset, 50);
+  assert.equal(homed.selectedIndex, 0);
+  assert.equal(homed.viewportOffset, 0);
 });

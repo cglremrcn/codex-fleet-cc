@@ -38,6 +38,16 @@ function assertSize(serialized) {
   }
 }
 
+function sanitizeWorkspaceObservation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const dirty = typeof value.dirty === "boolean" ? value.dirty : null;
+  const checkedAt = typeof value.checkedAt === "string"
+    && Number.isFinite(Date.parse(value.checkedAt))
+    ? value.checkedAt
+    : null;
+  return { dirty, checkedAt };
+}
+
 async function ensureSafeRoot(root) {
   if (typeof root !== "string" || !path.isAbsolute(root)) {
     throw new TypeError("Workspace state root must be an absolute path.");
@@ -109,7 +119,10 @@ function serializeState(state) {
   const safe = {
     schemaVersion: 1,
     updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : null,
-    lanes: state.lanes.map(sanitizeLaneForPersistence)
+    lanes: state.lanes.map(sanitizeLaneForPersistence),
+    ...(state.workspaceObservation
+      ? { workspaceObservation: sanitizeWorkspaceObservation(state.workspaceObservation) }
+      : {})
   };
   const serialized = `${JSON.stringify(safe, null, 2)}\n`;
   assertSize(serialized);

@@ -59,3 +59,28 @@ test("lane sanitization does not mutate its source object", () => {
   assert.notEqual(sanitized, source);
   assert.notEqual(sanitized.nested, source.nested);
 });
+
+test("lane sanitization bounds evidence arrays and allowlists outcome diagnostics", () => {
+  const sanitized = sanitizeLaneForPersistence({
+    id: "lane-evidence",
+    commitRefs: ["deadbee", ...Array.from({ length: 80 }, () => "abcdef1")],
+    configChanges: ["config/app.json", "Bearer abc.def.ghi"],
+    outcomeDiagnostics: {
+      code: "invalid_lane_outcome",
+      missing: ["evidenceRefs"],
+      unknown: ["evidenceRef"],
+      invalid: ["commitRefs:deadbee"],
+      rawOutput: "do not persist",
+      nested: { secret: "do not persist" }
+    }
+  });
+
+  assert.equal(sanitized.commitRefs.length, 64);
+  assert.deepEqual(sanitized.configChanges, ["config/app.json", "Bearer [REDACTED:TOKEN]"]);
+  assert.deepEqual(sanitized.outcomeDiagnostics, {
+    code: "invalid_lane_outcome",
+    missing: ["evidenceRefs"],
+    unknown: ["evidenceRef"],
+    invalid: ["commitRefs:deadbee"]
+  });
+});

@@ -18,6 +18,11 @@ lane `prompt` contains the human-readable work contract.
     objective now. Do not stop at a plan or ask for redundant approval. Never widen authority; report a
     genuine missing authority, external effect, input, or user choice to the controller.
 
+Every execution prompt also states that the controller owns Git commits; lanes must not commit or amend.
+On Windows PowerShell 5.1, do not use `&&`; run commands separately and inspect each result. Persist
+intermediate findings before long-running suites. If the sandbox blocks a build or dev-server command,
+return the exact command as a controller verification request instead of claiming it passed.
+
 Prompts are bounded by the Fleet 128 KiB contract input limit. Prefer references to repository files
 over copying large context. Never include credentials, cookies, personal data, hidden reasoning, or raw
 private logs.
@@ -90,6 +95,10 @@ supervisor admission:
 A typo is rejected with all other contract issues in the same validation response; it is not deferred
 to a failing runtime turn.
 
+When using `start --contract`, the path must be a regular, non-symbolic-link file containing exactly one
+UTF-8 JSON object no larger than 128 KiB. Mutable authority requires a non-empty root `confirmationRef`;
+placing approval prose inside `prompt`, `label`, or an environment variable has no authority effect.
+
 ## Immutability and follow-ups
 
 Once admitted, do not alter objective, authority, exclusions, or checkout. A clarification that stays
@@ -99,8 +108,9 @@ environment variables.
 
 ## Result contract
 
-Fleet requires a structured result with `outcome`, `summary`, `workPerformed`, `evidenceRefs`,
-`artifactRefs`, `verification`, `controllerRequest`, and `stopReason`. Allowed outcomes are
+Fleet requires `outcome`, `summary`, `workPerformed`, and `evidenceRefs`; `artifactRefs`,
+`verification`, `commitRefs`, `configChanges`, `controllerRequest`, and `stopReason` are optional with
+safe defaults. Allowed outcomes are
 `accomplished`, `continue_within_authority`, `needs_controller`, and `blocked`. `controllerRequest` is
 either `null` or `{ "kind": "...", "question": "..." }`; accepted kinds are `redundant_approval`,
 `new_authority`, `external_effect`, `missing_input`, `user_choice`, and `runtime_blocker`.

@@ -6,6 +6,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 
 import { isMainModule } from "../plugins/fleet/scripts/lib/is-main.mjs";
+import { resolveExecutable } from "../plugins/fleet/scripts/app-server-broker.mjs";
 import { getFleetDataDir, workspaceKey } from "../plugins/fleet/scripts/lib/paths.mjs";
 import {
   readSupervisorManifest,
@@ -45,6 +46,46 @@ export function assertDisposableWorkspace(workspacePath, disposableRoot) {
 export function commandOutput(result) {
   const stdout = String(result?.stdout ?? "").trim();
   return stdout || String(result?.stderr ?? "").trim();
+}
+
+export function codexInvocation(executable, args, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  if (!Array.isArray(args) || args.some((arg) => !/^[A-Za-z0-9._:-]+$/u.test(arg))) {
+    throw new TypeError("Codex diagnostic arguments must be safe literal values.");
+  }
+  const extension = path.extname(executable).toLowerCase();
+  if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
+    return { command: executable, args: [...args] };
+  }
+  const commandProcessor = env.ComSpec ?? env.COMSPEC;
+  if (!commandProcessor || !path.win32.isAbsolute(commandProcessor)) {
+    throw new Error("A trusted absolute ComSpec path is required for Codex diagnostics.");
+  }
+  if (/["%!^&|<>]/u.test(executable)) {
+    throw new Error("The resolved Codex wrapper path is unsafe for cmd.exe.");
+  }
+  return {
+    command: commandProcessor,
+    args: ["/d", "/s", "/c", "call", executable, ...args]
+  };
+}
+
+export function assertResumableLiveLane(lane) {
+  const resumable = lane?.status === "complete"
+    || (lane?.status === "blocked" && lane?.phase === "needs-controller");
+  if (resumable) return lane;
+  const status = String(lane?.status ?? "missing").slice(0, 64);
+  const phase = String(lane?.phase ?? "missing").slice(0, 64);
+  const outcome = String(lane?.outcome ?? "missing").slice(0, 64);
+  const reason = String(lane?.exitReason ?? "missing")
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .slice(0, 256);
+  const diagnostics = JSON.stringify(lane?.outcomeDiagnostics ?? null).slice(0, 512);
+  throw new Error(
+    `Live lane is not resumable: status=${status} phase=${phase} `
+    + `outcome=${outcome} reason=${reason} diagnostics=${diagnostics}`
+  );
 }
 
 function readOnlyAuthority() {
@@ -294,8 +335,11 @@ export async function runLiveSmoke(options = {}) {
   const key = await workspaceKey(workspace);
 
   try {
-    const codexVersion = run("codex", ["--version"], context);
-    const loginStatus = run("codex", ["login", "status"], context);
+    const codexExecutable = resolveExecutable("codex", { env });
+    const versionInvocation = codexInvocation(codexExecutable, ["--version"], { env });
+    const loginInvocation = codexInvocation(codexExecutable, ["login", "status"], { env });
+    const codexVersion = run(versionInvocation.command, versionInvocation.args, context);
+    const loginStatus = run(loginInvocation.command, loginInvocation.args, context);
     const [investigatorContract, verifierContract, cancelContract] =
       buildLiveSmokeContracts(workspace);
 
@@ -311,6 +355,7 @@ export async function runLiveSmoke(options = {}) {
       "result", "--workspace", workspace, "--lane", "live-investigator",
       "--wait", "--timeout-ms", String(RESULT_TIMEOUT_MS)
     ], context), "live-investigator");
+    assertResumableLiveLane(first);
     const followUpSupervisor = await readSupervisorManifest({ dataDir, workspaceKey: key });
     if (
       !followUpSupervisor

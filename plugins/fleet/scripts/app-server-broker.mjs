@@ -29,7 +29,7 @@ const OWNERSHIP_REMEDIATION =
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.1.7"
+  version: "0.2.0"
 });
 
 const CAPABILITIES = Object.freeze({
@@ -292,12 +292,24 @@ class AppServerBroker {
       });
     }
 
-    await this.request("initialize", {
-      clientInfo: CLIENT_INFO,
-      capabilities: CAPABILITIES
-    });
-    this.notify("initialized", {});
-    return this;
+    try {
+      await this.request("initialize", {
+        clientInfo: CLIENT_INFO,
+        capabilities: CAPABILITIES
+      });
+      this.notify("initialized", {});
+      return this;
+    } catch (error) {
+      try {
+        await this.close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `${error.message} App-server cleanup also failed.`
+        );
+      }
+      throw error;
+    }
   }
 
   setEventHandler(handler) {

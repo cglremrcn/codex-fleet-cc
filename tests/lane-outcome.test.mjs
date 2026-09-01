@@ -22,22 +22,83 @@ function payload(overrides = {}) {
   });
 }
 
-test("lane outcome schema is strict and requires evidence-bearing fields", () => {
+test("lane outcome wire schema requires every declared field for strict Structured Outputs", () => {
   assert.equal(LANE_OUTCOME_SCHEMA.type, "object");
   assert.equal(LANE_OUTCOME_SCHEMA.additionalProperties, false);
   assert.deepEqual(
     new Set(LANE_OUTCOME_SCHEMA.required),
-    new Set([
-      "outcome",
-      "summary",
-      "workPerformed",
-      "evidenceRefs",
-      "artifactRefs",
-      "verification",
-      "controllerRequest",
-      "stopReason"
-    ])
+    new Set(Object.keys(LANE_OUTCOME_SCHEMA.properties))
   );
+});
+
+test("controller outcomes normalize omitted optional evidence fields", () => {
+  const result = parseLaneOutcome(JSON.stringify({
+    outcome: "needs_controller",
+    summary: "Build must run outside this sandbox.",
+    workPerformed: ["Implemented the requested code."],
+    evidenceRefs: ["tests/build.test.mjs"],
+    controllerRequest: {
+      kind: "runtime_blocker",
+      question: "Run npm run build in the controller environment."
+    }
+  }));
+
+  assert.deepEqual(result.artifactRefs, []);
+  assert.deepEqual(result.verification, []);
+  assert.deepEqual(result.commitRefs, []);
+  assert.deepEqual(result.configChanges, []);
+  assert.equal(result.stopReason, null);
+});
+
+test("schema diagnostics name missing and unknown root fields", () => {
+  let error;
+  assert.throws(
+    () => {
+      try {
+        parseLaneOutcome(JSON.stringify({
+          outcome: "blocked",
+          summary: "Stopped.",
+          workPerformed: [],
+          evidenceRef: []
+        }));
+      } catch (caught) {
+        error = caught;
+        throw caught;
+      }
+    },
+    /missing: evidenceRefs.*unknown: evidenceRef/iu
+  );
+  assert.deepEqual(error.outcomeDiagnostics, {
+    code: "invalid_lane_outcome",
+    missing: ["evidenceRefs"],
+    unknown: ["evidenceRef"],
+    invalid: []
+  });
+});
+
+test("optional commit and config evidence stays bounded and workspace-relative", () => {
+  const result = parseLaneOutcome(payload({
+    commitRefs: ["abcdef1", "0123456789abcdef0123456789abcdef01234567"],
+    configChanges: [".github/workflows/release.yml"]
+  }));
+  assert.deepEqual(result.commitRefs, ["abcdef1", "0123456789abcdef0123456789abcdef01234567"]);
+  assert.deepEqual(result.configChanges, [".github/workflows/release.yml"]);
+
+  assert.throws(() => parseLaneOutcome(payload({ commitRefs: ["not-a-commit"] })), /commit/iu);
+  assert.throws(() => parseLaneOutcome(payload({ configChanges: ["../outside.env"] })), /config/iu);
+});
+
+test("blocked outcomes may identify a controller request instead of a stop reason", () => {
+  const result = parseLaneOutcome(payload({
+    outcome: "blocked",
+    controllerRequest: {
+      kind: "missing_input",
+      question: "Provide the missing deployment target."
+    },
+    stopReason: null
+  }));
+  assert.equal(result.controllerRequest.kind, "missing_input");
+  assert.equal(result.stopReason, null);
 });
 
 test("accomplished requires concrete work and verification before complete", () => {
@@ -93,6 +154,16 @@ test("malformed or repeatedly incomplete outcomes never become complete", () => 
   const exhausted = decideLaneOutcome("not json", 2);
   assert.equal(exhausted.action, "needs-controller");
   assert.match(exhausted.reason, /structured outcome/iu);
+});
+
+test("semantic failures expose only bounded field diagnostics", () => {
+  const decision = decideLaneOutcome(payload({ outcome: "unsupported" }), 2);
+  assert.deepEqual(decision.diagnostics, {
+    code: "invalid_lane_outcome",
+    missing: [],
+    unknown: [],
+    invalid: ["outcome"]
+  });
 });
 
 test("ambiguous mutable results become unknown instead of automatic retries", () => {

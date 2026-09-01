@@ -4,6 +4,20 @@ import { redactText } from "./redaction.mjs";
 
 export const MAX_AUTOMATIC_CONTINUATIONS = 2;
 
+const EXECUTION_POSTURE_LINES = Object.freeze([
+  "This admitted Fleet contract is authorization from the controller for work inside its exact authority.",
+  "Execute and verify the work in this turn; do not stop at a plan or request redundant approval.",
+  "The controller owns Git commits; do not create, amend, or rewrite commits in a lane.",
+  "On Windows PowerShell 5.1, do not use `&&`; run each command separately and inspect each exit result.",
+  "Persist intermediate findings and evidence before long-running test suites so an interruption does not erase them.",
+  "If the sandbox blocks a build or dev-server command, report the exact blocked command and request controller verification; do not claim the check passed.",
+  "Never widen authority. If genuinely required authority or input is missing, report it in the structured outcome so the controller can decide."
+]);
+
+export function executionPostureLines() {
+  return [...EXECUTION_POSTURE_LINES];
+}
+
 const OUTCOMES = Object.freeze([
   "accomplished",
   "continue_within_authority",
@@ -25,16 +39,25 @@ const CONTROLLER_ONLY_REQUESTS = new Set([
   "user_choice",
   "runtime_blocker"
 ]);
-const ROOT_FIELDS = new Set([
+const REQUIRED_ROOT_FIELDS = new Set([
   "outcome",
   "summary",
   "workPerformed",
-  "evidenceRefs",
-  "artifactRefs",
-  "verification",
-  "controllerRequest",
-  "stopReason"
+  "evidenceRefs"
 ]);
+const OPTIONAL_ROOT_DEFAULTS = Object.freeze({
+  artifactRefs: Object.freeze([]),
+  verification: Object.freeze([]),
+  commitRefs: Object.freeze([]),
+  configChanges: Object.freeze([]),
+  controllerRequest: null,
+  stopReason: null
+});
+const ROOT_FIELDS = new Set([
+  ...REQUIRED_ROOT_FIELDS,
+  ...Object.keys(OPTIONAL_ROOT_DEFAULTS)
+]);
+const DIAGNOSTIC_FIELDS = Object.freeze([...ROOT_FIELDS, "json"]);
 
 export const LANE_OUTCOME_SCHEMA = Object.freeze({
   type: "object",
@@ -62,6 +85,16 @@ export const LANE_OUTCOME_SCHEMA = Object.freeze({
       type: "array",
       maxItems: 32,
       items: { type: "string", minLength: 1, maxLength: 512 }
+    },
+    commitRefs: {
+      type: "array",
+      maxItems: 64,
+      items: { type: "string", pattern: "^[a-fA-F0-9]{7,64}$" }
+    },
+    configChanges: {
+      type: "array",
+      maxItems: 64,
+      items: { type: "string", minLength: 1, maxLength: 256 }
     },
     controllerRequest: {
       anyOf: [
@@ -104,19 +137,27 @@ function boundedList(value, label, maximumItems) {
   )));
 }
 
-function artifactList(value) {
-  const artifacts = boundedList(value, "artifactRefs", 64);
-  for (const artifact of artifacts) {
-    const normalized = artifact.replaceAll("\\", "/");
+function workspacePathList(value, label) {
+  const paths = boundedList(value, label, 64);
+  for (const candidate of paths) {
+    const normalized = candidate.replaceAll("\\", "/");
     if (
       path.posix.isAbsolute(normalized)
-      || path.win32.isAbsolute(artifact)
+      || path.win32.isAbsolute(candidate)
       || normalized.split("/").includes("..")
     ) {
-      throw new TypeError("Lane artifact references must be workspace-relative paths.");
+      throw new TypeError(`Lane ${label} must contain workspace-relative paths.`);
     }
   }
-  return artifacts;
+  return paths;
+}
+
+function commitList(value) {
+  const commits = boundedList(value, "commitRefs", 64);
+  if (commits.some((commit) => !/^[a-f0-9]{7,64}$/iu.test(commit))) {
+    throw new TypeError("Lane commitRefs must contain hexadecimal Git commit references.");
+  }
+  return commits;
 }
 
 function optionalText(value, label) {
@@ -141,19 +182,57 @@ function parseControllerRequest(value) {
   });
 }
 
+function outcomeDiagnostic({ missing = [], unknown = [], invalid = [] } = {}) {
+  return Object.freeze({
+    code: "invalid_lane_outcome",
+    missing: Object.freeze([...missing].sort()),
+    unknown: Object.freeze([...unknown].sort()),
+    invalid: Object.freeze([...invalid].filter((field) => DIAGNOSTIC_FIELDS.includes(field)).sort())
+  });
+}
+
+function attachOutcomeDiagnostic(error, diagnostic) {
+  Object.defineProperty(error, "outcomeDiagnostics", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: outcomeDiagnostic(diagnostic)
+  });
+  return error;
+}
+
+function diagnosticForError(error) {
+  if (error?.outcomeDiagnostics) return error.outcomeDiagnostics;
+  const message = String(error?.message ?? "").toLowerCase();
+  const invalid = [...ROOT_FIELDS].filter((field) => message.includes(field.toLowerCase()));
+  return outcomeDiagnostic({ invalid: invalid.length > 0 ? invalid : ["outcome"] });
+}
+
 export function parseLaneOutcome(source) {
   let value;
   try {
     value = JSON.parse(source);
   } catch {
-    throw new TypeError("Lane result must be valid structured outcome JSON.");
+    throw attachOutcomeDiagnostic(
+      new TypeError("Lane result must be valid structured outcome JSON."),
+      { invalid: ["json"] }
+    );
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("Lane structured outcome must be an object.");
   }
   const keys = Object.keys(value);
-  if (keys.some((key) => !ROOT_FIELDS.has(key)) || keys.length !== ROOT_FIELDS.size) {
-    throw new TypeError("Lane structured outcome fields do not match the required schema.");
+  const missing = [...REQUIRED_ROOT_FIELDS].filter((key) => !keys.includes(key)).sort();
+  const unknown = keys.filter((key) => !ROOT_FIELDS.has(key)).sort();
+  if (missing.length > 0 || unknown.length > 0) {
+    const diagnostics = [
+      missing.length > 0 ? `missing: ${missing.join(", ")}` : null,
+      unknown.length > 0 ? `unknown: ${unknown.join(", ")}` : null
+    ].filter(Boolean).join("; ");
+    throw attachOutcomeDiagnostic(
+      new TypeError(`Lane structured outcome fields do not match the schema (${diagnostics}).`),
+      { missing, unknown }
+    );
   }
   if (!OUTCOMES.includes(value.outcome)) {
     throw new TypeError("Lane structured outcome has an unsupported outcome.");
@@ -163,10 +242,26 @@ export function parseLaneOutcome(source) {
     summary: boundedText(value.summary, "summary", 2_000),
     workPerformed: boundedList(value.workPerformed, "workPerformed", 32),
     evidenceRefs: boundedList(value.evidenceRefs, "evidenceRefs", 64),
-    artifactRefs: artifactList(value.artifactRefs),
-    verification: boundedList(value.verification, "verification", 32),
-    controllerRequest: parseControllerRequest(value.controllerRequest),
-    stopReason: optionalText(value.stopReason, "stopReason")
+    artifactRefs: workspacePathList(
+      value.artifactRefs === undefined ? OPTIONAL_ROOT_DEFAULTS.artifactRefs : value.artifactRefs,
+      "artifactRefs"
+    ),
+    verification: boundedList(
+      value.verification === undefined ? OPTIONAL_ROOT_DEFAULTS.verification : value.verification,
+      "verification",
+      32
+    ),
+    commitRefs: commitList(
+      value.commitRefs === undefined ? OPTIONAL_ROOT_DEFAULTS.commitRefs : value.commitRefs
+    ),
+    configChanges: workspacePathList(
+      value.configChanges === undefined ? OPTIONAL_ROOT_DEFAULTS.configChanges : value.configChanges,
+      "configChanges"
+    ),
+    controllerRequest: parseControllerRequest(
+      value.controllerRequest ?? OPTIONAL_ROOT_DEFAULTS.controllerRequest
+    ),
+    stopReason: optionalText(value.stopReason ?? OPTIONAL_ROOT_DEFAULTS.stopReason, "stopReason")
   };
   if (result.outcome === "accomplished" && result.controllerRequest !== null) {
     throw new TypeError("An accomplished lane cannot request controller action.");
@@ -174,8 +269,12 @@ export function parseLaneOutcome(source) {
   if (result.outcome === "needs_controller" && result.controllerRequest === null) {
     throw new TypeError("A needs_controller outcome requires controllerRequest.");
   }
-  if (result.outcome === "blocked" && result.stopReason === null) {
-    throw new TypeError("A blocked outcome requires stopReason.");
+  if (
+    result.outcome === "blocked"
+    && result.stopReason === null
+    && result.controllerRequest === null
+  ) {
+    throw new TypeError("A blocked outcome requires stopReason or controllerRequest.");
   }
   return Object.freeze(result);
 }
@@ -199,21 +298,23 @@ function recoveryPrompt(reason) {
   ].join(" ");
 }
 
-function continuationOrController(attempts, reason) {
+function continuationOrController(attempts, reason, diagnostics = null) {
   if (attempts < MAX_AUTOMATIC_CONTINUATIONS) {
-    return Object.freeze({ action: "continue", prompt: recoveryPrompt(reason) });
+    return Object.freeze({ action: "continue", prompt: recoveryPrompt(reason), diagnostics });
   }
   return Object.freeze({
     action: "needs-controller",
-    reason: "Codex did not produce a complete structured outcome after automatic recovery."
+    reason: "Codex did not produce a complete structured outcome after automatic recovery.",
+    diagnostics
   });
 }
 
-function unknownOutcome(reason, result = null) {
+function unknownOutcome(reason, result = null, diagnostics = null) {
   return Object.freeze({
     action: "outcome-unknown",
     reason: redactText(reason).slice(0, 2_000),
-    result
+    result,
+    diagnostics
   });
 }
 
@@ -225,12 +326,15 @@ export function decideLaneOutcome(source, attempts = 0, options = {}) {
   } catch (error) {
     if (mutationRisk) {
       return unknownOutcome(
-        `Mutable lane returned an invalid result; effects require reconciliation: ${error.message}`
+        `Mutable lane returned an invalid result; effects require reconciliation: ${error.message}`,
+        null,
+        diagnosticForError(error)
       );
     }
     return continuationOrController(
       attempts,
-      `The prior response was invalid: ${boundedText(error.message, "error", 512)}`
+      `The prior response was invalid: ${boundedText(error.message, "error", 512)}`,
+      diagnosticForError(error)
     );
   }
 
@@ -295,9 +399,6 @@ export function buildExecutionPrompt(prompt) {
     prompt,
     "",
     "Fleet execution posture:",
-    "- This admitted contract is the controller's authorization for work inside its exact authority.",
-    "- Execute and verify the work in this turn; do not stop at a plan or request redundant approval.",
-    "- Never widen authority. If genuinely required authority or input is missing, report it in the",
-    "  structured outcome so the controller can decide."
+    ...executionPostureLines().map((line) => `- ${line}`)
   ].join("\n");
 }

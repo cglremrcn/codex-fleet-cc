@@ -556,3 +556,57 @@ test("unchanged inactive snapshots do not redraw on fallback ticks", async () =>
 
   assert.equal(writes.length, 1);
 });
+
+test("58-lane navigation keeps the selected ID inside the viewport across refresh order changes", async () => {
+  const writes = [];
+  const lanes = Array.from({ length: 58 }, (_, index) => lane({
+    id: `lane-${String(index + 1).padStart(2, "0")}`,
+    label: `Lane ${index + 1}`,
+    status: index === 57 ? "running" : "outcome_unknown"
+  }));
+  let current = snapshot({ lanes });
+  const controller = createConsoleController({
+    snapshot: current,
+    readSnapshot: async () => current,
+    write: (value) => writes.push(value),
+    terminal: { columns: 120, rows: 24 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.render();
+  await controller.dispatch({ type: "page", delta: 1 });
+  assert.equal(controller.state().selectedIndex, 8);
+  assert.match(writes.at(-1), /lane-09/iu);
+  await controller.dispatch({ type: "end" });
+  assert.equal(controller.state().selectedLaneId, "lane-58");
+  assert.match(writes.at(-1), /lane-58/iu);
+  assert.match(writes.at(-1), /VISIBLE 51[–-]58 \/ 58/iu);
+
+  current = snapshot({ lanes: [lanes[57], ...lanes.slice(0, 57)] });
+  await controller.dispatch({ type: "tick" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(controller.state().selectedLaneId, "lane-58");
+  assert.equal(controller.state().selectedIndex, 0);
+});
+
+test("slow snapshot refresh retains the last good frame without blocking navigation", async () => {
+  const writes = [];
+  const controller = createConsoleController({
+    snapshot: snapshot(),
+    readSnapshot: async () => new Promise(() => undefined),
+    refreshTimeoutMs: 20,
+    write: (value) => writes.push(value),
+    terminal: { columns: 100, rows: 24 },
+    preferences: { color: false, unicode: true }
+  });
+
+  await controller.render();
+  await controller.dispatch({ type: "tick" });
+  await controller.dispatch({ type: "move", delta: 1 });
+  assert.equal(controller.state().selectedLaneId, "lane-b");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.match(writes.at(-1), /OBSERVATION STALE/iu);
+  assert.match(writes.at(-1), /lane-b/iu);
+  assert.equal(controller.state().refreshInFlight, false);
+});

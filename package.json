@@ -1,6 +1,6 @@
 {
   "name": "codex-fleet-cc",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "A local Codex fleet console and orchestration plugin for Claude Code.",
@@ -13,8 +13,8 @@
   },
   "scripts": {
     "postinstall": "node scripts/fix-node-pty-permissions.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "test:unit": "node --test tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:unit": "node --test --test-concurrency=1 tests/*.test.mjs",
     "test:integration": "node --test tests/e2e-fleet.test.mjs tests/runtime-adapter.test.mjs",
     "test:pty": "node --test tests/pty-console.test.mjs",
     "smoke:live": "node scripts/run-live-smoke.mjs --confirm-live-account",
@@ -25,8 +25,8 @@
     "check:licenses": "node scripts/check-licenses.mjs",
     "check:performance": "node scripts/check-performance.mjs",
     "check:docs": "node scripts/check-doc-links.mjs",
-    "package:plugin": "node scripts/package-plugin.mjs --version 0.1.7",
-    "release:check": "node scripts/release-check.mjs --version 0.1.7",
+    "package:plugin": "node scripts/package-plugin.mjs --version 0.2.0",
+    "release:check": "node scripts/release-check.mjs --version 0.2.0",
     "verify": "npm run typecheck && npm test && npm run validate:plugin && npm run check:secrets && npm run check:licenses && npm run check:performance && npm run check:docs"
   },
   "devDependencies": {

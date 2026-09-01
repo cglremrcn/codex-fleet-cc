@@ -117,6 +117,7 @@ test("status constants and terminal classification stay aligned", () => {
     "blocked",
     "failed",
     "cancelled",
+    "interrupted",
     "outcome_unknown"
   ]);
   assert.deepEqual(TERMINAL_STATUSES, [
@@ -125,11 +126,24 @@ test("status constants and terminal classification stay aligned", () => {
     "blocked",
     "failed",
     "cancelled",
+    "interrupted",
     "outcome_unknown"
   ]);
+  assert.equal(isTerminalStatus("interrupted"), true);
   assert.equal(isTerminalStatus("verified"), true);
   assert.equal(isTerminalStatus("running"), false);
   assert.equal(isTerminalStatus("made_up"), false);
+});
+
+test("interrupted is terminal and cannot be automatically requeued", () => {
+  const running = transitionLane(createLane(fixtureLane()), "running", { at: NOW });
+  const interrupted = transitionLane(running, "interrupted", { at: NOW });
+
+  assert.equal(interrupted.status, "interrupted");
+  assert.throws(
+    () => transitionLane(interrupted, "queued", { at: NOW }),
+    /transition/iu
+  );
 });
 
 test("lane contracts reject malformed and oversized identity fields", () => {
