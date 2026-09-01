@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import process from "node:process";
 
+import { resolveExecutable } from "../app-server-broker.mjs";
 import { redactText } from "./redaction.mjs";
 
 export const CAPABILITY_STATES = Object.freeze([
@@ -17,6 +19,30 @@ const COMMAND_ARGUMENTS = Object.freeze({
   claude: ["--version"],
   codex: ["--version"]
 });
+
+export function resolveDiagnosticInvocation(command, args, options = {}) {
+  if (!Array.isArray(args) || args.some((arg) => !/^[A-Za-z0-9._:-]+$/u.test(arg))) {
+    throw new TypeError("Diagnostic arguments must be safe literal values.");
+  }
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const executable = resolveExecutable(command, { env, platform });
+  const extension = path.extname(executable).toLowerCase();
+  if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
+    return { command: executable, args: [...args] };
+  }
+  const commandProcessor = env.ComSpec ?? env.COMSPEC;
+  if (!commandProcessor || !path.win32.isAbsolute(commandProcessor)) {
+    throw new Error("A trusted absolute ComSpec path is required for diagnostics.");
+  }
+  if (/["%!^&|<>]/u.test(executable)) {
+    throw new Error("The resolved diagnostic wrapper path is unsafe for cmd.exe.");
+  }
+  return {
+    command: commandProcessor,
+    args: ["/d", "/s", "/c", "call", executable, ...args]
+  };
+}
 
 function boundedDetail(value) {
   if (value === undefined || value === null || value === "") {
@@ -123,11 +149,17 @@ async function defaultCommandProbe(name, context) {
   if (name === "node") {
     return { available: true, version: process.version, detail: process.version };
   }
-  return probeCommand(name, COMMAND_ARGUMENTS[name] ?? ["--version"], context);
+  const invocation = resolveDiagnosticInvocation(
+    name,
+    COMMAND_ARGUMENTS[name] ?? ["--version"],
+    context
+  );
+  return probeCommand(invocation.command, invocation.args, context);
 }
 
 async function defaultAuthProbe(context) {
-  const result = await probeCommand("codex", ["login", "status"], context);
+  const invocation = resolveDiagnosticInvocation("codex", ["login", "status"], context);
+  const result = await probeCommand(invocation.command, invocation.args, context);
   if (result.available) {
     return { configured: true, detail: result.detail };
   }

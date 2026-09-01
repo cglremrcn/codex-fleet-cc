@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { runDoctor } from "../plugins/fleet/scripts/lib/doctor.mjs";
+import {
+  resolveDiagnosticInvocation,
+  runDoctor
+} from "../plugins/fleet/scripts/lib/doctor.mjs";
+
+test("doctor resolves an earlier Windows Codex wrapper before a later executable", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-doctor-wrapper-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const npmBin = path.join(root, "npm-bin");
+  const desktopBin = path.join(root, "desktop-bin");
+  fs.mkdirSync(npmBin);
+  fs.mkdirSync(desktopBin);
+  const wrapper = path.join(npmBin, "codex.cmd");
+  fs.writeFileSync(wrapper, "@echo off\r\n");
+  fs.writeFileSync(path.join(desktopBin, "codex.exe"), "old desktop binary");
+  const commandProcessor = "C:\\Windows\\System32\\cmd.exe";
+
+  assert.deepEqual(resolveDiagnosticInvocation("codex", ["--version"], {
+    platform: "win32",
+    env: {
+      PATH: `${npmBin};${desktopBin}`,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      ComSpec: commandProcessor
+    }
+  }), {
+    command: commandProcessor,
+    args: ["/d", "/s", "/c", "call", wrapper, "--version"]
+  });
+});
 
 test("doctor distinguishes discovery, configuration, smoke, denial, and unknown", async () => {
   const report = await runDoctor({

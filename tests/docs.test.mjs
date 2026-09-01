@@ -72,7 +72,7 @@ test("operator docs cover exact contract transport, status recovery, and externa
 test("README distinguishes current release labels from historical live evidence", async () => {
   const readme = await read("README.md");
 
-  assert.match(readme, /current Fleet source release.*v0\.2\.0/isu);
+  assert.match(readme, /current Fleet source release.*v0\.2\.1/isu);
   assert.match(readme, /Claude Code v2\.1\.252/iu);
   assert.match(readme, /Codex CLI 0\.147\.0/iu);
   for (const match of readme.matchAll(/0\.1\.7/gu)) {
