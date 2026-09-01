@@ -61,7 +61,7 @@ test("one adapter reuses one broker for two read-only lanes", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-a"));
   await runtime.startLane(readOnlyContract(fixture, "lane-b"));
@@ -98,7 +98,7 @@ test("workspace-write live authority reaches thread and turn sandbox policies", 
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-live-writer", {
     authority: {
@@ -128,7 +128,7 @@ test("image-authorized lanes discover and inject the enabled imagegen skill", as
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-image", {
     authority: {
@@ -163,7 +163,7 @@ test("imagegen injection persists across same-thread continuations", async (t) =
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-image-follow-up", {
     authority: {
@@ -202,7 +202,7 @@ test("missing imagegen capability fails before a Codex turn is started", async (
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await assert.rejects(
     runtime.startLane(readOnlyContract(fixture, "lane-image-missing", {
@@ -230,7 +230,7 @@ test("a non-system imagegen skill cannot satisfy the image capability gate", asy
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await assert.rejects(
     runtime.startLane(readOnlyContract(fixture, "lane-image-non-system", {
@@ -254,7 +254,7 @@ test("non-image lanes do not discover or inject imagegen", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-no-image"));
   await waitFor(
@@ -274,7 +274,7 @@ test("runtime requires a structured evidence-bearing outcome", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-structured"));
   const completed = await waitFor(
@@ -301,7 +301,7 @@ test("runtime retains config evidence and blocks an unverified commit claim", as
       return false;
     }
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-invalid-commit"));
   const blocked = await waitFor(
@@ -331,7 +331,7 @@ test("redundant plan approval is recovered on the same Codex thread", async (t) 
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   const started = await runtime.startLane(readOnlyContract(fixture, "lane-auto-continue"));
   const completed = await waitFor(
@@ -355,7 +355,7 @@ test("a genuine authority request blocks for the controller without widening sco
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-needs-controller"));
   const blocked = await waitFor(
@@ -378,7 +378,7 @@ test("malformed output from a mutable lane becomes outcome unknown without anoth
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-mutable-unknown", {
     authority: {
@@ -413,7 +413,7 @@ test("an accepted initial turn with a lost response becomes outcome unknown", as
     env: fixture.env,
     requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await assert.rejects(
     runtime.startLane(readOnlyContract(fixture, "lane-initial-acceptance-unknown")),
@@ -433,7 +433,7 @@ test("an automatic continuation with a lost response is never repeated", async (
     env: fixture.env,
     requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-auto-acceptance-unknown"));
   const unknown = await waitFor(
@@ -455,7 +455,7 @@ test("a manual continuation with a lost response locks the runtime lane unknown"
     env: fixture.env,
     requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-follow-up-acceptance-unknown"));
   await waitFor(
@@ -497,7 +497,7 @@ test("a fresh runtime resumes a controller-blocked lane on the same thread", asy
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => secondRuntime.close());
+  fixture.registerCleanup(secondRuntime);
   await secondRuntime.resumeLane(
     blocked,
     fixture.workspace,
@@ -532,7 +532,7 @@ test("runtime events are lane-scoped, monotonic, and omit reasoning deltas", asy
     env: fixture.env,
     onEvent: (event) => events.push(event)
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-events"));
   await waitFor(
@@ -557,7 +557,7 @@ test("a completed lane can continue on its existing Codex thread", async (t) => 
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-follow-up"));
   const first = await waitFor(
@@ -587,7 +587,7 @@ test("runtime reads a sanitized same-thread transcript without reasoning content
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   const started = await runtime.startLane(readOnlyContract(fixture, "lane-session"));
   await waitFor(
@@ -613,7 +613,7 @@ test("runtime steers an active owned Codex turn", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   const started = await runtime.startLane(readOnlyContract(fixture, "lane-steer"));
   const steered = await runtime.steerLane("lane-steer", "Prioritize the source contradiction.");
@@ -639,7 +639,7 @@ test("official turn envelopes without threadId resolve through the turn index", 
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-official-envelope"));
   const completed = await waitFor(
@@ -660,7 +660,7 @@ test("an explicitly ephemeral lane is not retained by Codex", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   await runtime.startLane(readOnlyContract(fixture, "lane-ephemeral", { ephemeral: true }));
 
@@ -688,7 +688,7 @@ test("a fresh runtime resumes a persisted completed lane", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => secondRuntime.close());
+  fixture.registerCleanup(secondRuntime);
   await secondRuntime.resumeLane(
     completed,
     fixture.workspace,
@@ -714,7 +714,7 @@ test("interrupt targets the selected owned lane turn", async (t) => {
     dataDir: fixture.dataDir,
     env: fixture.env
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   const started = await runtime.startLane(readOnlyContract(fixture, "lane-stop"));
   await runtime.interruptLane("lane-stop");
@@ -740,7 +740,7 @@ test("protocol mismatch keeps inspection but blocks runtime mutations", async (t
     env: fixture.env,
     brokerProtocolVersion: 999
   });
-  t.after(() => runtime.close());
+  fixture.registerCleanup(runtime);
 
   assert.deepEqual(runtime.listLanes(WORKSPACE_KEY), []);
   await assert.rejects(

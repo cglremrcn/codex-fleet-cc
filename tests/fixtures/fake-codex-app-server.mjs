@@ -13,15 +13,6 @@ export function startFakeCodex(t, behavior = "review-ok") {
   const statePath = path.join(root, "fake-codex-state.json");
   const scriptPath = path.join(root, "codex");
 
-  t.after(() => {
-    fs.rmSync(root, {
-      recursive: true,
-      force: true,
-      maxRetries: 10,
-      retryDelay: 50
-    });
-  });
-
   return {
     command: {
       executable: process.execPath,
@@ -37,6 +28,31 @@ export function startFakeCodex(t, behavior = "review-ok") {
     },
     appServerStarts() {
       return this.readState().appServerStarts ?? 0;
+    },
+    registerCleanup(...resources) {
+      t.after(async () => {
+        const failures = [];
+        for (const resource of resources) {
+          try {
+            await resource.close();
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+        try {
+          fs.rmSync(root, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 50
+          });
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length > 0) {
+          throw new AggregateError(failures, "Fake Codex cleanup failed.");
+        }
+      });
     }
   };
 }
