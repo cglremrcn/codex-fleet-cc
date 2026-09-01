@@ -34,7 +34,7 @@ session to the dashboard; `q` or `Esc` returns to Claude Code.
 
 This historical field-report recording was generated from the v0.1.7 renderer with sanitized fixture
 lanes. It is not a UI mockup or a claim about a live external account. The current Fleet source release
-is v0.2.0; its renderer is covered by the current preview and golden tests.
+is v0.2.1; its renderer is covered by the current preview and golden tests.
 
 ## Why this exists
 

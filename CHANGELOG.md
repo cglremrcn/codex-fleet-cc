@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-09-01
+
+- Make `/fleet:doctor` resolve the exact first Codex executable on `PATH`, matching the app-server
+  broker. On Windows, an earlier npm `codex.cmd` wrapper now wins over a later desktop `codex.exe`.
+- Invoke resolved Windows diagnostic wrappers through a trusted absolute `ComSpec` with bounded literal
+  arguments, preserving the fail-closed command boundary.
+
+Migration: update `fleet@codex-fleet-cc`, accept the versioned runtime upgrade, restart Claude Code,
+confirm `v0.2.1` in the Fleet masthead and run `/fleet:doctor`.
+
 ## 0.2.0 — 2026-09-01
 
 - Normalize lane results around four required fields while retaining optional artifact, verification,

@@ -108,7 +108,7 @@ test("marketplace points to the portable Fleet plugin", async () => {
   assert.equal(marketplace.name, "codex-fleet-cc");
   assert.equal(entry.source, "./plugins/fleet");
   assert.equal(entry.category, "development");
-  assert.equal(entry.version, "0.2.0");
+  assert.equal(entry.version, "0.2.1");
   assert.equal(
     entry.version,
     JSON.parse(await read("plugins/fleet/.claude-plugin/plugin.json")).version

@@ -12,7 +12,7 @@ async function json(relativePath) {
   return JSON.parse(await fs.readFile(path.join(ROOT, relativePath), "utf8"));
 }
 
-test("all release and runtime version surfaces are exactly 0.2.0", async () => {
+test("all release and runtime version surfaces are exactly 0.2.1", async () => {
   const [pkg, lock, marketplace, plugin, broker, packager] = await Promise.all([
     json("package.json"),
     json("package-lock.json"),
@@ -23,16 +23,16 @@ test("all release and runtime version surfaces are exactly 0.2.0", async () => {
   ]);
   const marketplaceFleet = marketplace.plugins.find((entry) => entry.name === "fleet");
 
-  assert.equal(pkg.version, "0.2.0");
-  assert.equal(lock.version, "0.2.0");
-  assert.equal(lock.packages[""].version, "0.2.0");
-  assert.equal(marketplaceFleet.version, "0.2.0");
-  assert.equal(plugin.version, "0.2.0");
-  assert.match(pkg.scripts["package:plugin"], /--version 0\.2\.0$/u);
-  assert.match(pkg.scripts["release:check"], /--version 0\.2\.0$/u);
-  assert.match(broker, /CLIENT_INFO[\s\S]*version: "0\.2\.0"/u);
+  assert.equal(pkg.version, "0.2.1");
+  assert.equal(lock.version, "0.2.1");
+  assert.equal(lock.packages[""].version, "0.2.1");
+  assert.equal(marketplaceFleet.version, "0.2.1");
+  assert.equal(plugin.version, "0.2.1");
+  assert.match(pkg.scripts["package:plugin"], /--version 0\.2\.1$/u);
+  assert.match(pkg.scripts["release:check"], /--version 0\.2\.1$/u);
+  assert.match(broker, /CLIENT_INFO[\s\S]*version: "0\.2\.1"/u);
   assert.doesNotMatch(packager, /0\.1\.7/u);
-  assert.equal((packager.match(/0\.2\.0/gu) ?? []).length, 2);
+  assert.equal((packager.match(/0\.2\.1/gu) ?? []).length, 2);
 });
 
 test("release archive is deterministic and contains only the installable plugin", async (t) => {
