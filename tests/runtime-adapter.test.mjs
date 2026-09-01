@@ -9,6 +9,7 @@ import {
 import { startFakeCodex } from "./fixtures/fake-codex-app-server.mjs";
 
 const WORKSPACE_KEY = "0123456789abcdef0123456789abcdef";
+const LOST_RESPONSE_TIMEOUT_MS = 1_000;
 
 test("turn failures retain a bounded safe app-server reason", () => {
   assert.equal(
@@ -410,7 +411,7 @@ test("an accepted initial turn with a lost response becomes outcome unknown", as
     codexCommand: fixture.command,
     dataDir: fixture.dataDir,
     env: fixture.env,
-    requestTimeoutMs: 50
+    requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
   t.after(() => runtime.close());
 
@@ -430,7 +431,7 @@ test("an automatic continuation with a lost response is never repeated", async (
     codexCommand: fixture.command,
     dataDir: fixture.dataDir,
     env: fixture.env,
-    requestTimeoutMs: 50
+    requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
   t.after(() => runtime.close());
 
@@ -452,7 +453,7 @@ test("a manual continuation with a lost response locks the runtime lane unknown"
     codexCommand: fixture.command,
     dataDir: fixture.dataDir,
     env: fixture.env,
-    requestTimeoutMs: 50
+    requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
   t.after(() => runtime.close());
 

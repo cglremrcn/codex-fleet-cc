@@ -7,6 +7,8 @@ import {
 } from "../plugins/fleet/scripts/app-server-broker.mjs";
 import { startFakeCodex } from "./fixtures/fake-codex-app-server.mjs";
 
+const LOST_RESPONSE_TIMEOUT_MS = 1_000;
+
 test("protocol diagnostics retain shape without ids, text, errors, or secrets", () => {
   const secret = "never-retain-protocol-content";
   const summary = summarizeProtocolMessage({
@@ -112,7 +114,7 @@ test("broker marks a timed-out post-send request as acceptance unknown", async (
     codexCommand: fake.command,
     cwd: fake.workspace,
     env: fake.env,
-    requestTimeoutMs: 50
+    requestTimeoutMs: LOST_RESPONSE_TIMEOUT_MS
   });
   try {
     const thread = await broker.request("thread/start", {
