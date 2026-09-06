@@ -16,22 +16,15 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22.23.1
-          cache: npm
-      - run: npm ci
-      - name: Install exact upstream CLI for schema generation only
-        run: npm install --prefix "$RUNNER_TEMP/protocol-tools" @openai/codex@0.153.4
-      - name: Generate protocol definitions without account or inference
+      - name: Package exact supported Node executable for isolated tests
         run: |
-          "$RUNNER_TEMP/protocol-tools/node_modules/.bin/codex" --version
-          "$RUNNER_TEMP/protocol-tools/node_modules/.bin/codex" app-server generate-ts --out "$RUNNER_TEMP/harness-protocol-ts"
-          "$RUNNER_TEMP/protocol-tools/node_modules/.bin/codex" app-server generate-json-schema --out "$RUNNER_TEMP/harness-protocol-json"
-          tar -czf "$RUNNER_TEMP/harness-native-deps.tar.gz" node_modules
-          tar -czf "$RUNNER_TEMP/harness-protocol.tar.gz" -C "$RUNNER_TEMP" harness-protocol-ts harness-protocol-json
+          mkdir -p "$RUNNER_TEMP/harness-node/bin"
+          cp "$(command -v node)" "$RUNNER_TEMP/harness-node/bin/node"
+          "$RUNNER_TEMP/harness-node/bin/node" --version
+          tar -czf "$RUNNER_TEMP/harness-node.tar.gz" -C "$RUNNER_TEMP/harness-node" bin
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: harness-isolated-build-evidence
-          path: |
-            ${{ runner.temp }}/harness-native-deps.tar.gz
-            ${{ runner.temp }}/harness-protocol.tar.gz
+          name: harness-supported-node
+          path: ${{ runner.temp }}/harness-node.tar.gz
           retention-days: 2
           if-no-files-found: error
