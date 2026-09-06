@@ -36,6 +36,14 @@ This historical field-report recording was generated from the v0.1.7 renderer wi
 lanes. It is not a UI mockup or a claim about a live external account. The current Fleet source release
 is v0.2.1; its renderer is covered by the current preview and golden tests.
 
+## Navigation and observability review
+
+The review branch adds collapsible task folders, field filters, connected-runtime model discovery,
+compact controller status and reported usage propagation. See the [operations guide](docs/HARNESS_OPERATIONS.md)
+and [evidence-backed review and roadmap](docs/reviews/2026-09-06-harness-review.md). These source changes
+do not claim that v0.2.1 installations already have them; global thread inventory and an approval inbox
+remain separate work.
+
 ## Why this exists
 
 Existing integrations can ask Codex to do a task, but a fleet creates harder questions:

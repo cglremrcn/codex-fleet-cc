@@ -123,3 +123,21 @@ export function renderPlainStatus(snapshot = {}) {
   }
   return `${lines.join("\n")}\n`;
 }
+
+/** Compact controller observation; deliberately excludes transcript and evidence bodies. */
+export function summarizeStatusLane(lane) {
+  const result = {};
+  for (const key of ["id", "admissionId", "threadId", "turnId", "role", "model", "effort", "status", "phase", "groupPath"]) {
+    if (typeof lane?.[key] === "string") result[key] = lane[key];
+  }
+  result.needsController = Boolean(lane?.controllerRequest);
+  result.evidenceCount = Array.isArray(lane?.evidenceRefs) ? lane.evidenceRefs.length : 0;
+  result.artifactCount = Array.isArray(lane?.artifactRefs) ? lane.artifactRefs.length : 0;
+  if (lane?.controllerRequest) {
+    const question = String(lane.controllerRequest.question ?? "");
+    result.controllerRequest = { kind: lane.controllerRequest.kind,
+      question: question.slice(0, 512), truncated: question.length > 512 };
+  }
+  if (lane?.tokenUsage) result.tokenUsage = lane.tokenUsage;
+  return result;
+}

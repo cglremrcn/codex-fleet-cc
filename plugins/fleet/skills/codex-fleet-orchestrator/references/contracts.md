@@ -125,3 +125,16 @@ blocker becomes `needs_controller`; it is never silently approved or widened.
 
 The result must not include chain-of-thought. `complete` means the lane finished its own evidence-bearing
 work; only a distinct verifier can produce verified evidence.
+
+## Runtime catalogue and logical folders (review-branch extension)
+
+The model table above is the legacy compatibility snapshot for contracts without `modelPolicy`.
+For a model not in that snapshot, query `fleet.mjs models --workspace <path> --json` and set the
+root `modelPolicy` to `runtime`. Use the returned exact model/effort pair. The supervisor validates
+against the connected runtime before admission; never inject a catalogue into the JSON contract or
+substitute another model after a refusal. This does not change authority requirements.
+
+An optional lane `groupPath`, such as `backend/auth`, organizes tasks into collapsible logical
+folders. It is not an on-disk worktree path or evidence of writer isolation. The rooted supervisor
+serializes shared-workspace writers even when their `checkoutKey` labels differ. Real parallel
+worktree support requires separate verified physical workspaces, not invented labels.

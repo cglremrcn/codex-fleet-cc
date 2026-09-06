@@ -176,3 +176,22 @@ cookies, full command output, or canonical private home paths.
 
 On stop, preserve completed evidence, avoid cleanup outside proven Fleet ownership, and route through
 [recovery.md](references/recovery.md).
+
+## Large fleets and runtime model discovery
+
+Before choosing a newly released model, run `fleet.mjs models --workspace <workspace> --json`.
+Use the returned exact `model` and one of its `efforts`; set root `modelPolicy` to `runtime` on
+that start contract. Catalogue discovery starts no model turn. Never invent an alias or silently
+substitute a model when discovery fails. Existing contracts without this field retain the
+compatibility snapshot.
+
+For multi-task work, give each lane a short logical `groupPath` such as `backend/auth` or
+`release/security`. These folders are UI metadata only: no authority, checkout isolation, or
+filesystem path is implied. The operator can press G to group, Space to fold, and / to combine
+filters such as `status:running role:implementer -folder:archive`. Legacy lanes remain visible
+as Ungrouped. Group headers never execute bulk mutations. Keep active parallelism bounded;
+100 visible records does not justify 100 concurrent model turns.
+
+Read only the status/result fields needed for the next decision; do not repeatedly paste whole
+transcripts or historical results into the parent. Token counts are reported cumulative thread
+usage, not subscription quota percentages, dollars, or independently measured correctness.

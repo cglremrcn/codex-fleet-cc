@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { normalizeAuthority } from "./authority.mjs";
 import { createLane } from "./domain.mjs";
+import { normalizeTokenUsage } from "./token-usage.mjs";
 
 const DEFAULT_LIMITS = Object.freeze({
   maxActive: 3,
@@ -190,7 +191,9 @@ function publicRecord(item, status = item.status) {
     role: item.role,
     label: item.label,
     workspaceKey: item.workspaceKey,
+    ...(item.groupPath === undefined ? {} : { groupPath: item.groupPath }),
     checkoutKey: item.checkoutKey,
+    ...(item.tokenUsage ? { tokenUsage: normalizeTokenUsage(item.tokenUsage) } : {}),
     model: item.model,
     effort: item.effort,
     authority: item.authority,
@@ -247,10 +250,12 @@ function hydratePersistedRecord(record, sequence, clock) {
     role: validated.role,
     label: validated.label,
     workspaceKey: validated.workspaceKey,
+    ...(validated.groupPath === undefined ? {} : { groupPath: validated.groupPath }),
     checkoutKey: boundedIdentifier(
       record.checkoutKey ?? record.workspaceKey,
       "Persisted lane checkout key"
     ),
+    ...(record.tokenUsage ? { tokenUsage: normalizeTokenUsage(record.tokenUsage) } : {}),
     model: validated.model,
     effort: validated.effort,
     authority,
@@ -405,6 +410,7 @@ class FleetScheduler {
       role: lane.role,
       label: lane.label,
       workspaceKey: lane.workspaceKey,
+      ...(lane.groupPath === undefined ? {} : { groupPath: lane.groupPath }),
       checkoutKey,
       model: lane.model,
       effort: lane.effort,
@@ -509,9 +515,15 @@ class FleetScheduler {
     return admitted;
   }
 
+  writerKey(item) {
+    // A supervisor is rooted in one physical workspace. Labels are display metadata,
+    // not proof of isolated worktrees; they must not partition the writer lock.
+    return this.workspacePath ? path.resolve(this.workspacePath) : item.checkoutKey;
+  }
+
   writerAvailable(item) {
     return item.authority.sandbox !== "workspace-write"
-      || (this.writerCounts.get(item.checkoutKey) ?? 0)
+      || (this.writerCounts.get(this.writerKey(item)) ?? 0)
         < this.limits.maxWritersPerCheckout;
   }
 
@@ -578,8 +590,8 @@ class FleetScheduler {
       this.active.set(item.id, item);
       if (item.authority.sandbox === "workspace-write") {
         this.writerCounts.set(
-          item.checkoutKey,
-          (this.writerCounts.get(item.checkoutKey) ?? 0) + 1
+          this.writerKey(item),
+          (this.writerCounts.get(this.writerKey(item)) ?? 0) + 1
         );
       }
       try {
@@ -602,6 +614,7 @@ class FleetScheduler {
         item.threadId = started.threadId ?? null;
         item.turnId = started.turnId ?? null;
         item.lastMessage = started.lastMessage ?? null;
+        item.tokenUsage = normalizeTokenUsage(started.tokenUsage);
         item.exitReason = started.exitReason ?? null;
         item.outcome = started.outcome ?? null;
         item.workPerformed = started.workPerformed ?? Object.freeze([]);
@@ -645,11 +658,11 @@ class FleetScheduler {
   release(item, status, phase = status) {
     this.active.delete(item.id);
     if (item.authority.sandbox === "workspace-write") {
-      const remaining = Math.max(0, (this.writerCounts.get(item.checkoutKey) ?? 1) - 1);
+      const remaining = Math.max(0, (this.writerCounts.get(this.writerKey(item)) ?? 1) - 1);
       if (remaining === 0) {
-        this.writerCounts.delete(item.checkoutKey);
+        this.writerCounts.delete(this.writerKey(item));
       } else {
-        this.writerCounts.set(item.checkoutKey, remaining);
+        this.writerCounts.set(this.writerKey(item), remaining);
       }
     }
     item.status = status;
@@ -676,7 +689,7 @@ class FleetScheduler {
     }
     if (
       item.authority.sandbox === "workspace-write"
-      && (this.writerCounts.get(item.checkoutKey) ?? 0) >= this.limits.maxWritersPerCheckout
+      && (this.writerCounts.get(this.writerKey(item)) ?? 0) >= this.limits.maxWritersPerCheckout
     ) {
       throw new Error(`Lane ${id} cannot continue while its checkout already has an active writer.`);
     }
@@ -718,8 +731,8 @@ class FleetScheduler {
     this.active.set(id, item);
     if (item.authority.sandbox === "workspace-write") {
       this.writerCounts.set(
-        item.checkoutKey,
-        (this.writerCounts.get(item.checkoutKey) ?? 0) + 1
+        this.writerKey(item),
+        (this.writerCounts.get(this.writerKey(item)) ?? 0) + 1
       );
     }
     item.threadId = resumed.threadId ?? item.threadId;
@@ -842,6 +855,7 @@ class FleetScheduler {
       item.turnId = current.turnId ?? item.turnId;
       item.threadId = current.threadId ?? item.threadId;
       item.phase = current.phase ?? item.phase;
+      item.tokenUsage = normalizeTokenUsage(current.tokenUsage) ?? item.tokenUsage;
       item.lastMessage = current.lastMessage ?? item.lastMessage;
       item.exitReason = current.exitReason ?? item.exitReason;
       item.outcome = current.outcome ?? item.outcome;
@@ -859,6 +873,11 @@ class FleetScheduler {
       if (TERMINAL_STATUSES.has(current.status)) {
         this.release(item, current.status, current.phase ?? current.status);
       }
+    }
+    // Final usage can arrive after turn/completed. Do not discard late reported totals.
+    for (const item of this.history.values()) {
+      const usage = normalizeTokenUsage(this.runtime.inspectLane(item.id)?.tokenUsage);
+      if (usage) item.tokenUsage = usage;
     }
     await this.persist();
     await this.drain();
@@ -879,7 +898,20 @@ class FleetScheduler {
   }
 
   async persist() {
-    await this.store.write(this.snapshot());
+    const snapshot = this.snapshot();
+    const fingerprint = JSON.stringify(snapshot);
+    if (!this.pendingStateWrites && this.persistedFingerprint === fingerprint) return;
+    this.pendingStateWrites = (this.pendingStateWrites ?? 0) + 1;
+    try {
+      await this.store.write(snapshot);
+      this.persistedFingerprint = fingerprint;
+    } catch (error) {
+      // A rejected write must never be treated as a clean durable snapshot.
+      this.persistedFingerprint = null;
+      throw error;
+    } finally {
+      this.pendingStateWrites -= 1;
+    }
   }
 }
 

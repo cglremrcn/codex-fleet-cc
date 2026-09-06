@@ -1,3 +1,4 @@
+import { normalizeTokenUsage } from "./token-usage.mjs";
 import { STATUS_PRESENTATION, createTheme } from "./theme.mjs";
 
 const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
@@ -118,16 +119,6 @@ function boundedText(value, fallback, maximum = 160) {
   return value.slice(0, maximum).replace(/[\u0000-\u001f\u007f]/g, " ");
 }
 
-function normalizeUsage(value) {
-  if (!value || typeof value !== "object") return null;
-  const fields = ["input", "output", "total"];
-  const usage = {};
-  for (const field of fields) {
-    if (Number.isFinite(value[field]) && value[field] >= 0) usage[field] = value[field];
-  }
-  return Object.keys(usage).length > 0 ? Object.freeze(usage) : null;
-}
-
 function normalizeAuthority(value = {}) {
   const browser = value.browser ?? {};
   const processAuthority = value.process ?? {};
@@ -218,21 +209,29 @@ function normalizeLane(value, index) {
     events: Array.isArray(value?.events)
       ? value.events.filter((item) => typeof item === "string").slice(-8)
       : [],
-    tokenUsage: normalizeUsage(value?.tokenUsage)
+    tokenUsage: normalizeTokenUsage(value?.tokenUsage)
   };
 }
 
 export function buildViewModel(snapshot, selection, panel = "detail", viewport = {}) {
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
   const lanes = Array.isArray(source.lanes) ? source.lanes.map(normalizeLane) : [];
+  const navigationRows = Array.isArray(viewport.navigationRows)
+    ? viewport.navigationRows.map((row, index) => row.kind === "group" ? {
+      kind: "group", id: row.id, label: boundedText(row.label, "Group", 160),
+      depth: Math.max(0, Math.min(8, row.depth ?? 0)), count: row.count,
+      active: row.active, attention: row.attention, collapsed: row.collapsed === true
+    } : { ...normalizeLane(row, index), depth: Math.max(0, Math.min(8, row.depth ?? 0)) })
+    : lanes;
   const selectedIndex = typeof selection === "number"
-    ? Math.max(0, Math.min(lanes.length - 1, selection))
-    : Math.max(0, lanes.findIndex((lane) => lane.id === selection));
-  const selectedLane = lanes[selectedIndex] ?? null;
+    ? Math.max(0, Math.min(navigationRows.length - 1, selection))
+    : Math.max(0, navigationRows.findIndex((lane) => lane.id === selection));
+  const selectedRow = navigationRows[selectedIndex] ?? null;
+  const selectedLane = selectedRow?.kind === "group" ? null : selectedRow;
   const visibleLaneCapacity = Number.isInteger(viewport.visibleLaneCapacity)
     ? Math.max(1, viewport.visibleLaneCapacity)
-    : Math.max(1, lanes.length);
-  const maximumOffset = Math.max(0, lanes.length - visibleLaneCapacity);
+    : Math.max(1, navigationRows.length);
+  const maximumOffset = Math.max(0, navigationRows.length - visibleLaneCapacity);
   let viewportOffset = Number.isInteger(viewport.viewportOffset)
     ? Math.max(0, Math.min(viewport.viewportOffset, maximumOffset))
     : 0;
@@ -241,7 +240,7 @@ export function buildViewModel(snapshot, selection, panel = "detail", viewport =
     viewportOffset = selectedIndex - visibleLaneCapacity + 1;
   }
   viewportOffset = Math.max(0, Math.min(viewportOffset, maximumOffset));
-  const visibleLanes = lanes.slice(viewportOffset, viewportOffset + visibleLaneCapacity);
+  const visibleLanes = navigationRows.slice(viewportOffset, viewportOffset + visibleLaneCapacity);
   const totals = Object.fromEntries(Object.keys(STATUS_PRESENTATION).map((status) => [
     status,
     lanes.filter((lane) => lane.status === status).length
@@ -271,6 +270,8 @@ export function buildViewModel(snapshot, selection, panel = "detail", viewport =
       : "fresh",
     selectedIndex,
     selectedLane,
+    selectedGroup: selectedRow?.kind === "group" ? selectedRow : null,
+    navigationRowCount: navigationRows.length,
     totals,
     panel: PANELS.has(panel) ? panel : "detail"
   });
@@ -291,6 +292,7 @@ function usageText(usage) {
   const parts = [];
   if (Number.isFinite(usage.input)) parts.push(`${formatNumber(usage.input)} in`);
   if (Number.isFinite(usage.output)) parts.push(`${formatNumber(usage.output)} out`);
+  if (Number.isFinite(usage.cachedInput)) parts.push(`${formatNumber(usage.cachedInput)} cached`);
   const total = Number.isFinite(usage.total)
     ? usage.total
     : (usage.input ?? 0) + (usage.output ?? 0);
@@ -305,9 +307,15 @@ function laneLines(view, width, useUnicode) {
     const index = view.viewportOffset + visibleIndex;
     const selected = index === view.selectedIndex;
     const marker = selected ? BORDERS[useUnicode ? "unicode" : "ascii"].selected : " ";
+    if (lane.kind === "group") {
+      const fold = useUnicode ? (lane.collapsed ? "▸" : "▾") : (lane.collapsed ? ">" : "v");
+      lines.push(truncate(`${marker} ${"  ".repeat(lane.depth)}${fold} ${lane.label} [${lane.count}]`, width));
+      lines.push(truncate(`     ${lane.active} live · ${lane.attention} attention · Enter/Space ${lane.collapsed ? "expand" : "collapse"}`, width));
+      return;
+    }
     const number = String(index + 1).padStart(2, "0");
     const status = pad(statusText(lane.status, useUnicode), 17);
-    lines.push(truncate(`${marker} ${number} ${status} ${lane.id}`, width));
+    lines.push(truncate(`${marker} ${number} ${status} ${"  ".repeat(lane.depth ?? 0)}${lane.id}`, width));
     const metadata = `${lane.role} · ${lane.model}/${lane.effort}`;
     lines.push(truncate(`     ${metadata}`, width));
   });
@@ -318,11 +326,14 @@ function visibleRange(view) {
   if (view.lanes.length === 0) return "VISIBLE 0–0 / 0";
   const first = view.viewportOffset + 1;
   const last = view.viewportOffset + view.visibleLanes.length;
-  return `VISIBLE ${first}–${last} / ${view.lanes.length}`;
+  return `VISIBLE ${first}–${last} / ${view.navigationRowCount ?? view.lanes.length}`;
 }
 
 function lanePanelLabel(view) {
-  return view.visibleLanes.length < view.lanes.length
+  if (view.navigationRowCount !== view.lanes.length) {
+    return `LANES ${view.lanes.length} · ${visibleRange(view).replace("VISIBLE", "ROWS")}`;
+  }
+  return view.visibleLanes.length < (view.navigationRowCount ?? view.lanes.length)
     ? `LANES ${view.lanes.length} · ${visibleRange(view)}`
     : `LANES  ${view.lanes.length}`;
 }
@@ -426,6 +437,9 @@ function controlsLines(width) {
     "Enter or M   Open live Codex session",
     "Tab          Cycle dashboard panels",
     "/            Filter lanes",
+    "G            Group by folder/checkout/status/role/model",
+    "Space/Enter  Fold selected group",
+    "[ / ]        Collapse / expand all groups",
     "X            Confirmed cancellation",
     "E            Open preserved editor",
     "P            Pause formation motion",
@@ -603,10 +617,12 @@ function wideMasthead(view, columns, preferences) {
 function signalLine(view, columns, border, useUnicode) {
   const lane = view.selectedLane;
   const signal = lane
-    ? `${border.arrow} SIGNAL ${String(view.selectedIndex + 1).padStart(2, "0")}/${String(
+    ? `${border.arrow} SIGNAL ${String(view.lanes.findIndex((item) => item.id === lane.id) + 1).padStart(2, "0")}/${String(
       view.lanes.length
     ).padStart(2, "0")}  ${lane.id} · ${STATUS_PRESENTATION[lane.status].label} · ${lane.phase} `
-    : `${border.arrow} SIGNAL  NO LANES `;
+    : view.selectedGroup
+      ? `${border.arrow} GROUP  ${view.selectedGroup.label} · ${view.selectedGroup.count} agents `
+      : `${border.arrow} SIGNAL  NO LANES `;
   const remaining = Math.max(0, columns - displayWidth(signal));
   return truncate(`${signal}${border.signal.repeat(remaining)}`, columns, useUnicode ? "…" : ".");
 }
@@ -626,7 +642,16 @@ function panelLabel(label, panel, selectedPanel) {
   return panel === selectedPanel ? `[${label}]` : label;
 }
 
+function groupDetailLines(group, width) {
+  return [`TASK GROUP ${group.label}`, `${group.count} matching agents`,
+    `${group.active} live · ${group.attention} need attention`,
+    group.collapsed ? "Collapsed" : "Expanded", "Enter/Space: toggle this group",
+    "[: collapse all · ]: expand all", "G: change grouping mode",
+    "Headers cannot launch, message or cancel agents."].flatMap((line) => wrap(line, width));
+}
+
 function panelBody(view, panel, width, useUnicode) {
+  if (view.selectedGroup && panel !== "lanes" && panel !== "controls") return groupDetailLines(view.selectedGroup, width);
   switch (panel) {
     case "detail": return detailLines(view.selectedLane, width);
     case "evidence": return evidenceLines(view.selectedLane, width);
@@ -646,7 +671,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
   const bodyHeight = Math.max(4, terminal.rows - 7);
   const middlePanel = view.panel === "evidence" ? "evidence" : "detail";
   const middleLabel = middlePanel === "detail"
-    ? `${panelLabel("DETAIL", "detail", view.panel)} / ${view.selectedLane?.id ?? "NONE"}`
+    ? `${panelLabel("DETAIL", "detail", view.panel)} / ${view.selectedLane?.id ?? (view.selectedGroup ? "GROUP" : "NONE")}`
     : panelLabel(middlePanel.toUpperCase(), middlePanel, view.panel);
   return [
     ...wideMasthead(view, terminal.columns, preferences),
@@ -664,7 +689,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓: Select lane   Enter: Open agent   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return",
+      "↑↓: Select lane   Enter: Open agent   G: Groups   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -701,13 +726,14 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  X: Cancel  Tab: View  /: Search lanes  H/?: Help  Ctrl+G: Return",
+      "Enter: Open agent  X: Cancel  G: Groups  /: Filter  H/?: Help  Ctrl+G: Return",
       terminal.columns
     )
   ];
 }
 
 function panelLines(view, width, useUnicode) {
+  if (view.selectedGroup && view.panel !== "lanes" && view.panel !== "controls") return groupDetailLines(view.selectedGroup, width);
   switch (view.panel) {
     case "detail": return detailLines(view.selectedLane, width);
     case "evidence": return evidenceLines(view.selectedLane, width);
@@ -730,7 +756,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("Enter: Open agent  X: Cancel  Tab: View  /: Search  Ctrl+G: Return", terminal.columns)
+    truncate("Enter: Open agent  X: Cancel  G: Groups  /: Filter  Ctrl+G: Return", terminal.columns)
   ];
 }
 

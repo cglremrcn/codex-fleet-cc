@@ -25,4 +25,4 @@ LANES  4                                        │ [DETAIL] / console-build    
                                                 │                                                                          │
                                                 │                                                                          │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↑↓: Select lane   Enter: Open agent   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return
+↑↓: Select lane   Enter: Open agent   G: Groups   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return
