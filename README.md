@@ -421,3 +421,9 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before a broad change. Bug and feature f
 in GitHub. Report vulnerabilities through the private path described in [SECURITY.md](SECURITY.md),
 never in a public issue. Do not attach credentials, prompts, customer data or unsanitized support
 output.
+
+### Control center source review
+
+The [control center guide](docs/CONTROL_CENTER.md) describes project/native-thread inventory,
+read-only discovery, the command palette, saved views and pins in the review branch. These source
+changes do not automatically update the existing v0.2.1 integration.

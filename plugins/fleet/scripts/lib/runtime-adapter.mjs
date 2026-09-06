@@ -1,3 +1,4 @@
+import { discoverNativeThreads } from "./fleet-inventory.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -988,6 +989,18 @@ export class FleetRuntime {
     }
     this.emit(lane.id, "turn.steered", { threadId: lane.threadId, turnId: lane.turnId });
     return copyLane(lane);
+  }
+
+  async listThreads(options = {}) {
+    if (this.closed) throw new Error("Fleet runtime is closed.");
+    const cacheKey = JSON.stringify({ archived: options.archived === true });
+    if (this.nativeInventoryCache?.key === cacheKey && this.nativeInventoryCache.expiresAt > Date.now()) return this.nativeInventoryCache.value;
+    if (this.nativeInventoryRequest?.key === cacheKey) return this.nativeInventoryRequest.promise;
+    const promise = discoverNativeThreads((method, params) => this.broker.request(method, params), { ...options, includeLoaded: true }).then((value) => {
+      this.nativeInventoryCache = { key: cacheKey, value, expiresAt: Date.now() + 5000 }; return value;
+    });
+    this.nativeInventoryRequest = { key: cacheKey, promise };
+    try { return await promise; } finally { if (this.nativeInventoryRequest?.promise === promise) this.nativeInventoryRequest = null; }
   }
 
   async readThread(threadId) {

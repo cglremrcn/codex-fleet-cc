@@ -14,6 +14,8 @@ const BORDERS = Object.freeze({
 });
 
 const STATUS_EXPLANATIONS = Object.freeze({
+  observed: "Observed Codex session. Control remains with its owning client.",
+  starting: "Starting an admitted task; control identity may still be pending.",
   queued: "Waiting for a scheduler slot.",
   running: "Work is in progress.",
   complete: "Worker claim; independent verification has not passed.",
@@ -116,7 +118,7 @@ function wrap(value, width) {
 
 function boundedText(value, fallback, maximum = 160) {
   if (typeof value !== "string" || value.length === 0) return fallback;
-  return value.slice(0, maximum).replace(/[\u0000-\u001f\u007f]/g, " ");
+  return value.slice(0, maximum).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ");
 }
 
 function normalizeAuthority(value = {}) {
@@ -157,7 +159,13 @@ function deepFreeze(value) {
 function normalizeLane(value, index) {
   const status = STATUS_PRESENTATION[value?.status] ? value.status : "blocked";
   return {
-    id: boundedText(value?.id, `lane-${index + 1}`, 64),
+    id: boundedText(value?.id, `lane-${index + 1}`, 320),
+    controlId: typeof value?.controlId === "string" ? boundedText(value.controlId, "", 64) : null,
+    project: typeof value?.project === "string" ? boundedText(value.project, "", 120) : null,
+    source: typeof value?.source === "string" ? boundedText(value.source, "", 64) : null,
+    parentThreadId: typeof value?.parentThreadId === "string" ? boundedText(value.parentThreadId, "", 256) : null,
+    controlAvailable: value?.controlAvailable !== false,
+    pendingRequests: Number.isSafeInteger(value?.pendingRequests) ? Math.max(0, value.pendingRequests) : 0,
     role: boundedText(value?.role, "unreported-role", 64),
     label: boundedText(value?.label, "Untitled lane", 120),
     model: boundedText(value?.model, "Model not reported", 80),
@@ -245,10 +253,13 @@ export function buildViewModel(snapshot, selection, panel = "detail", viewport =
     status,
     lanes.filter((lane) => lane.status === status).length
   ]));
-  totals.active = totals.queued + totals.running;
+  totals.active = totals.queued + totals.running + totals.starting;
   totals.attention = totals.blocked + totals.failed + totals.interrupted + totals.outcome_unknown;
 
   return deepFreeze({
+    scope: source.scope ?? "workspace",
+    warnings: Array.isArray(source.warnings) ? source.warnings.length : 0,
+    truncated: source.truncated === true,
     workspace: {
       name: boundedText(source.workspace?.name, "local-workspace", 80),
       branch: boundedText(source.workspace?.branch, "branch-not-reported", 80)
@@ -315,8 +326,8 @@ function laneLines(view, width, useUnicode) {
     }
     const number = String(index + 1).padStart(2, "0");
     const status = pad(statusText(lane.status, useUnicode), 17);
-    lines.push(truncate(`${marker} ${number} ${status} ${"  ".repeat(lane.depth ?? 0)}${lane.id}`, width));
-    const metadata = `${lane.role} · ${lane.model}/${lane.effort}`;
+    lines.push(truncate(`${marker} ${number} ${status} ${"  ".repeat(lane.depth ?? 0)}${lane.label}`, width));
+    const metadata = `${lane.controlId ?? lane.id} · ${lane.model}/${lane.effort}${lane.controlAvailable ? "" : " · READ ONLY"}`;
     lines.push(truncate(`     ${metadata}`, width));
   });
   return lines;
@@ -343,6 +354,11 @@ function detailLines(lane, width) {
   const lines = [
     ...wrap(lane.label, width),
     "",
+    `ID       ${lane.id}`,
+    ...(lane.project ? [`PROJECT  ${lane.project}`] : []),
+    ...(lane.source ? [`SOURCE   ${lane.source}`] : []),
+    ...(lane.parentThreadId ? [`PARENT   ${lane.parentThreadId}`] : []),
+    ...(lane.controlAvailable ? [] : ["CONTROL  OBSERVATION ONLY"]),
     `ROLE     ${lane.role}`,
     `PHASE    ${lane.phase}`,
     `MODEL    ${lane.model}`,
@@ -433,11 +449,15 @@ function authorityLines(lane, width) {
 
 function controlsLines(width) {
   const controls = [
+    ":            Command center",
+    "W            Workspace / all projects / Codex sessions",
+    "A            Attention-first ordering",
+    "F            Pin / unpin selected agent",
     "↑/↓ or J/K   Select lane",
     "Enter or M   Open live Codex session",
     "Tab          Cycle dashboard panels",
     "/            Filter lanes",
-    "G            Group by folder/checkout/status/role/model",
+    "G            Group by folder/project/source/parent and more",
     "Space/Enter  Fold selected group",
     "[ / ]        Collapse / expand all groups",
     "X            Confirmed cancellation",
@@ -500,6 +520,8 @@ function kiteFeatures(status, frame, useUnicode) {
     const completeMouths = ["-", "~", "-", "~"];
     const completeCores = ["C", "*", "C", "+"];
     const states = {
+      observed: ["o", "o", "-", "O"],
+      starting: [".", ".", "v", "S"],
       queued: [".", ".", "v", "Q"],
       running: [...movingEyes[frame], "v", "R"],
       complete: [...movingEyes[frame], completeMouths[frame], completeCores[frame]],
@@ -516,6 +538,8 @@ function kiteFeatures(status, frame, useUnicode) {
   const completeMouths = ["─", "⌁", "─", "⌁"];
   const completeCores = ["◇", "◈", "◆", "◈"];
   const states = {
+    observed: ["◎", "◎", "─", "◉"],
+    starting: ["·", "·", "⌄", "◌"],
     queued: ["·", "·", "⌄", "○"],
     running: [...movingEyes[frame], "▿", "◆"],
     complete: [...movingEyes[frame], completeMouths[frame], completeCores[frame]],
@@ -547,6 +571,7 @@ function motionLabel(preferences) {
 }
 
 export function renderFleetMark(view, preferences = {}) {
+  if (preferences.mascot === false) return [];
   const useUnicode = preferences.unicode !== false;
   const orbits = useUnicode ? KITE_ORBITS : KITE_ASCII_ORBITS;
   const status = view?.selectedLane?.status ?? "queued";
@@ -575,6 +600,7 @@ export function renderFleetMark(view, preferences = {}) {
 }
 
 function renderCompactMark(view, preferences = {}) {
+  if (preferences.mascot === false) return "";
   const useUnicode = preferences.unicode !== false;
   const status = view?.selectedLane?.status ?? "queued";
   const frame = postureFrame(status, preferences, 4);
@@ -602,7 +628,7 @@ function versionLabel(preferences) {
 function wideMasthead(view, columns, preferences) {
   const mark = renderCompactMark(view, preferences);
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
-  const motion = motionLabel(preferences);
+  const motion = preferences.mascot === false ? "HIDDEN" : motionLabel(preferences);
   return [
     placeRight(
       `FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
@@ -611,6 +637,7 @@ function wideMasthead(view, columns, preferences) {
     ),
     `RUNTIME ${view.runtime.health.toUpperCase()} · PROTOCOL ${view.runtime.protocol.toUpperCase()} · ACTIVE LIMIT ${limit} · KITE ${motion}`
       + (view.observation === "fresh" ? "" : ` · OBSERVATION ${view.observation.toUpperCase()}`)
+      + (view.truncated ? " · PARTIAL INVENTORY" : "") + (view.warnings ? ` · ${view.warnings} READ WARNINGS` : "")
   ];
 }
 
@@ -689,7 +716,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "↑↓: Select lane   Enter: Open agent   G: Groups   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return",
+      "Enter: Open agent  : Commands  W: Scope  G: Groups  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -706,13 +733,14 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
   const rightLines = panelBody(view, rightPanel, detailWidth, useUnicode);
   const mark = renderCompactMark(view, preferences);
   const runtime = `RUNTIME ${view.runtime.health.toUpperCase()}`;
+  const inventoryNotice = view.truncated || view.warnings ? `PARTIAL ${view.warnings} warnings · ` : "";
   return [
     placeRight(
       `FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}@${view.workspace.branch}`,
       mark,
       terminal.columns
     ),
-    `${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences)}`
+    `${inventoryNotice}${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences)}`
       + (view.observation === "fresh" ? "" : `  OBSERVATION ${view.observation.toUpperCase()}`),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
@@ -726,7 +754,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  X: Cancel  G: Groups  /: Filter  H/?: Help  Ctrl+G: Return",
+      "Enter: Open agent  : Commands  W: Scope  G: Groups  /: Filter  X: Cancel  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -744,7 +772,7 @@ function panelLines(view, width, useUnicode) {
 }
 
 function renderNarrow(view, terminal, border, useUnicode, preferences) {
-  const title = `VIEW ${view.panel.toUpperCase()} · ${view.selectedLane?.id ?? "NO LANE"}`
+  const title = `${view.truncated || view.warnings ? `PARTIAL ${view.warnings} warnings · ` : ""}VIEW ${view.panel.toUpperCase()} · ${view.selectedLane?.id ?? "NO LANE"}`
     + (view.observation === "fresh" ? "" : ` · OBSERVATION ${view.observation.toUpperCase()}`);
   const bodyHeight = Math.max(3, terminal.rows - 7);
   const mark = renderCompactMark(view, preferences);
@@ -804,7 +832,7 @@ function renderCodexSession(view, terminal, border, preferences) {
     ?? view.selectedLane;
   const messages = Array.isArray(session.messages) ? session.messages : [];
   const active = ["queued", "running"].includes(lane?.status);
-  const mode = active ? "LIVE STEER" : "FOLLOW-UP";
+  const mode = session.observationOnly || lane?.controlAvailable === false ? "OBSERVE ONLY" : active ? "LIVE STEER" : "FOLLOW-UP";
   const activityCount = messages.filter((message) => message?.kind === "activity").length;
   const visibleMessages = session.activityExpanded === true
     ? messages
@@ -847,7 +875,8 @@ function renderCodexSession(view, terminal, border, preferences) {
     ? "LATEST"
     : scroll === maximumScroll ? "OLDEST" : `${scroll} LINES BACK`;
   const activityState = session.activityExpanded === true ? "EXPANDED" : "COLLAPSED";
-  const composer = `COMPOSE [${mode}] › ${composerValue || "Type a message or / for Fleet commands"}`;
+  const composer = mode === "OBSERVE ONLY" ? "OBSERVATION ONLY · No message or mutation will be sent from this view."
+    : `COMPOSE [${mode}] › ${composerValue || "Type a message or / for Fleet commands"}`;
   return [
     truncate(`FLEET//CODEX SESSION  ${session.laneId}`, terminal.columns),
     truncate(
@@ -871,7 +900,7 @@ function renderCodexSession(view, terminal, border, preferences) {
     ...body,
     border.horizontal.repeat(terminal.columns),
     truncate(composer, terminal.columns),
-    truncate("Enter: Send  ↑/↓: Transcript  /: Fleet commands  Ctrl+G: Dashboard", terminal.columns)
+    truncate(mode === "OBSERVE ONLY" ? "↑/↓: Transcript  Ctrl+G/Q/Esc: Dashboard" : "Enter: Send  ↑/↓: Transcript  /: Fleet commands  Ctrl+G: Dashboard", terminal.columns)
   ].slice(0, terminal.rows);
 }
 

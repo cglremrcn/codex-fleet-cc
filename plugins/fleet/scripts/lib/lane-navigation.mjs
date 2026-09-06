@@ -1,8 +1,8 @@
 // Pure, local-only navigation. A group is never a runtime lane or an authority grant.
-export const GROUP_MODES = Object.freeze(["flat", "folder", "checkout", "status", "role", "model"]);
+export const GROUP_MODES = Object.freeze(["flat", "folder", "checkout", "status", "role", "model", "project", "source", "parent"]);
 const FIELDS = Object.freeze({
   id: "id", status: "status", role: "role", model: "model", effort: "effort",
-  checkout: "checkoutKey", folder: "groupPath", label: "label", phase: "phase"
+  checkout: "checkoutKey", folder: "groupPath", label: "label", phase: "phase", project: "project", source: "source", parent: "parentThreadId"
 });
 const ACTIVE = new Set(["queued", "starting", "running"]);
 const ATTENTION = new Set(["blocked", "failed", "interrupted", "outcome_unknown"]);

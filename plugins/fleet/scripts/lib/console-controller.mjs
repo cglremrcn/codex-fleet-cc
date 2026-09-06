@@ -1,3 +1,5 @@
+import { normalizeConsoleView, sortConsoleLanes } from "./console-preferences.mjs";
+import { paletteItems, renderOperatorOverlay } from "./console-overlay.mjs";
 import { StringDecoder } from "node:string_decoder";
 import { buildLaneNavigation, GROUP_MODES } from "./lane-navigation.mjs";
 
@@ -54,7 +56,7 @@ function selectedFormationFrame(status, tick) {
 }
 
 function boundedStatus(value, width) {
-  const normalized = String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ");
+  const normalized = String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ");
   if (normalized.length <= width) return normalized;
   return width <= 1 ? normalized.slice(0, width) : `${normalized.slice(0, width - 1)}…`;
 }
@@ -102,23 +104,31 @@ export function createConsoleController(options = {}) {
   let snapshot = normalizeSnapshot(options.snapshot, options.cwd);
   let terminal = safeTerminal(options.terminal);
   const initialCapacity = Math.max(1, Math.floor(Math.max(4, terminal.rows - 7) / 2));
+  const restored = normalizeConsoleView(options.savedViewState?.current);
+  let savedViews = [...(options.savedViewState?.savedViews ?? [])];
+  let preferencesDirty = false;
   let ui = {
     laneCount: snapshot.lanes.length,
     totalLaneCount: snapshot.lanes.length,
     selectedIndex: 0,
-    selectedLaneId: snapshot.lanes[0]?.id ?? null,
+    selectedLaneId: restored.selectedLaneId ?? snapshot.lanes[0]?.id ?? null,
     viewportOffset: 0,
     visibleLaneCapacity: initialCapacity,
     panelIndex: 0,
     panelCount: PANELS.length,
-    motion: preferences.reducedMotion !== true,
+    motion: preferences.reducedMotion !== true && restored.motion,
     exitRequested: false,
     filterEditing: false,
-    filterQuery: "",
-    groupMode: "flat",
+    filterQuery: restored.filterQuery,
+    groupMode: restored.groupMode,
+    scope: restored.scope,
+    sort: restored.sort,
+    mascot: restored.mascot,
+    favorites: restored.favorites,
+    overlay: null,
     matchedLaneCount: snapshot.lanes.length,
     frame: 0,
-    notice: null,
+    notice: options.preferenceWarning ?? null,
     confirmation: null,
     composer: null,
     session: null,
@@ -129,22 +139,22 @@ export function createConsoleController(options = {}) {
   let previousScreen = null;
   let firstRender = true;
   let refreshGeneration = 0;
-  let collapsedGroups = new Set();
+  let collapsedGroups = new Set(restored.collapsedGroups);
   let navigationCache = null;
 
   function navigation() {
     if (!navigationCache || navigationCache.snapshot !== snapshot
       || navigationCache.query !== ui.filterQuery || navigationCache.mode !== ui.groupMode
-      || navigationCache.collapsed !== collapsedGroups) {
+      || navigationCache.collapsed !== collapsedGroups || navigationCache.sort !== ui.sort || navigationCache.favorites !== ui.favorites) {
       navigationCache = { snapshot, query: ui.filterQuery, mode: ui.groupMode,
-        collapsed: collapsedGroups, value: buildLaneNavigation(snapshot.lanes, {
+        collapsed: collapsedGroups, sort: ui.sort, favorites: ui.favorites, value: buildLaneNavigation(sortConsoleLanes(snapshot.lanes, ui.sort, ui.favorites), {
           query: ui.filterQuery, mode: ui.groupMode, collapsed: collapsedGroups
         }) };
     }
     return navigationCache.value;
   }
 
-  function visibleSnapshot() { return { ...snapshot, lanes: navigation().lanes }; }
+  function visibleSnapshot() { return { ...snapshot, scope: ui.scope, lanes: navigation().lanes }; }
   function selectedRow() { return navigation().rows[ui.selectedIndex] ?? null; }
 
   function toggleGroup() {
@@ -208,9 +218,11 @@ export function createConsoleController(options = {}) {
       }
     );
     const frame = selectedFormationFrame(lane?.status, ui.frame);
-    const screen = decorateFooter(render(view, terminal, {
+    const screen = ui.overlay ? renderOperatorOverlay(ui.overlay, terminal, { savedViews, extraCommands: options.extraCommands }) : decorateFooter(render(view, terminal, {
       ...preferences,
       motion: ui.motion,
+      mascot: ui.mascot,
+      scope: ui.scope,
       reducedMotion: preferences.reducedMotion === true || ui.motion === false,
       frame,
       session: ui.session,
@@ -238,6 +250,10 @@ export function createConsoleController(options = {}) {
   }
 
   async function runRuntimeAction(method, lane, ...args) {
+    if (lane?.controlAvailable === false && method !== "session") {
+      setNotice("OBSERVATION ONLY · Control remains with the owning Codex client");
+      return false;
+    }
     if (typeof runtime[method] !== "function") {
       setNotice(`${method}-control-unavailable`);
       return false;
@@ -317,7 +333,7 @@ export function createConsoleController(options = {}) {
     // The authoritative thread identity may only be available from thread/read.
     // Keep the composer available while that session metadata is loading so a
     // freshly persisted terminal lane behaves exactly like an existing one.
-    ui.composer = { laneId: lane.id, value: "" };
+    ui.composer = lane.controlAvailable === false ? null : { laneId: lane.id, value: "" };
     await renderCurrent();
     await refreshSession();
   }
@@ -374,14 +390,19 @@ export function createConsoleController(options = {}) {
   function copyLaneIdentifier() {
     const lane = selectedLane();
     if (!lane) return;
-    const identifier = String(lane.id).slice(0, 64);
+    const identifier = String(lane.id).slice(0, 320);
     const encoded = Buffer.from(identifier, "utf8").toString("base64");
     writeControl(`\u001b]52;c;${encoded}\u0007`);
     setNotice(`COPY ${identifier} · OSC 52 sent; identifier remains visible here`);
   }
 
   function selectMouseRow(event) {
-    const firstLaneRow = 5;
+    if (ui.mascot && event.row === 1 && event.column >= Math.max(1, terminal.columns - 14)) {
+      ui.sort = "attention"; ui.selectedLaneId = null; ui.selectedIndex = 0;
+      setNotice("KITE · ATTENTION FIRST · blocked and unresolved work before completed history");
+      return;
+    }
+    const firstLaneRow = 6;
     const visibleIndex = Math.floor((event.row - firstLaneRow) / 2);
     const index = ui.viewportOffset + visibleIndex;
     if (event.row >= firstLaneRow && visibleIndex >= 0 && index < ui.laneCount) {
@@ -391,14 +412,14 @@ export function createConsoleController(options = {}) {
     }
   }
 
-  function startSnapshotRefresh() {
+  function startSnapshotRefresh(force = false) {
     if (typeof readSnapshot !== "function" || ui.refreshInFlight) return;
     ui.refreshInFlight = true;
     const generation = ++refreshGeneration;
     let timer = null;
     let read;
     try {
-      read = readSnapshot();
+      read = readSnapshot({ scope: ui.scope, force });
     } catch {
       read = Promise.reject(new Error("state-read-failed"));
     }
@@ -428,8 +449,90 @@ export function createConsoleController(options = {}) {
     });
   }
 
+  function captureView() {
+    return normalizeConsoleView({ ...ui, collapsedGroups: [...collapsedGroups] });
+  }
+
+  async function saveState() {
+    if (!preferencesDirty || typeof options.saveViewState !== "function") return;
+    await options.saveViewState({ schemaVersion: 1, current: captureView(), savedViews });
+    preferencesDirty = false;
+  }
+
+  function changeScope(scope) {
+    // Invalidate late reads before swapping scope; never act on rows from a previous scope.
+    refreshGeneration += 1;
+    ui.refreshInFlight = false;
+    snapshot = { ...defaultSnapshot(options.cwd), scope, lanes: [] };
+    ui.scope = scope;
+    ui.selectedIndex = 0; ui.selectedLaneId = null; ui.viewportOffset = 0;
+    ui.session = null; ui.composer = null; ui.confirmation = null;
+    ui.groupMode = scope === "projects" ? "project" : scope === "native" ? "parent" : "flat";
+    ui.observation = "stale";
+    startSnapshotRefresh(true);
+  }
+
+  async function runOperatorCommand(id) {
+    ui.overlay = null;
+    if (id.startsWith("scope:")) changeScope(id.slice(6));
+    else if (id === "refresh") startSnapshotRefresh(true);
+    else if (id === "attention") ui.sort = "attention";
+    else if (id.startsWith("sort:")) ui.sort = id.slice(5);
+    else if (id === "favorite") {
+      const lane = selectedLane();
+      if (lane) ui.favorites = ui.favorites.includes(lane.id) ? ui.favorites.filter((item) => item !== lane.id) : [...ui.favorites.slice(-127), lane.id];
+    } else if (id === "saveView") ui.overlay = { kind: "saveView", query: "", index: 0 };
+    else if (id === "toggleMascot") ui.mascot = !ui.mascot;
+    else if (id === "toggleMotion") {
+      if (preferences.reducedMotion !== true) ui.motion = !ui.motion;
+    } else if (id === "clear") { ui.filterQuery = ""; collapsedGroups = new Set(); }
+    else if (id.startsWith("view:")) {
+      const saved = savedViews.find((view) => view.name === id.slice(5));
+      if (saved) {
+        changeScope(saved.view.scope);
+        Object.assign(ui, normalizeConsoleView(saved.view));
+        if (preferences.reducedMotion === true) ui.motion = false;
+        collapsedGroups = new Set(saved.view.collapsedGroups);
+      }
+    } else if (typeof options.onOperatorCommand === "function") {
+      await options.onOperatorCommand(id, selectedLane());
+    }
+    preferencesDirty = true;
+    if (!ui.overlay) setNotice(`VIEW ${ui.scope.toUpperCase()} · ${ui.sort.toUpperCase()} · : Commands`);
+  }
+
+  async function dispatchOverlay(event) {
+    const overlay = ui.overlay;
+    if (["quit", "closeSession", "clearFilter", "discardMessage"].includes(event.type)) ui.overlay = null;
+    else if (event.type === "text") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; }
+    else if (event.type === "backspace") { overlay.query = Array.from(overlay.query).slice(0, -1).join(""); overlay.index = 0; }
+    else if (event.type === "move") overlay.index = Math.max(0, Math.min(paletteItems(overlay.query, savedViews, options.extraCommands).length - 1, overlay.index + event.delta));
+    else if (["activate", "applyFilter", "submitMessage"].includes(event.type)) {
+      if (overlay.kind === "saveView") {
+        const name = overlay.query.trim();
+        if (!name) setNotice("View name is empty.");
+        else if (savedViews.some((saved) => saved.name === name)) setNotice("View name already exists; choose a different name.");
+        else if (savedViews.length >= 16) setNotice("Saved-view limit reached (16).");
+        else {
+          savedViews.push({ name, view: captureView() }); preferencesDirty = true;
+          try { await saveState(); ui.overlay = null; setNotice(`VIEW SAVED · ${name}`); }
+          catch (error) { setNotice(error.message); }
+        }
+      } else {
+        const item = paletteItems(overlay.query, savedViews, options.extraCommands)[overlay.index];
+        if (item) await runOperatorCommand(item.id);
+      }
+    } else if (event.type === "resize") terminal = safeTerminal(event);
+  }
+
   async function dispatch(event) {
     if (!event || typeof event !== "object") return { exit: false };
+    if (ui.overlay && event.type !== "tick") {
+      await dispatchOverlay(event);
+      await renderCurrent();
+      return { exit: false, textMode: ui.overlay ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false };
+    }
+    if (event.type !== "tick") preferencesDirty = true;
     if (event.type === "tick") {
       ui.refreshTick += 1;
       startSnapshotRefresh();
@@ -438,7 +541,16 @@ export function createConsoleController(options = {}) {
       if (ui.session && ui.refreshTick % 4 === 0 && !ui.composer?.value) {
         await refreshSession();
       }
-    } else if (event.type === "closeSession") {
+    } else if (event.type === "palette" && !ui.session && !ui.filterEditing) {
+      ui.overlay = { kind: "palette", query: "", index: 0 }; ui.confirmation = null;
+    } else if (event.type === "scope" && !ui.session && !ui.filterEditing) {
+      const scopes = ["workspace", "projects", "native"];
+      await runOperatorCommand(`scope:${scopes[(scopes.indexOf(ui.scope) + 1) % scopes.length]}`);
+    } else if (event.type === "attention" && !ui.session) {
+      await runOperatorCommand("attention");
+    } else if (event.type === "favorite" && !ui.session) {
+      await runOperatorCommand("favorite");
+    } else if (event.type === "closeSession" || (event.type === "quit" && ui.session?.observationOnly)) {
       closeSession();
     } else if (event.type === "filter") {
       ui.filterEditing = true;
@@ -592,13 +704,15 @@ export function createConsoleController(options = {}) {
     await renderCurrent();
     return {
       exit: ui.exitRequested,
-      textMode: ui.composer ? "composer" : ui.filterEditing ? "filter" : false
+      textMode: ui.overlay ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false
     };
   }
 
   return Object.freeze({
     dispatch,
     render: renderCurrent,
+    saveState,
+    viewState: () => ({ schemaVersion: 1, current: captureView(), savedViews: structuredClone(savedViews) }),
     state: () => Object.freeze({ ...ui })
   });
 }
@@ -653,7 +767,7 @@ export async function runConsole(options = {}) {
     : SNAPSHOT_REFRESH_TIMEOUT_MS;
   const initial = options.snapshot
     ? { snapshot: options.snapshot, observation: "fresh" }
-    : await readInitialSnapshot(readSnapshot, options.cwd, refreshTimeoutMs, clock);
+    : await readInitialSnapshot(() => readSnapshot({ scope: options.savedViewState?.current?.scope ?? "workspace" }), options.cwd, refreshTimeoutMs, clock);
 
   return terminalSession(io, async ({ signal, suspend }) => {
     const decoder = createInputDecoder();
@@ -695,8 +809,10 @@ export async function runConsole(options = {}) {
         finished = true;
         acceptingWrites = false;
         cleanup();
-        if (error) reject(error);
-        else resolve({ exitReason: signal?.aborted ? "signal" : "return" });
+        Promise.resolve(controller.saveState()).then(() => {
+          if (error) reject(error);
+          else resolve({ exitReason: signal?.aborted ? "signal" : "return" });
+        }, (saveError) => reject(error ?? saveError));
       }
 
     async function dispatchEvents(events) {

@@ -1,3 +1,5 @@
+import { readFleetInventory, paginateInventory } from "./fleet-inventory.mjs";
+import { registerWorkspace, listRegisteredWorkspaces } from "./workspace-registry.mjs";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -45,6 +47,7 @@ export const EXIT_CODES = Object.freeze({
 
 const MAX_CONTRACT_BYTES = 128 * 1024;
 const COMMANDS = new Set([
+  "projects", "register", "inventory",
   "doctor",
   "models",
   "init",
@@ -58,6 +61,7 @@ const COMMANDS = new Set([
   "uninstall"
 ]);
 const BOOLEAN_FLAGS = new Set([
+  "--native", "--archived",
   "--json",
   "--stdin",
   "--confirm",
@@ -68,6 +72,7 @@ const BOOLEAN_FLAGS = new Set([
   "--summary"
 ]);
 const VALUE_FLAGS = new Set([
+  "--query", "--cursor", "--name",
   "--contract",
   "--workspace",
   "--lane",
@@ -83,6 +88,9 @@ const VALUE_FLAGS = new Set([
 ]);
 const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
 const COMMAND_FLAGS = Object.freeze({
+  projects: new Set(["--json", "--workspace"]),
+  register: new Set(["--json", "--workspace", "--name"]),
+  inventory: new Set(["--json", "--workspace", "--native", "--archived", "--query", "--cursor", "--limit"]),
   doctor: new Set(["--json", "--workspace"]),
   models: new Set(["--json", "--workspace"]),
   init: new Set([
@@ -764,6 +772,19 @@ async function runUninstallCommand(parsed, io) {
 }
 
 async function execute(parsed, io, dependencies) {
+  if (["projects", "register", "inventory"].includes(parsed.command)) {
+    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+    if (parsed.command === "projects") return { payload: await listRegisteredWorkspaces(context.dataDir), exitCode: EXIT_CODES.success };
+    if (parsed.command === "register") return { payload: await registerWorkspace(context.dataDir, context.workspace, { name: parsed.flags.get("--name") }), exitCode: EXIT_CODES.success };
+    if (parsed.flags.has("--archived") && !parsed.flags.has("--native")) throw new InvalidInputError("--archived requires --native.");
+    const selection = { query: parsed.flags.get("--query"), cursor: parsed.flags.get("--cursor"),
+      limit: parsed.flags.has("--limit") ? Number(parsed.flags.get("--limit")) : 100 };
+    if (!Number.isInteger(selection.limit) || selection.limit < 1 || selection.limit > 500) throw new InvalidInputError("Inventory limit must be 1-500.");
+    const payload = parsed.flags.has("--native")
+      ? await requestLiveSupervisor(context, "nativeInventory", { ...selection, archived: parsed.flags.has("--archived") }, io, dependencies)
+      : paginateInventory(await readFleetInventory(context.dataDir), selection);
+    return { payload, exitCode: EXIT_CODES.success };
+  }
   if (parsed.command === "init") {
     if (parsed.flags.has("--list")) {
       if (["--workspace", "--template", "--objective", "--confirmation-ref"]
