@@ -1,0 +1,23 @@
+name: KITE inbox source snapshot
+on:
+  push:
+    branches: ["harness/kite-inbox-source-20260906"]
+    paths: [".github/workflows/kite-inbox-source.yml"]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: c7d7384aab34734024f7461e58394c16b03bf754
+      - run: git archive --format=tar HEAD > "$RUNNER_TEMP/fleet-kite-inbox-base.tar"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: fleet-kite-inbox-base
+          path: ${{ runner.temp }}/fleet-kite-inbox-base.tar
+          retention-days: 1
+          if-no-files-found: error
