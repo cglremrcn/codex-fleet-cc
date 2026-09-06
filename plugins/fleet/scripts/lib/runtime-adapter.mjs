@@ -1,3 +1,4 @@
+import { InterventionInbox } from "./intervention-inbox.mjs";
 import { discoverNativeThreads } from "./fleet-inventory.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -158,6 +159,10 @@ function copyLane(lane) {
     authority: lane.authority,
     status: lane.status,
     phase: lane.phase,
+    interactive: lane.interactive === true,
+    pendingRequests: lane.pendingRequests ?? 0,
+    pendingQuestionCount: lane.pendingQuestionCount ?? 0,
+    pendingApprovalCount: lane.pendingApprovalCount ?? 0,
     createdAt: lane.createdAt,
     updatedAt: lane.updatedAt,
     threadId: lane.threadId,
@@ -327,7 +332,46 @@ export class FleetRuntime {
     this.verifyCommitRef = options.verifyCommitRef ?? defaultVerifyCommitRef;
     this.connectedProtocolVersion = options.brokerProtocolVersion
       ?? broker.protocolVersion;
+    this.inbox = new InterventionInbox({
+      send: (id, envelope) => broker.replyToServer(id, envelope),
+      isCurrent: (entry) => {
+        const lane = this.lanes.get(entry.laneId);
+        return !this.closed && !broker.exited && lane?.threadId === entry.threadId && lane?.turnId === entry.turnId && ["starting", "running"].includes(lane.status);
+      },
+      onChange: (id) => this.updatePendingRequests(id)
+    });
+    broker.setServerRequestHandler?.((message) => {
+      this.assertMutableProtocol();
+      const lane = this.lanes.get(this.threadToLane.get(message.params?.threadId));
+      if (!lane) return false;
+      // A request can precede its turn/start acknowledgement, but never revive a retired turn.
+      const turnId = message.params?.turnId;
+      if (!lane.turnId && !lane.retiredTurnIds?.has(turnId) && lane.status === "running") {
+        try {
+          this.inbox.validate(message, { ...lane, turnId });
+          this.bindTurn(lane, turnId);
+        } catch { return false; }
+      }
+      try { this.inbox.receive(message, lane); return true; }
+      catch (error) {
+        if (error.code === "FLEET_INBOX_COLLISION") {
+          this.inbox.disconnect(); void broker.close().catch(() => undefined); return true;
+        }
+        this.emit(lane.id, "intervention.rejected", { reason: "unsupported-or-invalid-request" });
+        return false;
+      }
+    });
     broker.setEventHandler((message) => this.handleNotification(message));
+  }
+
+  updatePendingRequests(id) {
+    const lane = this.lanes.get(id);
+    if (!lane) return;
+    const requests = [...this.inbox.entries.values()].filter((entry) => entry.laneId === id && ["pending", "delegated", "sending", "sent"].includes(entry.state));
+    lane.pendingRequests = requests.length;
+    lane.pendingQuestionCount = requests.filter((entry) => entry.kind === "question").length;
+    lane.pendingApprovalCount = requests.filter((entry) => entry.kind === "approval").length;
+    this.emit(id, "intervention.changed", { pendingRequests: lane.pendingRequests });
   }
 
   assertMutableProtocol() {
@@ -435,6 +479,7 @@ export class FleetRuntime {
       this.turnToLane.delete(lane.turnId);
     }
     lane.turnId = null;
+    lane.interventionItems?.clear();
   }
 
   bindTurn(lane, turnId) {
@@ -451,6 +496,10 @@ export class FleetRuntime {
   }
 
   handleNotification(message) {
+    if (message.method === "fleet/brokerClosed") { this.inbox.disconnect(); return; }
+    if (message.method === "serverRequest/resolved") {
+      this.inbox.resolved(message.params?.threadId, message.params?.requestId); return;
+    }
     if (IGNORED_NOTIFICATION_METHODS.has(message.method)) {
       return;
     }
@@ -515,6 +564,13 @@ export class FleetRuntime {
       case "item/started":
       case "item/completed": {
         const item = message.params?.item;
+        if (item?.type === "fileChange" && typeof item.id === "string" && message.method === "item/started") {
+          lane.interventionItems ??= new Map();
+          if (Array.isArray(item.changes) && item.changes.length <= 64 && Buffer.byteLength(JSON.stringify(item.changes)) <= 32 * 1024) {
+            if (lane.interventionItems.size >= 64) lane.interventionItems.delete(lane.interventionItems.keys().next().value);
+            lane.interventionItems.set(item.id, structuredClone(item.changes));
+          }
+        }
         if (item?.type === "reasoning") {
           return;
         }
@@ -541,6 +597,8 @@ export class FleetRuntime {
         );
         break;
       case "turn/completed": {
+        this.inbox.invalidateTurn(lane.threadId, lane.turnId);
+        lane.interventionItems?.clear();
         const turnStatus = message.params?.turn?.status;
         if (turnStatus === "completed") {
           const decision = decideLaneOutcome(
@@ -691,6 +749,7 @@ export class FleetRuntime {
       authority,
       workspacePath: path.resolve(contract.workspacePath),
       ephemeral: contract.ephemeral === true,
+      interactive: contract.interactive === true,
       threadId: null,
       turnId: null,
       lastMessage: null,
@@ -716,7 +775,7 @@ export class FleetRuntime {
       const thread = await this.broker.request("thread/start", {
         cwd: lane.workspacePath,
         model: lane.model,
-        approvalPolicy: "never",
+        approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
         serviceName: "codex_fleet_cc",
         ephemeral: lane.ephemeral
@@ -741,7 +800,7 @@ export class FleetRuntime {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
         cwd: lane.workspacePath,
-        approvalPolicy: "never",
+        approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
         input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
@@ -783,7 +842,7 @@ export class FleetRuntime {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
         cwd: lane.workspacePath,
-        approvalPolicy: "never",
+        approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
         input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
@@ -859,7 +918,7 @@ export class FleetRuntime {
       const turn = await this.broker.request("turn/start", {
         threadId: lane.threadId,
         cwd: lane.workspacePath,
-        approvalPolicy: "never",
+        approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
         input: this.turnInput(lane, buildExecutionPrompt(prompt)),
         model: lane.model,
@@ -930,6 +989,7 @@ export class FleetRuntime {
       authority,
       workspacePath: path.resolve(workspacePath),
       retiredTurnIds: new Set(record.turnId ? [record.turnId] : []),
+      interactive: record.interactive === true,
       status: record.status,
       phase: record.phase,
       threadId: assertRuntimeId(record.threadId, "Persisted Codex thread id"),
@@ -956,7 +1016,7 @@ export class FleetRuntime {
       threadId: lane.threadId,
       cwd: lane.workspacePath,
       model: lane.model,
-      approvalPolicy: "never",
+      approvalPolicy: lane.interactive === true ? "on-request" : "never",
       sandboxPolicy: sandboxPolicyForLane(lane)
     });
     return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
@@ -1025,6 +1085,7 @@ export class FleetRuntime {
       threadId: lane.threadId,
       turnId: lane.turnId
     });
+    this.inbox.invalidateTurn(lane.threadId, lane.turnId, "interrupt-acknowledged");
     this.emit(lane.id, "lane.interrupt-requested", {
       threadId: lane.threadId,
       turnId: lane.turnId
@@ -1033,6 +1094,7 @@ export class FleetRuntime {
   }
 
   inspectLane(id) {
+    this.inbox.sweep();
     const lane = this.lanes.get(id);
     return lane ? copyLane(lane) : null;
   }
@@ -1050,6 +1112,7 @@ export class FleetRuntime {
       return;
     }
     this.closed = true;
+    this.inbox.disconnect();
     this.broker.setEventHandler(null);
     await this.broker.close();
   }

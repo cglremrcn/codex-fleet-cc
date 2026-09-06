@@ -2,6 +2,7 @@ const ESCAPE = "\u001b";
 const DEFAULT_MAX_PENDING_BYTES = 64;
 
 const KEY_EVENTS = Object.freeze({
+  i: Object.freeze({ type: "inbox" }),
   K: Object.freeze({ type: "kite" }),
   ":": Object.freeze({ type: "palette" }),
   w: Object.freeze({ type: "scope" }),

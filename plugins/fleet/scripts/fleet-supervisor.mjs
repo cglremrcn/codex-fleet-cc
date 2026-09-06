@@ -270,6 +270,20 @@ export function createControlPlane(options) {
           lanes: flattenSnapshot(current)
         };
       }
+      if (method === "inbox") {
+        return runtime?.inbox?.list() ?? { schemaVersion: 1, version: 0, requests: [] };
+      }
+      if (method.startsWith("inbox")) {
+        if (!runtime?.inbox) throw new Error("No live inbox. Expired requests cannot be replayed after a restart.");
+        runtime.assertMutableProtocol();
+        const inbox = runtime.inbox;
+        if (method === "inboxInspect") return inbox.inspect(params.id);
+        if (method === "inboxPropose") return inbox.propose(params.id, params.revision, params.proposal);
+        if (method === "inboxAnswer") return inbox.answerDelegated(params.id, params.revision, params.delegationToken, params.result);
+        if (method === "inboxPreview") return inbox.preview(params.id, params.revision, params.action);
+        if (method === "inboxApply") return inbox.apply(params.confirmationToken);
+        throw new Error("Unknown inbox method.");
+      }
       if (method === "result") {
         const laneId = assertSafeId(params.laneId, "Result lane id");
         const lane = await findMutableLane(laneId);

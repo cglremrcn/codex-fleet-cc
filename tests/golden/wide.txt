@@ -25,4 +25,4 @@ LANES  4                                        │ [DETAIL] / console-build    
                                                 │                                                                          │
                                                 │                                                                          │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Enter: Open agent  : Commands  W: Scope  G: Groups  K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return
+Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return

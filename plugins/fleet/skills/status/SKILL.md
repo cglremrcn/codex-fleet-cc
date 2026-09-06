@@ -14,3 +14,5 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" status --workspace "${CLAUDE_PROJ
 Summarize each lane's ID, role, model, effort, authority, status, evidence, and token usage exactly as
 returned. Distinguish `verified`, `failed`, `blocked`, `interrupted`, and `outcome_unknown`. Do not turn unknown into
 failed or successful. This command must not launch a lane, create state, or call a model.
+
+Report `pendingRequests`, `pendingQuestionCount` and `pendingApprovalCount` when present. Use the inbox skill for targeted detail; pending questions are not automatically safe to answer.
