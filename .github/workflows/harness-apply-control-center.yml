@@ -1,0 +1,34 @@
+name: Apply reviewed control center source
+on:
+  push:
+    branches: ["codex/harness-control-center"]
+    paths: [".github/workflows/harness-apply-control-center.yml"]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - name: Verify parent and retrieve immutable patch objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git rev-parse HEAD^)" = c6eeb1d052dbff1a18b3e039283e48cf7613bc5e
+          for SHA in 81c4e01d87382b99611e6d6a01a4c655867896a7 8cb5e38fd01ae79d7248af6ceb14843ff77972fa 2b1f8c0c0c27be7fc5ef654e37a00f7c010d2c28; do
+            gh api "repos/cglremrcn/codex-fleet-cc/git/blobs/$SHA" --jq .content | base64 --decode >> "$RUNNER_TEMP/control-center.patch.gz"
+          done
+          gzip -dc "$RUNNER_TEMP/control-center.patch.gz" > "$RUNNER_TEMP/control-center.patch"
+          echo "ccc2de73ebd4eaaf62060f487aed56b35ec876d6b2f2939b754d1c9898a48db2  $RUNNER_TEMP/control-center.patch" | sha256sum --check
+      - name: Apply and verify exact locally tested tree
+        run: |
+          git apply --index --check "$RUNNER_TEMP/control-center.patch"
+          git apply --index "$RUNNER_TEMP/control-center.patch"
+          git rm .github/workflows/harness-apply-control-center.yml
+          test "$(git write-tree)" = f0bc5dfb6b0b23628622db85ea856fc9cd6ca15f
+          git diff --cached --check
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'feat: multi-project control center, native thread observation and private saved views'
+          git push origin HEAD:refs/heads/codex/harness-control-center
