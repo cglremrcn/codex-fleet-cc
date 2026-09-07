@@ -1,3 +1,4 @@
+import { createInboxView, INBOX_COMMAND } from "./inbox-view.mjs";
 import { deriveKiteSignal, kiteIsAnimated } from "./kite-companion.mjs";
 import { normalizeConsoleView, sortConsoleLanes } from "./console-preferences.mjs";
 import { companionItems, paletteItems, renderOperatorOverlay } from "./console-overlay.mjs";
@@ -137,6 +138,8 @@ export function createConsoleController(options = {}) {
   let sessionGeneration = 0;
   let sessionRead = null;
   let disposed = false;
+  const extraCommands = [...(options.extraCommands ?? []), ...(typeof runtime.inboxList === "function" ? [INBOX_COMMAND] : [])];
+  const inbox = createInboxView({ runtime, onChange: () => { void renderCurrent().catch(() => undefined); } });
 
   function navigation() {
     if (!navigationCache || navigationCache.snapshot !== snapshot
@@ -215,7 +218,7 @@ export function createConsoleController(options = {}) {
       }
     );
     const frame = ui.frame;
-    const screen = ui.overlay ? renderOperatorOverlay(ui.overlay, terminal, { savedViews, extraCommands: options.extraCommands, view, preferences: { ...preferences, motion: ui.motion, mascot: ui.mascot, frame } }) : decorateFooter(render(view, terminal, {
+    const screen = inbox.view() ? inbox.render(terminal) : ui.overlay ? renderOperatorOverlay(ui.overlay, terminal, { savedViews, extraCommands, view, preferences: { ...preferences, motion: ui.motion, mascot: ui.mascot, frame } }) : decorateFooter(render(view, terminal, {
       ...preferences,
       motion: ui.motion,
       mascot: ui.mascot,
@@ -474,7 +477,8 @@ export function createConsoleController(options = {}) {
 
   async function runOperatorCommand(id) {
     ui.overlay = null;
-    if (id === "kite") ui.overlay = { kind: "kite", query: "", index: 0 };
+    if (id === "inbox") { ui.confirmation = null; inbox.open(selectedLane()); }
+    else if (id === "kite") ui.overlay = { kind: "kite", query: "", index: 0 };
     else if (id.startsWith("scope:")) changeScope(id.slice(6));
     else if (id === "refresh") startSnapshotRefresh(true);
     else if (id === "attention") ui.sort = "attention";
@@ -504,7 +508,7 @@ export function createConsoleController(options = {}) {
 
   async function dispatchOverlay(event) {
     const overlay = ui.overlay;
-    const items = () => overlay.kind === "kite" ? companionItems({ extraCommands: options.extraCommands }) : paletteItems(overlay.query, savedViews, options.extraCommands);
+    const items = () => overlay.kind === "kite" ? companionItems({ extraCommands }) : paletteItems(overlay.query, savedViews, extraCommands);
     if (["quit", "closeSession", "clearFilter", "discardMessage"].includes(event.type)) ui.overlay = null;
     else if (event.type === "text" && overlay.kind !== "kite") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; }
     else if (event.type === "backspace") { overlay.query = Array.from(overlay.query).slice(0, -1).join(""); overlay.index = 0; }
@@ -529,10 +533,15 @@ export function createConsoleController(options = {}) {
 
   async function dispatch(event) {
     if (!event || typeof event !== "object") return { exit: false };
+    if (inbox.view()) {
+      if (event.type === "resize") terminal = safeTerminal(event);
+      inbox.handle(event); await renderCurrent();
+      return { exit: false, textMode: inbox.view() ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false };
+    }
     if (ui.overlay && event.type !== "tick") {
       await dispatchOverlay(event);
       await renderCurrent();
-      return { exit: false, textMode: ui.overlay ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false };
+      return { exit: false, textMode: inbox.view() || ui.overlay ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false };
     }
     if (event.type !== "tick") preferencesDirty = true;
     if (event.type === "tick") {
@@ -544,6 +553,8 @@ export function createConsoleController(options = {}) {
       if (ui.session && ui.refreshTick % 4 === 0 && !ui.composer?.value) {
         await refreshSession();
       }
+    } else if (event.type === "inbox" && !ui.session && !ui.filterEditing) {
+      inbox.open(selectedLane()); ui.confirmation = null;
     } else if (event.type === "kite" && !ui.session && !ui.filterEditing) {
       ui.overlay = { kind: "kite", query: "", index: 0 }; ui.confirmation = null;
     } else if (event.type === "palette" && !ui.session && !ui.filterEditing) {
@@ -709,17 +720,17 @@ export function createConsoleController(options = {}) {
     await renderCurrent();
     return {
       exit: ui.exitRequested,
-      textMode: ui.overlay ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false
+      textMode: inbox.view() || ui.overlay ? "palette" : ui.composer ? "composer" : ui.filterEditing ? "filter" : false
     };
   }
 
   return Object.freeze({
     dispatch,
-    dispose() { disposed = true; refreshGeneration += 1; invalidateSessionRead(); },
+    dispose() { disposed = true; inbox.dispose(); refreshGeneration += 1; invalidateSessionRead(); },
     render: renderCurrent,
     saveState,
     viewState: () => ({ schemaVersion: 1, current: captureView(), savedViews: structuredClone(savedViews) }),
-    state: () => Object.freeze({ ...ui })
+    state: () => Object.freeze({ ...ui, inbox: inbox.view() })
   });
 }
 

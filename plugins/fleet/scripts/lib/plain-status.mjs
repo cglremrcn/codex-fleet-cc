@@ -130,7 +130,10 @@ export function summarizeStatusLane(lane) {
   for (const key of ["id", "admissionId", "threadId", "turnId", "role", "model", "effort", "status", "phase", "groupPath"]) {
     if (typeof lane?.[key] === "string") result[key] = lane[key];
   }
-  result.needsController = Boolean(lane?.controllerRequest);
+  for (const key of ["pendingRequests", "pendingQuestionCount", "pendingApprovalCount"]) {
+    if (Number.isSafeInteger(lane?.[key]) && lane[key] >= 0) result[key] = lane[key];
+  }
+  result.needsController = Boolean(lane?.controllerRequest) || (lane?.pendingRequests ?? 0) > 0;
   result.evidenceCount = Array.isArray(lane?.evidenceRefs) ? lane.evidenceRefs.length : 0;
   result.artifactCount = Array.isArray(lane?.artifactRefs) ? lane.artifactRefs.length : 0;
   if (lane?.controllerRequest) {

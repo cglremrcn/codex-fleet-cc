@@ -429,3 +429,5 @@ read-only discovery, the command palette, saved views and pins in the review bra
 changes do not automatically update the existing v0.2.1 integration.
 
 See [KITE companion v2](docs/KITE_COMPANION.md) for state semantics and local controls in the review branch.
+
+See [Shared intervention inbox](docs/SHARED_INTERVENTION.md) for human review, Claude proposals, exact-request delegation and supported protocol boundaries in the review branch.
