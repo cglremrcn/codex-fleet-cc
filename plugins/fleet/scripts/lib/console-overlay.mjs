@@ -1,6 +1,8 @@
+import { deriveKiteSignal, renderKiteAvatar } from "./kite-companion.mjs";
 import { displayWidth, stripAnsi } from "./tui-render.mjs";
 
 export const OPERATOR_COMMANDS = Object.freeze([
+  { id: "kite", title: "KITE companion", description: "Real activity, waiting requests and local operator controls" },
   { id: "scope:workspace", title: "Current workspace", description: "Return to this Claude project's Fleet lanes" },
   { id: "scope:projects", title: "All Fleet projects", description: "Registered and retained projects, grouped without model calls" },
   { id: "scope:native", title: "All Codex sessions", description: "Discover CLI, app-server and native child threads; observation only" },
@@ -36,6 +38,7 @@ export function paletteItems(query, savedViews = [], extraCommands = []) {
 /** A local, bounded overlay; its rows cannot become runtime action targets. */
 export function renderOperatorOverlay(overlay, terminal, options = {}) {
   const columns = Math.max(1, terminal.columns ?? 80), rows = Math.max(1, terminal.rows ?? 24);
+  if (overlay.kind === "kite") return renderCompanion(overlay, terminal, options);
   const lines = [overlay.kind === "saveView" ? "SAVE VIEW · local preferences" : "FLEET COMMAND CENTER · local commands", ""];
   lines.push(`> ${overlay.query ?? ""}_`, "");
   if (overlay.kind === "saveView") {
@@ -53,4 +56,36 @@ export function renderOperatorOverlay(overlay, terminal, options = {}) {
   while (lines.length < rows - 1) lines.push("");
   lines[rows - 1] = "↑↓ Select · Enter Run · Esc Close · No model turn for navigation";
   return lines.slice(0, rows).map((line) => clipped(line, columns)).join("\n");
+}
+
+export function companionItems(options = {}) {
+  const wanted = ["attention", "refresh", "toggleMotion", "toggleMascot"];
+  const inbox = (options.extraCommands ?? []).find((item) => item.id === "inbox");
+  return [...(inbox ? [inbox] : []), ...wanted.map((id) => OPERATOR_COMMANDS.find((item) => item.id === id))];
+}
+
+function renderCompanion(overlay, terminal, options) {
+  const columns = Math.max(1, terminal.columns ?? 80), rows = Math.max(1, terminal.rows ?? 24);
+  const signal = deriveKiteSignal(options.view);
+  const items = companionItems(options);
+  const index = Math.max(0, Math.min(overlay.index ?? 0, items.length - 1));
+  const lines = [`KITE / OPERATOR COMPANION · ${signal.label}`];
+  if (rows >= 24 && columns >= 48) lines.push(...renderKiteAvatar(signal, options.preferences ?? {}));
+  lines.push(`${signal.source.toUpperCase()} · ${signal.targetId ?? "no selected agent"}`);
+  // Wrap without silently dropping long explanations in a narrow terminal.
+  let line = "";
+  for (const word of signal.description.split(" ")) {
+    if (displayWidth(`${line} ${word}`.trim()) > columns && line) { lines.push(line); line = ""; }
+    line = `${line} ${word}`.trim();
+  }
+  if (line) lines.push(line);
+  lines.push(`VISIBLE: ${signal.totals.agents} agents · ${signal.totals.active} active · ${signal.totals.attention} attention · ${signal.totals.requests} requests`, "");
+  const available = Math.max(1, rows - lines.length - 1);
+  const offset = Math.max(0, index - available + 1);
+  // Tiny terminals prioritize the selected action rather than hiding navigation.
+  if (lines.length >= rows - 1) lines.splice(Math.max(1, rows - 3));
+  for (let i = offset; i < items.length && lines.length < rows - 1; i++) lines.push(`${i === index ? ">" : " "} ${items[i].title}`);
+  while (lines.length < rows - 1) lines.push("");
+  lines[rows - 1] = "↑↓ Select · Enter Run · Esc Close · Local controls; no model call";
+  return lines.slice(0, rows).map((text) => clipped(text, columns)).join("\n");
 }

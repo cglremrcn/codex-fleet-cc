@@ -25,4 +25,4 @@ LANES  4                              │ [DETAIL]
                                       │
                                       │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-Enter: Open agent  : Commands  W: Scope  G: Groups  /: Filter  X: Cancel  Ctrl+G: Return
+Enter: Open agent  : Commands  W: Scope  G: Groups  K: KITE  /: Filter  X: Cancel  Ctrl+G: Return
