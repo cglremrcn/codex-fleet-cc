@@ -1,5 +1,6 @@
+import { deriveKiteSignal, kiteIsAnimated } from "./kite-companion.mjs";
 import { normalizeConsoleView, sortConsoleLanes } from "./console-preferences.mjs";
-import { paletteItems, renderOperatorOverlay } from "./console-overlay.mjs";
+import { companionItems, paletteItems, renderOperatorOverlay } from "./console-overlay.mjs";
 import { StringDecoder } from "node:string_decoder";
 import { buildLaneNavigation, GROUP_MODES } from "./lane-navigation.mjs";
 
@@ -9,7 +10,6 @@ import { buildViewModel, renderScreen } from "./tui-render.mjs";
 import { withTerminalSession } from "./tui-session.mjs";
 
 const PANELS = Object.freeze(["detail", "evidence", "authority"]);
-const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
 const CANCELLABLE_STATUSES = new Set(["queued", "starting", "running"]);
 const MAX_FILTER_LENGTH = 256;
 const MAX_COMPOSER_LENGTH = 4_096;
@@ -46,13 +46,6 @@ function safeTerminal(value = {}) {
     columns: Number.isInteger(value.columns) ? Math.max(1, value.columns) : 80,
     rows: Number.isInteger(value.rows) ? Math.max(1, value.rows) : 24
   };
-}
-
-function selectedFormationFrame(status, tick) {
-  if (MOTION_STATUSES.has(status)) return tick % 4;
-  if (status === "blocked") return 3;
-  if (status === "failed" || status === "interrupted" || status === "outcome_unknown") return 0;
-  return 2;
 }
 
 function boundedStatus(value, width) {
@@ -141,6 +134,9 @@ export function createConsoleController(options = {}) {
   let refreshGeneration = 0;
   let collapsedGroups = new Set(restored.collapsedGroups);
   let navigationCache = null;
+  let sessionGeneration = 0;
+  let sessionRead = null;
+  let disposed = false;
 
   function navigation() {
     if (!navigationCache || navigationCache.snapshot !== snapshot
@@ -204,6 +200,7 @@ export function createConsoleController(options = {}) {
   }
 
   async function renderCurrent() {
+    if (disposed) return false;
     clampSelection();
     const lane = selectedLane();
     const view = buildViewModel(
@@ -217,8 +214,8 @@ export function createConsoleController(options = {}) {
         navigationRows: ui.groupMode === "flat" ? undefined : navigation().rows
       }
     );
-    const frame = selectedFormationFrame(lane?.status, ui.frame);
-    const screen = ui.overlay ? renderOperatorOverlay(ui.overlay, terminal, { savedViews, extraCommands: options.extraCommands }) : decorateFooter(render(view, terminal, {
+    const frame = ui.frame;
+    const screen = ui.overlay ? renderOperatorOverlay(ui.overlay, terminal, { savedViews, extraCommands: options.extraCommands, view, preferences: { ...preferences, motion: ui.motion, mascot: ui.mascot, frame } }) : decorateFooter(render(view, terminal, {
       ...preferences,
       motion: ui.motion,
       mascot: ui.mascot,
@@ -270,44 +267,45 @@ export function createConsoleController(options = {}) {
     }
   }
 
+  function invalidateSessionRead() {
+    sessionGeneration += 1;
+    if (sessionRead?.timer) clearTimeout(sessionRead.timer);
+    sessionRead = null;
+  }
+
   async function refreshSession() {
-    if (!ui.session) return false;
+    if (!ui.session || sessionRead || disposed) return false;
     const laneId = ui.session.laneId;
     const lane = snapshot.lanes.find((candidate) => candidate.id === laneId);
-    if (!lane) {
-      ui.session = { ...ui.session, loading: false, error: "Lane is no longer available." };
+    if (!lane || typeof runtime.session !== "function") {
+      ui.session = { ...ui.session, loading: false, error: lane ? "Runtime thread inspection is unavailable." : "Lane is no longer available." };
       return false;
     }
-    if (typeof runtime.session !== "function") {
-      ui.session = {
-        ...ui.session,
-        loading: false,
-        error: "Runtime thread inspection is unavailable."
-      };
-      return false;
-    }
-    try {
-      const session = await runtime.session(lane);
-      if (ui.session?.laneId !== laneId) return false;
-      ui.session = {
-        ...session,
-        laneId,
-        loading: false,
-        error: null,
-        scroll: ui.session.scroll ?? 0,
-        activityExpanded: ui.session.activityExpanded === true
-      };
-      return true;
-    } catch (error) {
-      if (ui.session?.laneId === laneId) {
-        ui.session = {
-          ...ui.session,
-          loading: false,
-          error: boundedStatus(error?.message ?? "Session read failed.", 160)
-        };
+    const read = { generation: sessionGeneration, timer: null, expired: false };
+    sessionRead = read;
+    const current = () => !disposed && read.generation === sessionGeneration && ui.session?.laneId === laneId;
+    read.timer = setTimeout(() => {
+      read.expired = true;
+      if (current()) {
+        ui.session = { ...ui.session, loading: false, error: "Session read timed out; transcript is stale. Navigation remains available." };
+        void renderCurrent();
       }
-      return false;
-    }
+    }, refreshTimeoutMs);
+    read.timer.unref?.();
+    // Do not await a remote transcript on the input queue. Keep one underlying
+    // read in flight even after the UI deadline to avoid a timeout retry storm.
+    Promise.resolve().then(() => runtime.session(lane)).then((session) => {
+      if (!current() || read.expired) return;
+      ui.session = { ...session, laneId, loading: false, error: null,
+        scroll: ui.session.scroll ?? 0, activityExpanded: ui.session.activityExpanded === true };
+    }, (error) => {
+      if (current()) ui.session = { ...ui.session, loading: false, error: boundedStatus(error?.message ?? "Session read failed.", 160) };
+    }).finally(() => {
+      clearTimeout(read.timer);
+      if (sessionRead === read) sessionRead = null;
+      if (current()) void renderCurrent();
+    });
+    return true;
   }
 
   async function openSession() {
@@ -319,6 +317,7 @@ export function createConsoleController(options = {}) {
     ui.filterEditing = false;
     ui.confirmation = null;
     ui.notice = null;
+    invalidateSessionRead();
     ui.session = {
       laneId: lane.id,
       threadId: lane.threadId ?? null,
@@ -339,6 +338,7 @@ export function createConsoleController(options = {}) {
   }
 
   function closeSession() {
+    invalidateSessionRead();
     ui.session = null;
     ui.composer = null;
     setNotice("RETURNED TO FLEET DASHBOARD");
@@ -398,8 +398,7 @@ export function createConsoleController(options = {}) {
 
   function selectMouseRow(event) {
     if (ui.mascot && event.row === 1 && event.column >= Math.max(1, terminal.columns - 14)) {
-      ui.sort = "attention"; ui.selectedLaneId = null; ui.selectedIndex = 0;
-      setNotice("KITE · ATTENTION FIRST · blocked and unresolved work before completed history");
+      ui.overlay = { kind: "kite", query: "", index: 0 }; ui.confirmation = null;
       return;
     }
     const firstLaneRow = 6;
@@ -462,6 +461,7 @@ export function createConsoleController(options = {}) {
   function changeScope(scope) {
     // Invalidate late reads before swapping scope; never act on rows from a previous scope.
     refreshGeneration += 1;
+    invalidateSessionRead();
     ui.refreshInFlight = false;
     snapshot = { ...defaultSnapshot(options.cwd), scope, lanes: [] };
     ui.scope = scope;
@@ -474,7 +474,8 @@ export function createConsoleController(options = {}) {
 
   async function runOperatorCommand(id) {
     ui.overlay = null;
-    if (id.startsWith("scope:")) changeScope(id.slice(6));
+    if (id === "kite") ui.overlay = { kind: "kite", query: "", index: 0 };
+    else if (id.startsWith("scope:")) changeScope(id.slice(6));
     else if (id === "refresh") startSnapshotRefresh(true);
     else if (id === "attention") ui.sort = "attention";
     else if (id.startsWith("sort:")) ui.sort = id.slice(5);
@@ -503,10 +504,11 @@ export function createConsoleController(options = {}) {
 
   async function dispatchOverlay(event) {
     const overlay = ui.overlay;
+    const items = () => overlay.kind === "kite" ? companionItems({ extraCommands: options.extraCommands }) : paletteItems(overlay.query, savedViews, options.extraCommands);
     if (["quit", "closeSession", "clearFilter", "discardMessage"].includes(event.type)) ui.overlay = null;
-    else if (event.type === "text") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; }
+    else if (event.type === "text" && overlay.kind !== "kite") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; }
     else if (event.type === "backspace") { overlay.query = Array.from(overlay.query).slice(0, -1).join(""); overlay.index = 0; }
-    else if (event.type === "move") overlay.index = Math.max(0, Math.min(paletteItems(overlay.query, savedViews, options.extraCommands).length - 1, overlay.index + event.delta));
+    else if (event.type === "move") overlay.index = Math.max(0, Math.min(items().length - 1, overlay.index + event.delta));
     else if (["activate", "applyFilter", "submitMessage"].includes(event.type)) {
       if (overlay.kind === "saveView") {
         const name = overlay.query.trim();
@@ -519,7 +521,7 @@ export function createConsoleController(options = {}) {
           catch (error) { setNotice(error.message); }
         }
       } else {
-        const item = paletteItems(overlay.query, savedViews, options.extraCommands)[overlay.index];
+        const item = items()[overlay.index];
         if (item) await runOperatorCommand(item.id);
       }
     } else if (event.type === "resize") terminal = safeTerminal(event);
@@ -537,10 +539,13 @@ export function createConsoleController(options = {}) {
       ui.refreshTick += 1;
       startSnapshotRefresh();
       await Promise.resolve();
-      if (ui.motion && MOTION_STATUSES.has(selectedLane()?.status)) ui.frame += 1;
+      const activityView = { lanes: snapshot.lanes, selectedLane: selectedLane(), observation: ui.observation };
+      if (kiteIsAnimated(deriveKiteSignal(activityView), { ...preferences, motion: ui.motion, mascot: ui.mascot }) && !ui.session && (!ui.overlay || ui.overlay.kind === "kite")) ui.frame += 1;
       if (ui.session && ui.refreshTick % 4 === 0 && !ui.composer?.value) {
         await refreshSession();
       }
+    } else if (event.type === "kite" && !ui.session && !ui.filterEditing) {
+      ui.overlay = { kind: "kite", query: "", index: 0 }; ui.confirmation = null;
     } else if (event.type === "palette" && !ui.session && !ui.filterEditing) {
       ui.overlay = { kind: "palette", query: "", index: 0 }; ui.confirmation = null;
     } else if (event.type === "scope" && !ui.session && !ui.filterEditing) {
@@ -710,6 +715,7 @@ export function createConsoleController(options = {}) {
 
   return Object.freeze({
     dispatch,
+    dispose() { disposed = true; refreshGeneration += 1; invalidateSessionRead(); },
     render: renderCurrent,
     saveState,
     viewState: () => ({ schemaVersion: 1, current: captureView(), savedViews: structuredClone(savedViews) }),
@@ -794,6 +800,7 @@ export async function runConsole(options = {}) {
     let escapeTimer = null;
     let finished = false;
     let queue = Promise.resolve();
+    let tickQueued = false;
 
     return new Promise((resolve, reject) => {
       function cleanup() {
@@ -809,6 +816,7 @@ export async function runConsole(options = {}) {
         finished = true;
         acceptingWrites = false;
         cleanup();
+        controller.dispose();
         Promise.resolve(controller.saveState()).then(() => {
           if (error) reject(error);
           else resolve({ exitReason: signal?.aborted ? "signal" : "return" });
@@ -825,7 +833,10 @@ export async function runConsole(options = {}) {
     }
 
     function enqueue(events) {
-      queue = queue.then(() => dispatchEvents(events));
+      const tick = events.length === 1 && events[0].type === "tick";
+      if (tick && tickQueued) return; // Render ticks cannot pile up behind a slow command.
+      if (tick) tickQueued = true;
+      queue = queue.then(() => dispatchEvents(events)).finally(() => { if (tick) tickQueued = false; });
       queue.catch(finish);
     }
 

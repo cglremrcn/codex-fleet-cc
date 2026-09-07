@@ -2,6 +2,7 @@ const ESCAPE = "\u001b";
 const DEFAULT_MAX_PENDING_BYTES = 64;
 
 const KEY_EVENTS = Object.freeze({
+  K: Object.freeze({ type: "kite" }),
   ":": Object.freeze({ type: "palette" }),
   w: Object.freeze({ type: "scope" }),
   a: Object.freeze({ type: "attention" }),
@@ -117,7 +118,7 @@ export function createInputDecoder(options = {}) {
           }
           continue;
         }
-        const event = KEY_EVENTS[character.toLowerCase()] ?? KEY_EVENTS[character];
+        const event = KEY_EVENTS[character] ?? KEY_EVENTS[character.toLowerCase()];
         if (event) events.push({ ...event });
         continue;
       }

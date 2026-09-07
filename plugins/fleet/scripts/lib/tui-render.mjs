@@ -1,9 +1,9 @@
+import { deriveKiteSignal, kiteIsAnimated, renderKiteAvatar, renderKiteBadge } from "./kite-companion.mjs";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { STATUS_PRESENTATION, createTheme } from "./theme.mjs";
 
 const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
 const PANELS = new Set(["detail", "evidence", "authority"]);
-const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
 const segmenter = typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter("en", { granularity: "grapheme" })
   : null;
@@ -166,6 +166,8 @@ function normalizeLane(value, index) {
     parentThreadId: typeof value?.parentThreadId === "string" ? boundedText(value.parentThreadId, "", 256) : null,
     controlAvailable: value?.controlAvailable !== false,
     pendingRequests: Number.isSafeInteger(value?.pendingRequests) ? Math.max(0, value.pendingRequests) : 0,
+    pendingQuestionCount: Number.isSafeInteger(value?.pendingQuestionCount) ? Math.max(0, value.pendingQuestionCount) : 0,
+    pendingApprovalCount: Number.isSafeInteger(value?.pendingApprovalCount) ? Math.max(0, value.pendingApprovalCount) : 0,
     role: boundedText(value?.role, "unreported-role", 64),
     label: boundedText(value?.label, "Untitled lane", 120),
     model: boundedText(value?.model, "Model not reported", 80),
@@ -493,121 +495,21 @@ function summary(view) {
   return parts.join("  ");
 }
 
-const KITE_WIDTH = 21;
-const KITE_ORBITS = Object.freeze([
-  Object.freeze(["◆                 ◆", " ╲               ╱"]),
-  Object.freeze(["  ◆             ◆", "   ╲╲         ╱╱"]),
-  Object.freeze(["     ◆       ◆", "      ╲     ╱"]),
-  Object.freeze(["  ◆             ◆", "   ╱╱         ╲╲"])
-]);
-const KITE_ASCII_ORBITS = Object.freeze([
-  Object.freeze(["*                 *", " \\               /"]),
-  Object.freeze(["  *             *", "   \\\\         //"]),
-  Object.freeze(["     *       *", "      \\     /"]),
-  Object.freeze(["  *             *", "   //         \\\\"])
-]);
-
-function center(value, width) {
-  const clipped = truncate(value, width);
-  const remaining = Math.max(0, width - displayWidth(clipped));
-  const left = Math.floor(remaining / 2);
-  return `${" ".repeat(left)}${clipped}${" ".repeat(remaining - left)}`;
-}
-
-function kiteFeatures(status, frame, useUnicode) {
-  if (!useUnicode) {
-    const movingEyes = [["o", "o"], [".", "o"], ["-", "-"], ["o", "."]];
-    const completeMouths = ["-", "~", "-", "~"];
-    const completeCores = ["C", "*", "C", "+"];
-    const states = {
-      observed: ["o", "o", "-", "O"],
-      starting: [".", ".", "v", "S"],
-      queued: [".", ".", "v", "Q"],
-      running: [...movingEyes[frame], "v", "R"],
-      complete: [...movingEyes[frame], completeMouths[frame], completeCores[frame]],
-      verified: ["^", "^", "u", "V"],
-      blocked: ["-", "-", "!", "!"],
-      failed: ["x", "x", "-", "X"],
-      cancelled: [".", ".", "-", "-"],
-      interrupted: ["-", "-", "|", "I"],
-      outcome_unknown: ["?", "?", ".", "?"]
-    };
-    return states[status] ?? states.blocked;
-  }
-  const movingEyes = [["●", "●"], ["•", "●"], ["─", "─"], ["●", "•"]];
-  const completeMouths = ["─", "⌁", "─", "⌁"];
-  const completeCores = ["◇", "◈", "◆", "◈"];
-  const states = {
-    observed: ["◎", "◎", "─", "◉"],
-    starting: ["·", "·", "⌄", "◌"],
-    queued: ["·", "·", "⌄", "○"],
-    running: [...movingEyes[frame], "▿", "◆"],
-    complete: [...movingEyes[frame], completeMouths[frame], completeCores[frame]],
-    verified: ["⌒", "⌒", "⌣", "✓"],
-    blocked: ["─", "─", "!", "!"],
-    failed: ["×", "×", "─", "×"],
-    cancelled: ["·", "·", "─", "–"],
-    interrupted: ["─", "─", "│", "‖"],
-    outcome_unknown: ["?", "?", "·", "?"]
-  };
-  return states[status] ?? states.blocked;
-}
-
-function formationFrame(preferences, length) {
-  const moving = preferences.motion !== false && preferences.reducedMotion !== true;
-  const requestedFrame = Number.isInteger(preferences.frame) ? preferences.frame : 0;
-  return moving ? Math.abs(requestedFrame) % length : 2;
-}
-
-function postureFrame(status, preferences, length) {
-  if (!MOTION_STATUSES.has(status)) return 2 % length;
-  return formationFrame(preferences, length);
-}
-
-function motionLabel(preferences) {
-  if (preferences.motion === false || preferences.reducedMotion === true) return "PAUSED ■";
+function motionLabel(preferences, view) {
+  if (preferences.mascot === false) return "HIDDEN";
+  if (preferences.motion === false || preferences.reducedMotion === true) return preferences.unicode === false ? "PAUSED #" : "PAUSED ■";
+  const signal = deriveKiteSignal(view);
+  if (!kiteIsAnimated(signal, preferences)) return "STILL";
   const frames = preferences.unicode === false ? ["|", "/", "-", "\\"] : ["◐", "◓", "◑", "◒"];
-  return `LIVE ${frames[formationFrame(preferences, frames.length)]}`;
+  return `LIVE ${frames[Math.abs(Number.isSafeInteger(preferences.frame) ? preferences.frame : 0) % frames.length]}`;
 }
 
 export function renderFleetMark(view, preferences = {}) {
-  if (preferences.mascot === false) return [];
-  const useUnicode = preferences.unicode !== false;
-  const orbits = useUnicode ? KITE_ORBITS : KITE_ASCII_ORBITS;
-  const status = view?.selectedLane?.status ?? "queued";
-  const frame = postureFrame(status, preferences, orbits.length);
-  const [leftEye, rightEye, mouth, core] = kiteFeatures(status, frame, useUnicode);
-  const body = useUnicode
-    ? [
-      `╭━━━╾▰  ${leftEye} ${rightEye}  ▰╼━━━╮`,
-      `╰━╮     ${mouth}     ╭━╯`,
-      `╰━━━╲  ${core}  ╱━━━╯`
-    ]
-    : [
-      `[====  ${leftEye} ${rightEye}  ====]`,
-      `\\        ${mouth}        /`,
-      `\\===    ${core}    ===/`
-    ];
-  const posture = (
-    status === "blocked"
-    || status === "failed"
-    || status === "interrupted"
-    || status === "outcome_unknown"
-  )
-    ? [orbits[0][0], center("╲             ╱", KITE_WIDTH), ...body]
-    : [...orbits[frame], ...body];
-  return posture.map((line) => center(line, KITE_WIDTH));
+  return renderKiteAvatar(deriveKiteSignal(view), preferences);
 }
 
 function renderCompactMark(view, preferences = {}) {
-  if (preferences.mascot === false) return "";
-  const useUnicode = preferences.unicode !== false;
-  const status = view?.selectedLane?.status ?? "queued";
-  const frame = postureFrame(status, preferences, 4);
-  const [leftEye, rightEye, , core] = kiteFeatures(status, frame, useUnicode);
-  return useUnicode
-    ? `╭▰ ${leftEye} ${rightEye} ▰╮${core}`
-    : `[= ${leftEye} ${rightEye} =]${core}`;
+  return renderKiteBadge(deriveKiteSignal(view), preferences);
 }
 
 function placeRight(left, right, columns) {
@@ -628,7 +530,7 @@ function versionLabel(preferences) {
 function wideMasthead(view, columns, preferences) {
   const mark = renderCompactMark(view, preferences);
   const limit = view.runtime.activeLimit === null ? "?" : String(view.runtime.activeLimit);
-  const motion = preferences.mascot === false ? "HIDDEN" : motionLabel(preferences);
+  const motion = preferences.mascot === false ? "HIDDEN" : motionLabel(preferences, view);
   return [
     placeRight(
       `FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}@${view.workspace.branch}  ${summary(view)}`,
@@ -716,7 +618,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  : Commands  W: Scope  G: Groups  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return",
+      "Enter: Open agent  : Commands  W: Scope  G: Groups  K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -740,7 +642,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
       mark,
       terminal.columns
     ),
-    `${inventoryNotice}${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences)}`
+    `${inventoryNotice}${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences, view)}`
       + (view.observation === "fresh" ? "" : `  OBSERVATION ${view.observation.toUpperCase()}`),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
@@ -754,7 +656,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  : Commands  W: Scope  G: Groups  /: Filter  X: Cancel  Ctrl+G: Return",
+      "Enter: Open agent  : Commands  W: Scope  G: Groups  K: KITE  /: Filter  X: Cancel  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -784,7 +686,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("Enter: Open agent  X: Cancel  G: Groups  /: Filter  Ctrl+G: Return", terminal.columns)
+    truncate("Enter: Open agent  X: Cancel  G: Groups  K: KITE  /: Filter  Ctrl+G: Return", terminal.columns)
   ];
 }
 

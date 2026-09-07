@@ -427,3 +427,5 @@ output.
 The [control center guide](docs/CONTROL_CENTER.md) describes project/native-thread inventory,
 read-only discovery, the command palette, saved views and pins in the review branch. These source
 changes do not automatically update the existing v0.2.1 integration.
+
+See [KITE companion v2](docs/KITE_COMPANION.md) for state semantics and local controls in the review branch.

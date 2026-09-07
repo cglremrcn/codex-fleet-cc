@@ -258,6 +258,8 @@ test("Enter opens the selected Codex thread with transcript and direct composer"
   assert.equal(controller.state().session.laneId, "lane-a");
   assert.equal(controller.state().composer.laneId, "lane-a");
   assert.match(writes.at(-1), /CODEX SESSION/iu);
+  // Metadata reads are deliberately non-blocking so Escape remains responsive.
+  await new Promise((resolve) => setImmediate(resolve));
   assert.match(writes.at(-1), /The runtime inspection is complete\./u);
   assert.match(writes.at(-1), /Type a message or \/ for Fleet commands/iu);
   assert.equal(runtime.calls[0][0], "session");

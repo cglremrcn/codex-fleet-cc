@@ -207,8 +207,8 @@ test("Fleet Formation moves only when motion is enabled", () => {
 
   assert.notDeepEqual(movingA, movingB);
   assert.deepEqual(reducedA, reducedB);
-  assert.equal(movingA.length, 5);
-  assert.ok(movingA.every((line) => displayWidth(line) === 21));
+  assert.equal(movingA.length, 7);
+  assert.ok(movingA.every((line) => displayWidth(line) === 27));
 });
 
 test("runtime recovery and controller requests are visible without opening logs", () => {
