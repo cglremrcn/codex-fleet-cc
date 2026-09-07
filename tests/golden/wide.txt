@@ -3,26 +3,26 @@ RUNTIME READY · PROTOCOL COMPATIBLE · ACTIVE LIMIT 3 · KITE LIVE ◐
 ▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANES  4                                        │ [DETAIL] / console-build                                                 │ AUTHORITY
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  01 ◇ COMPLETE        runtime-audit            │ Build the responsive operator console                                    │ SANDBOX WORKSPACE-WRITE
-     investigator · gpt-5.6-sol/high            │                                                                          │ NETWORK OFF
-▌ 02 ◆ RUNNING         console-build            │ ROLE implementer                                                         │
-     implementer · gpt-5.6-sol/high             │ PHASE renderer                                                           │ BROWSER inspect -- mutate --
-  03 ! BLOCKED         qa-browser               │ MODEL gpt-5.6-sol                                                        │ PROCESS start -- stop-owned --
-     browser-qa-operator · gpt-5.6-sol/high     │ EFFORT high                                                              │ DATABASE read -- write --
-  04 ✓ VERIFIED        release-proof            │                                                                          │ IMAGE generate -- edit --
-     independent-verifier · gpt-5.6-sol/high    │ Work is in progress.                                                     │ SEND --
-                                                │ 2,454 tokens · 1,842 in / 612 out                                        │ PAYMENT --
-                                                │                                                                          │ DEPLOY --
-                                                │ RESULT                                                                   │ DELETE --
-                                                │ No result reference recorded                                             │ RETRY --
-                                                │                                                                          │
-                                                │ SAFE EVENTS                                                              │ Roles do not grant authority.
+  01 ◇ COMPLETE        Inspect the Codex runti… │ Build the responsive operator console                                    │ SANDBOX WORKSPACE-WRITE
+     runtime-audit · gpt-5.6-sol/high           │                                                                          │ NETWORK OFF
+▌ 02 ◆ RUNNING         Build the responsive op… │ ID console-build                                                         │
+     console-build · gpt-5.6-sol/high           │ ROLE implementer                                                         │ BROWSER inspect -- mutate --
+  03 ! BLOCKED         Verify the same-session… │ PHASE renderer                                                           │ PROCESS start -- stop-owned --
+     qa-browser · gpt-5.6-sol/high              │ MODEL gpt-5.6-sol                                                        │ DATABASE read -- write --
+  04 ✓ VERIFIED        Verify package evidence… │ EFFORT high                                                              │ IMAGE generate -- edit --
+     release-proof · gpt-5.6-sol/high           │                                                                          │ SEND --
+                                                │ Work is in progress.                                                     │ PAYMENT --
+                                                │ 2,454 tokens · 1,842 in / 612 out                                        │ DEPLOY --
+                                                │                                                                          │ DELETE --
+                                                │ RESULT                                                                   │ RETRY --
+                                                │ No result reference recorded                                             │
+                                                │                                                                          │ Roles do not grant authority.
+                                                │ SAFE EVENTS                                                              │
                                                 │ No safe events recorded                                                  │
                                                 │                                                                          │
                                                 │                                                                          │
                                                 │                                                                          │
                                                 │                                                                          │
                                                 │                                                                          │
-                                                │                                                                          │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↑↓: Select lane   Enter: Open agent   G: Groups   Tab: Detail → Evidence → Authority   /: Search lanes   X: Cancel   H/?: Help   Ctrl+G: Return
+Enter: Open agent  : Commands  W: Scope  G: Groups  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return

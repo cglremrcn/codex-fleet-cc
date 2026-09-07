@@ -4,6 +4,7 @@ VIEW DETAIL · console-build
 ────────────────────────────────────────────────────────────────────────
 Build the responsive operator console
 
+ID console-build
 ROLE implementer
 PHASE renderer
 MODEL gpt-5.6-sol
@@ -17,7 +18,6 @@ No result reference recorded
 
 SAFE EVENTS
 No safe events recorded
-
 
 
 

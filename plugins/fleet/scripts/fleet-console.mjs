@@ -7,6 +7,9 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { readFleetInventory } from "./lib/fleet-inventory.mjs";
+import { resolveRegisteredWorkspace } from "./lib/workspace-registry.mjs";
+import { readConsolePreferences, writeConsolePreferences } from "./lib/console-preferences.mjs";
 import { runConsole } from "./lib/console-controller.mjs";
 import { isMainModule } from "./lib/is-main.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./lib/paths.mjs";
@@ -55,7 +58,25 @@ export function createFileStateReader(options = {}) {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const home = options.home ?? os.homedir();
-  return async function readState() {
+  let cache = null, cacheScope = null, cacheTime = 0, inFlight = null;
+  return async function readState({ scope = "workspace", force = false } = {}) {
+    if (scope === "projects" || scope === "native") {
+      const ttl = scope === "native" ? 5000 : 1000;
+      if (!force && cacheScope === scope && cache && Date.now() - cacheTime < ttl) return cache;
+      if (inFlight?.scope === scope) return inFlight.promise;
+      const promise = (async () => {
+        const result = scope === "projects"
+          ? await readFleetInventory(getFleetDataDir(env, platform, home))
+          : await options.runtime.nativeInventory();
+        const next = { ...emptySnapshot(cwd), ...result,
+          workspace: { name: scope === "projects" ? "ALL FLEET PROJECTS" : "ALL CODEX THREADS", branch: "metadata inventory" },
+          scope, updatedAt: new Date().toISOString() };
+        cache = next; cacheScope = scope; cacheTime = Date.now();
+        return next;
+      })();
+      inFlight = { scope, promise };
+      try { return await promise; } finally { if (inFlight?.promise === promise) inFlight = null; }
+    }
     const snapshot = emptySnapshot(cwd);
     snapshot.workspace.branch = await readBranch(cwd);
     const key = await workspaceKey(cwd, { platform });
@@ -131,18 +152,26 @@ export async function createSupervisorRuntime(options = {}) {
   const ensure = options.ensureSupervisor ?? ensureSupervisor;
   const request = options.requestSupervisor ?? requestSupervisor;
 
-  async function call(method, params) {
+  async function call(method, params, lane = null) {
+    if (lane?.controlAvailable === false) {
+      const error = new Error("Observed sessions are read-only; use their owning Codex client for control.");
+      error.code = "AUTHORITY_DENIED";
+      throw error;
+    }
+    const project = lane?.originWorkspaceKey && lane.originWorkspaceKey !== key
+      ? await resolveRegisteredWorkspace(dataDir, lane.originWorkspaceKey)
+      : { workspaceKey: key, workspacePath: cwd };
     const manifest = await ensure({
       dataDir,
-      workspaceKey: key,
-      workspacePath: cwd,
+      workspaceKey: project.workspaceKey,
+      workspacePath: project.workspacePath,
       scriptPath: fileURLToPath(new URL("./fleet-supervisor.mjs", import.meta.url)),
       nodeExecutable: process.execPath,
       env
     });
     return request({
       address: manifest.address,
-      workspaceKey: key,
+      workspaceKey: project.workspaceKey,
       token: manifest.token,
       method,
       params
@@ -150,14 +179,27 @@ export async function createSupervisorRuntime(options = {}) {
   }
 
   return Object.freeze({
+    async nativeInventory() {
+      const lanes = [], seen = new Set(); let cursor = null, result;
+      for (let page = 0; page < 40; page += 1) {
+        result = await call("nativeInventory", { cursor, limit: 100 });
+        if (!Array.isArray(result?.lanes)) throw new Error("Malformed native inventory.");
+        lanes.push(...result.lanes); cursor = result.nextCursor ?? null;
+        if (!cursor) return { ...result, lanes };
+        if (seen.has(cursor)) throw new Error("Repeated native inventory cursor.");
+        seen.add(cursor);
+      }
+      return { ...result, lanes, truncated: true };
+    },
     async session(lane) {
-      return call("session", { laneId: lane.id });
+      if (lane.observation === "runtime-metadata") return call("observeSession", { threadId: lane.threadId });
+      return call("session", { laneId: lane.controlId ?? lane.id }, lane);
     },
     async message(lane, message) {
-      return call("message", { laneId: lane.id, message });
+      return call("message", { laneId: lane.controlId ?? lane.id, message }, lane);
     },
     async followUp(lane, message) {
-      return call("followUp", { laneId: lane.id, message });
+      return call("followUp", { laneId: lane.controlId ?? lane.id, message }, lane);
     },
     async cancel(lane, expectedIdentity) {
       if (
@@ -168,7 +210,7 @@ export async function createSupervisorRuntime(options = {}) {
         error.code = "AUTHORITY_DENIED";
         throw error;
       }
-      const preview = await call("cancel", { laneId: lane.id });
+      const preview = await call("cancel", { laneId: lane.controlId ?? lane.id }, lane);
       if (
         preview.expectedThreadId !== expectedIdentity.threadId
         || preview.expectedTurnId !== expectedIdentity.turnId
@@ -178,11 +220,11 @@ export async function createSupervisorRuntime(options = {}) {
         throw error;
       }
       return call("cancel", {
-        laneId: lane.id,
+        laneId: lane.controlId ?? lane.id,
         expectedThreadId: preview.expectedThreadId,
         expectedTurnId: preview.expectedTurnId,
         confirmationToken: preview.confirmationToken
-      });
+      }, lane);
     }
   });
 }
@@ -246,15 +288,28 @@ export async function runEntry(argv, dependencies = {}) {
       ensureSupervisor: dependencies.ensureSupervisor,
       requestSupervisor: dependencies.requestSupervisor
     });
+    let key, dataDir, saved = null, preferenceWarning = null;
+    try {
+      key = await workspaceKey(cwd);
+      dataDir = getFleetDataDir(env, dependencies.platform ?? process.platform, dependencies.home ?? os.homedir());
+      saved = await readConsolePreferences(dataDir, key);
+    }
+    catch (error) { preferenceWarning = error.message; }
     await (dependencies.runConsole ?? runConsole)({
       cwd,
       draftPath: parsed.draftPath ? path.resolve(parsed.draftPath) : null,
+      savedViewState: saved,
+      preferenceWarning,
+      saveViewState: saved ? async (value) => {
+        saved = await writeConsolePreferences(dataDir, key, value, saved.revision);
+      } : undefined,
       io,
       readSnapshot: dependencies.readSnapshot ?? createFileStateReader({
         cwd,
         env,
         platform: dependencies.platform,
-        home: dependencies.home
+        home: dependencies.home,
+        runtime
       }),
       spawnEditor: dependencies.spawnEditor ?? createOriginalEditor(env),
       runtime,

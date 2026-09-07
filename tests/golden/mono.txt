@@ -3,14 +3,15 @@ FLEET//OPS  codex-fleet-cc@main                                                 
 > SIGNAL 02/04  console-build · RUNNING · renderer =================================================
 LANES  4                              | [DETAIL]
 ----------------------------------------------------------------------------------------------------
-  01 C COMPLETE        runtime-audit  | Build the responsive operator console
-     investigator · gpt-5.6-sol/high  |
-> 02 R RUNNING         console-build  | ROLE implementer
-     implementer · gpt-5.6-sol/high   | PHASE renderer
-  03 ! BLOCKED         qa-browser     | MODEL gpt-5.6-sol
-     browser-qa-operator · gpt-5.6-s… | EFFORT high
-  04 V VERIFIED        release-proof  |
-     independent-verifier · gpt-5.6-… | Work is in progress.
+  01 C COMPLETE        Inspect the C… | Build the responsive operator console
+     runtime-audit · gpt-5.6-sol/high |
+> 02 R RUNNING         Build the res… | ID console-build
+     console-build · gpt-5.6-sol/high | ROLE implementer
+  03 ! BLOCKED         Verify the sa… | PHASE renderer
+     qa-browser · gpt-5.6-sol/high    | MODEL gpt-5.6-sol
+  04 V VERIFIED        Verify packag… | EFFORT high
+     release-proof · gpt-5.6-sol/high |
+                                      | Work is in progress.
                                       | 2,454 tokens · 1,842 in / 612 out
                                       |
                                       | RESULT
@@ -23,6 +24,5 @@ LANES  4                              | [DETAIL]
                                       |
                                       |
                                       |
-                                      |
 ----------------------------------------------------------------------------------------------------
-Enter: Open agent  X: Cancel  G: Groups  /: Filter  H/?: Help  Ctrl+G: Return
+Enter: Open agent  : Commands  W: Scope  G: Groups  /: Filter  X: Cancel  Ctrl+G: Return

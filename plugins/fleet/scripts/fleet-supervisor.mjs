@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { paginateInventory } from "./lib/fleet-inventory.mjs";
+import { registerWorkspace } from "./lib/workspace-registry.mjs";
+
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -277,6 +280,16 @@ export function createControlPlane(options) {
         const connected = await ensureRuntime();
         return { schemaVersion: 1, source: "connected-codex-runtime", models: await connected.listModels() };
       }
+      if (method === "nativeInventory") {
+        const connected = await ensureRuntime();
+        const inventory = await connected.listThreads({ archived: params.archived === true });
+        return paginateInventory(inventory, { limit: params.limit ?? 100, query: params.query, cursor: params.cursor });
+      }
+      if (method === "observeSession") {
+        const connected = await ensureRuntime();
+        const session = await connected.readThread(params.threadId);
+        return { ...session, canAcceptDirectInput: false, observationOnly: true };
+      }
       if (method === "start") {
         options.onActivity?.();
         const contract = validateStartContract(params, {
@@ -290,6 +303,7 @@ export function createControlPlane(options) {
             modelCatalog: await connected.listModels()
           });
         }
+        await registerWorkspace(options.dataDir, options.workspacePath);
         const owner = await ensureScheduler(contract.limits);
         owner.assertAvailable(contract.lanes.map((lane) => lane.id));
         const admissions = contract.lanes.map((lane) => owner.enqueue({

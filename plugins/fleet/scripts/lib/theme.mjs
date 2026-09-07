@@ -24,6 +24,8 @@ function paint(open, value) {
 }
 
 export const STATUS_PRESENTATION = Object.freeze({
+  observed: { label: "OBSERVED", unicode: "◉", ascii: "O", tone: "muted" },
+  starting: { label: "STARTING", unicode: "◌", ascii: "S", tone: "running" },
   queued: { label: "QUEUED", unicode: "○", ascii: "Q", tone: "muted" },
   running: { label: "RUNNING", unicode: "◆", ascii: "R", tone: "running" },
   complete: { label: "COMPLETE", unicode: "◇", ascii: "C", tone: "ink" },

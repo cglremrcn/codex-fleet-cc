@@ -2,6 +2,10 @@ const ESCAPE = "\u001b";
 const DEFAULT_MAX_PENDING_BYTES = 64;
 
 const KEY_EVENTS = Object.freeze({
+  ":": Object.freeze({ type: "palette" }),
+  w: Object.freeze({ type: "scope" }),
+  a: Object.freeze({ type: "attention" }),
+  f: Object.freeze({ type: "favorite" }),
   g: Object.freeze({ type: "groupMode" }),
   " ": Object.freeze({ type: "toggleGroup" }),
   "[": Object.freeze({ type: "collapseGroups" }),
@@ -170,7 +174,7 @@ export function createInputDecoder(options = {}) {
     push,
     flush,
     setTextMode(value) {
-      textMode = value === "composer" ? "composer" : value === true || value === "filter"
+      textMode = value === "palette" ? "palette" : value === "composer" ? "composer" : value === true || value === "filter"
         ? "filter"
         : null;
     },
