@@ -24,4 +24,4 @@ No safe events recorded
 
 
 ────────────────────────────────────────────────────────────────────────
-Enter: Open agent  X: Cancel  Tab: View  /: Search  Ctrl+G: Return
+Enter: Open agent  X: Cancel  G: Groups  /: Filter  Ctrl+G: Return

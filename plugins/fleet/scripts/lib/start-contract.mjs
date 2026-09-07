@@ -1,4 +1,5 @@
 import path from "node:path";
+import { validateGroupPath } from "./lane-navigation.mjs";
 
 import {
   normalizeAuthority,
@@ -13,7 +14,8 @@ const ROOT_PROPERTIES = new Set([
   "workspacePath",
   "lanes",
   "limits",
-  "confirmationRef"
+  "confirmationRef",
+  "modelPolicy"
 ]);
 const LANE_PROPERTIES = new Set([
   "id",
@@ -25,6 +27,7 @@ const LANE_PROPERTIES = new Set([
   "ephemeral",
   "authority",
   "checkoutKey",
+  "groupPath",
   "priority",
   "retryOf",
   "reconciliationRef"
@@ -171,7 +174,7 @@ function collectLimits(value, issues) {
   return value;
 }
 
-function collectLane(value, index, confirmationRef, issues) {
+function collectLane(value, index, confirmationRef, issues, options = {}) {
   const propertyPath = `lanes[${index}]`;
   if (!isPlainObject(value)) {
     addIssue(issues, "input", propertyPath, "must be an object.");
@@ -189,33 +192,48 @@ function collectLane(value, index, confirmationRef, issues) {
   collectBoundedText(value.label, `${propertyPath}.label`, 120, issues);
   const model = collectBoundedText(value.model, `${propertyPath}.model`, 80, issues);
   const effort = collectBoundedText(value.effort, `${propertyPath}.effort`, 32, issues);
-  if (model && !MODEL_VALUES.includes(model)) {
-    addIssue(
-      issues,
-      "input",
-      `${propertyPath}.model`,
-      `must be one of: ${MODEL_VALUES.join(", ")}.`
-    );
-  }
-  if (effort && !EFFORT_VALUES.includes(effort)) {
-    addIssue(
-      issues,
-      "input",
-      `${propertyPath}.effort`,
-      `must be one of: ${EFFORT_VALUES.join(", ")}.`
-    );
-  } else if (model && MODEL_EFFORTS[model] && effort && !MODEL_EFFORTS[model].includes(effort)) {
-    addIssue(
-      issues,
-      "input",
-      `${propertyPath}.effort`,
-      `must be one of ${MODEL_EFFORTS[model].join(", ")} for ${model}.`
-    );
+  if (options.runtimeModels) {
+    if (!/^[a-z][a-z0-9_-]{0,31}$/u.test(effort ?? "")) {
+      addIssue(issues, "input", `${propertyPath}.effort`, "must be a safe reasoning effort identifier.");
+    }
+    if (!options.deferModelValidation) {
+      const entry = options.modelCatalog?.find((candidate) => candidate.model === model);
+      if (!entry) addIssue(issues, "input", `${propertyPath}.model`, "is not reported by the connected Codex runtime.");
+      else if (!entry.efforts.includes(effort)) {
+        addIssue(issues, "input", `${propertyPath}.effort`, "is not supported by the selected runtime model.");
+      }
+    }
+  } else {
+    if (model && !MODEL_VALUES.includes(model)) {
+      addIssue(
+        issues,
+        "input",
+        `${propertyPath}.model`,
+        `must be one of: ${MODEL_VALUES.join(", ")}.`
+      );
+    }
+    if (effort && !EFFORT_VALUES.includes(effort)) {
+      addIssue(
+        issues,
+        "input",
+        `${propertyPath}.effort`,
+        `must be one of: ${EFFORT_VALUES.join(", ")}.`
+      );
+    } else if (model && MODEL_EFFORTS[model] && effort && !MODEL_EFFORTS[model].includes(effort)) {
+      addIssue(
+        issues,
+        "input",
+        `${propertyPath}.effort`,
+        `must be one of ${MODEL_EFFORTS[model].join(", ")} for ${model}.`
+      );
+    }
   }
   collectBoundedText(value.prompt, `${propertyPath}.prompt`, MAX_CONTRACT_BYTES, issues, {
     bytes: true,
     multiline: true
   });
+  try { validateGroupPath(value.groupPath); }
+  catch (error) { addIssue(issues, "input", `${propertyPath}.groupPath`, error.message); }
   if (value.checkoutKey !== undefined) {
     collectBoundedText(value.checkoutKey, `${propertyPath}.checkoutKey`, 256, issues);
   }
@@ -293,13 +311,18 @@ export function validateStartContract(value, options = {}) {
     confirmationRef = collectBoundedText(value.confirmationRef, "confirmationRef", 512, issues);
   }
 
+  if (value.modelPolicy !== undefined && value.modelPolicy !== "runtime") {
+    addIssue(issues, "input", "modelPolicy", "must be runtime when provided; omit for the compatibility snapshot.");
+  }
   const lanes = [];
   const laneIds = new Set();
   if (!Array.isArray(value.lanes) || value.lanes.length === 0 || value.lanes.length > 256) {
     addIssue(issues, "input", "lanes", "must contain between 1 and 256 lanes.");
   } else {
     for (let index = 0; index < value.lanes.length; index += 1) {
-      const lane = collectLane(value.lanes[index], index, confirmationRef, issues);
+      const lane = collectLane(value.lanes[index], index, confirmationRef, issues, {
+        ...options, runtimeModels: value.modelPolicy === "runtime"
+      });
       if (lane) {
         if (typeof lane.id === "string" && laneIds.has(lane.id)) {
           addIssue(issues, "input", `lanes[${index}].id`, `duplicate lane ID: ${lane.id}.`);
@@ -314,6 +337,7 @@ export function validateStartContract(value, options = {}) {
   if (issues.length > 0) throw new StartContractValidationError(issues);
   return Object.freeze({
     schemaVersion: 1,
+    ...(value.modelPolicy === "runtime" ? { modelPolicy: "runtime" } : {}),
     workspacePath,
     lanes: Object.freeze(lanes),
     limits,

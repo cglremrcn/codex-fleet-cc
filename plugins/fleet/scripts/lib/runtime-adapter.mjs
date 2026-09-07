@@ -1,6 +1,9 @@
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { discoverModels } from "./model-catalog.mjs";
+import { normalizeTokenUsage, usageFromNotification } from "./token-usage.mjs";
+
 import {
   BROKER_PROTOCOL_VERSION,
   createAppServerBroker
@@ -147,6 +150,8 @@ function copyLane(lane) {
     role: lane.role,
     label: lane.label,
     workspaceKey: lane.workspaceKey,
+    ...(lane.groupPath === undefined ? {} : { groupPath: lane.groupPath }),
+    ...(lane.tokenUsage ? { tokenUsage: normalizeTokenUsage(lane.tokenUsage) } : {}),
     model: lane.model,
     effort: lane.effort,
     authority: lane.authority,
@@ -307,7 +312,7 @@ function safeThreadSession(thread) {
   });
 }
 
-class FleetRuntime {
+export class FleetRuntime {
   constructor(broker, options = {}) {
     this.broker = broker;
     this.options = options;
@@ -352,6 +357,20 @@ class FleetRuntime {
       verified: Object.freeze(verified),
       unverified: Object.freeze(unverified)
     });
+  }
+
+  async listModels() {
+    if (!this.modelCatalogue || Date.now() - this.modelCatalogue.at >= 60_000) {
+      // Shared promise coalesces simultaneous admissions without guessing unavailable models.
+      if (!this.modelDiscovery) this.modelDiscovery = discoverModels(
+        (method, params) => this.broker.request(method, params)
+      ).then((models) => {
+        this.modelCatalogue = { at: Date.now(), models };
+        return models;
+      }).finally(() => { this.modelDiscovery = null; });
+      return this.modelDiscovery;
+    }
+    return this.modelCatalogue.models;
   }
 
   async prepareSkillInputs(lane) {
@@ -406,6 +425,11 @@ class FleetRuntime {
   }
 
   unbindTurn(lane) {
+    if (lane.turnId) {
+      lane.retiredTurnIds ??= new Set();
+      lane.retiredTurnIds.add(lane.turnId);
+      if (lane.retiredTurnIds.size > 256) lane.retiredTurnIds.delete(lane.retiredTurnIds.values().next().value);
+    }
     if (lane.turnId && this.turnToLane.get(lane.turnId) === lane.id) {
       this.turnToLane.delete(lane.turnId);
     }
@@ -414,7 +438,8 @@ class FleetRuntime {
 
   bindTurn(lane, turnId) {
     const validated = assertRuntimeId(turnId, "Codex turn id");
-    this.unbindTurn(lane);
+    if (lane.turnId !== validated) this.unbindTurn(lane);
+    lane.retiredTurnIds?.delete(validated); // An acknowledged turn/start response is authoritative.
     lane.turnId = validated;
     this.turnToLane.set(validated, lane.id);
     const buffered = this.pendingTurnNotifications.get(validated) ?? [];
@@ -451,11 +476,24 @@ class FleetRuntime {
   }
 
   applyNotification(lane, message) {
+    if (message.method === "thread/tokenUsage/updated") {
+      const reported = usageFromNotification(message.params?.tokenUsage);
+      if (reported && (lane.tokenUsage?.total === undefined || reported.total === undefined
+        || reported.total >= lane.tokenUsage.total)) {
+        // total is cumulative. Replace snapshots; adding replays would double-count.
+        lane.tokenUsage = reported;
+        this.emit(lane.id, "usage.updated", { tokenUsage: reported });
+      }
+      return;
+    }
     const turnId = notificationTurnId(message);
+    if (turnId && (lane.retiredTurnIds?.has(turnId) || (lane.turnId && lane.turnId !== turnId))) {
+      return; // Delayed events cannot replace the current owned turn or revive a retired one.
+    }
     if (turnId && lane.turnId !== turnId) {
-      this.unbindTurn(lane);
-      lane.turnId = turnId;
-      this.turnToLane.set(turnId, lane.id);
+      // A thread-scoped item may establish ownership before turn/start responds.
+      // Replay earlier turn-only events now, not after a later terminal event.
+      this.bindTurn(lane, turnId);
     }
 
     switch (message.method) {
@@ -839,7 +877,10 @@ class FleetRuntime {
           ? { status: "outcome_unknown", phase: "outcome_unknown", ...runtimeBlocker(error) }
           : {}
       );
-      if (previous.turnId && !unknown) this.turnToLane.set(previous.turnId, lane.id);
+      if (previous.turnId && !unknown) {
+        lane.retiredTurnIds?.delete(previous.turnId);
+        this.turnToLane.set(previous.turnId, lane.id);
+      }
       this.emit(lane.id, unknown ? "lane.outcome-unknown" : "lane.continuation-rejected", {
         message: transcriptText(error?.message ?? "Continuation was rejected.")
       });
@@ -884,8 +925,10 @@ class FleetRuntime {
     const validated = createLane({ ...record, authority });
     const lane = {
       ...validated,
+      ...(record.tokenUsage ? { tokenUsage: normalizeTokenUsage(record.tokenUsage) } : {}),
       authority,
       workspacePath: path.resolve(workspacePath),
+      retiredTurnIds: new Set(record.turnId ? [record.turnId] : []),
       status: record.status,
       phase: record.phase,
       threadId: assertRuntimeId(record.threadId, "Persisted Codex thread id"),

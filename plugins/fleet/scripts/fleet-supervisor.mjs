@@ -98,7 +98,7 @@ function assertMessage(value) {
   return value;
 }
 
-function serializeStateStore(root) {
+export function serializeStateStore(root, writeState = writeWorkspaceState) {
   let writes = Promise.resolve();
   return {
     write(snapshot) {
@@ -108,7 +108,7 @@ function serializeStateStore(root) {
         lanes: [...snapshot.queued, ...snapshot.active, ...snapshot.history],
         workspaceObservation: snapshot.workspaceObservation
       };
-      writes = writes.then(() => writeWorkspaceState(root, state));
+      writes = writes.catch(() => undefined).then(() => writeState(root, state));
       return writes;
     }
   };
@@ -138,11 +138,22 @@ function secureDigestMatches(expected, received) {
 export function createControlPlane(options) {
   const root = resolveOwnedPath(options.dataDir, "workspaces", options.workspaceKey);
   let runtime = null;
+  let runtimeInitialization = null;
   let scheduler = null;
   let schedulerInitialization = null;
   let reconcileTimer = null;
   let reconciling = null;
   let recoveringPersisted = null;
+
+  async function ensureRuntime() {
+    if (runtime) return runtime;
+    if (!runtimeInitialization) runtimeInitialization = Promise.resolve().then(() => (options.createRuntime ?? createRuntime)({
+      cwd: options.workspacePath,
+      env: options.env ?? process.env
+    })).then((created) => { runtime = created; return runtime; })
+      .finally(() => { runtimeInitialization = null; });
+    return runtimeInitialization;
+  }
 
   async function ensureScheduler(limits) {
     if (scheduler) return scheduler;
@@ -150,10 +161,7 @@ export function createControlPlane(options) {
     schedulerInitialization = (async () => {
       if (recoveringPersisted) await recoveringPersisted;
       const state = await readWorkspaceState(root);
-      runtime = await (options.createRuntime ?? createRuntime)({
-        cwd: options.workspacePath,
-        env: options.env ?? process.env
-      });
+      runtime = await ensureRuntime();
       scheduler = createScheduler({
         runtime,
         store: serializeStateStore(root),
@@ -265,11 +273,23 @@ export function createControlPlane(options) {
         if (!lane) throw new Error(`Lane result was not found: ${laneId}.`);
         return lane;
       }
+      if (method === "models") {
+        const connected = await ensureRuntime();
+        return { schemaVersion: 1, source: "connected-codex-runtime", models: await connected.listModels() };
+      }
       if (method === "start") {
         options.onActivity?.();
         const contract = validateStartContract(params, {
-          expectedWorkspacePath: options.workspacePath
+          expectedWorkspacePath: options.workspacePath,
+          deferModelValidation: true
         });
+        if (contract.modelPolicy === "runtime") {
+          const connected = await ensureRuntime();
+          validateStartContract(params, {
+            expectedWorkspacePath: options.workspacePath,
+            modelCatalog: await connected.listModels()
+          });
+        }
         const owner = await ensureScheduler(contract.limits);
         owner.assertAvailable(contract.lanes.map((lane) => lane.id));
         const admissions = contract.lanes.map((lane) => owner.enqueue({
@@ -355,6 +375,7 @@ export function createControlPlane(options) {
       if (reconcileTimer) clearInterval(reconcileTimer);
       reconcileTimer = null;
       await schedulerInitialization?.catch(() => undefined);
+      await runtimeInitialization?.catch(() => undefined);
       await reconcile().catch(() => undefined);
       await runtime?.close();
       runtime = null;

@@ -2,6 +2,10 @@ const ESCAPE = "\u001b";
 const DEFAULT_MAX_PENDING_BYTES = 64;
 
 const KEY_EVENTS = Object.freeze({
+  g: Object.freeze({ type: "groupMode" }),
+  " ": Object.freeze({ type: "toggleGroup" }),
+  "[": Object.freeze({ type: "collapseGroups" }),
+  "]": Object.freeze({ type: "expandGroups" }),
   j: Object.freeze({ type: "move", delta: 1 }),
   k: Object.freeze({ type: "move", delta: -1 }),
   "\r": Object.freeze({ type: "activate" }),
@@ -94,7 +98,7 @@ export function createInputDecoder(options = {}) {
       if (rejectOversizedEscape(events)) break;
       const value = pending.toString("utf8");
       if (value[0] !== ESCAPE) {
-        const character = value[0];
+        const character = String.fromCodePoint(value.codePointAt(0));
         const byteLength = Buffer.byteLength(character);
         pending = pending.subarray(byteLength);
         if (textMode) {

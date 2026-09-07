@@ -25,4 +25,4 @@ LANES  4                              │ [DETAIL]
                                       │
                                       │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-Enter: Open agent  X: Cancel  Tab: View  /: Search lanes  H/?: Help  Ctrl+G: Return
+Enter: Open agent  X: Cancel  G: Groups  /: Filter  H/?: Help  Ctrl+G: Return

@@ -14,7 +14,7 @@ import {
 } from "./contract-templates.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
-import { renderPlainStatus, selectStatusLanes } from "./plain-status.mjs";
+import { renderPlainStatus, selectStatusLanes, summarizeStatusLane } from "./plain-status.mjs";
 import { createRuntime } from "./runtime-adapter.mjs";
 import { readWorkspaceState } from "./safe-state.mjs";
 import {
@@ -46,6 +46,7 @@ export const EXIT_CODES = Object.freeze({
 const MAX_CONTRACT_BYTES = 128 * 1024;
 const COMMANDS = new Set([
   "doctor",
+  "models",
   "init",
   "start",
   "status",
@@ -83,6 +84,7 @@ const VALUE_FLAGS = new Set([
 const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
 const COMMAND_FLAGS = Object.freeze({
   doctor: new Set(["--json", "--workspace"]),
+  models: new Set(["--json", "--workspace"]),
   init: new Set([
     "--json",
     "--list",
@@ -98,7 +100,8 @@ const COMMAND_FLAGS = Object.freeze({
     "--all",
     "--limit",
     "--status",
-    "--since"
+    "--since",
+    "--summary"
   ]),
   result: new Set([
     "--json",
@@ -804,6 +807,12 @@ async function execute(parsed, io, dependencies) {
     };
   }
 
+  if (parsed.command === "models") {
+    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+    const payload = await requestLiveSupervisor(context, "models", {}, io, dependencies);
+    return { exitCode: EXIT_CODES.success, payload };
+  }
+
   if (parsed.command === "doctor") {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
     const report = await doctorReport(context, io, dependencies);
@@ -893,7 +902,11 @@ async function execute(parsed, io, dependencies) {
         workspace: { name: path.basename(context.workspace), branch },
         runtime,
         updatedAt: state.updatedAt,
-        lanes,
+        lanes: parsed.command === "status" && parsed.flags.has("--summary")
+          ? lanes.map(summarizeStatusLane) : lanes,
+        ...(parsed.command === "status" && parsed.flags.has("--summary") ? {
+          summaryOnly: true, detail: "Use result for full evidence; summary fields do not authorize actions."
+        } : {}),
         ...(selectionSummary ? { selection: selectionSummary } : {})
       }
     };
@@ -901,7 +914,7 @@ async function execute(parsed, io, dependencies) {
 
   if (parsed.command === "start") {
     const raw = await readContract(parsed, io);
-    return runStart(validateStartContract(raw), io, dependencies);
+    return runStart(validateStartContract(raw, { deferModelValidation: true }), io, dependencies);
   }
 
   if (parsed.command === "follow-up" || parsed.command === "cancel") {

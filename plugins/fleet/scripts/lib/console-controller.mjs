@@ -1,4 +1,5 @@
 import { StringDecoder } from "node:string_decoder";
+import { buildLaneNavigation, GROUP_MODES } from "./lane-navigation.mjs";
 
 import { authorizeAction } from "./authority.mjs";
 import { createInputDecoder, reduceInput } from "./tui-input.mjs";
@@ -8,7 +9,7 @@ import { withTerminalSession } from "./tui-session.mjs";
 const PANELS = Object.freeze(["detail", "evidence", "authority"]);
 const MOTION_STATUSES = new Set(["queued", "running", "complete"]);
 const CANCELLABLE_STATUSES = new Set(["queued", "starting", "running"]);
-const MAX_FILTER_LENGTH = 64;
+const MAX_FILTER_LENGTH = 256;
 const MAX_COMPOSER_LENGTH = 4_096;
 export const CONSOLE_TICK_MS = 250;
 export const SNAPSHOT_REFRESH_TIMEOUT_MS = 750;
@@ -37,21 +38,6 @@ function normalizeSnapshot(value, cwd) {
   };
 }
 
-function filteredSnapshot(snapshot, query) {
-  const needle = query.trim().toLocaleLowerCase("en-US");
-  if (!needle) return snapshot;
-  return {
-    ...snapshot,
-    lanes: snapshot.lanes.filter((lane) => [
-      lane.id,
-      lane.role,
-      lane.label,
-      lane.status,
-      lane.phase,
-      lane.model
-    ].some((value) => String(value ?? "").toLocaleLowerCase("en-US").includes(needle)))
-  };
-}
 
 function safeTerminal(value = {}) {
   return {
@@ -81,9 +67,9 @@ function decorateFooter(screen, state, columns) {
   } else if (state.confirmation) {
     message = `[CONFIRM] cancel ${state.confirmation.laneId} · C confirm · Q return`;
   } else if (state.filterEditing) {
-    message = `SEARCH LANES › ${state.filterQuery || "type to filter"}_ · MATCHES ${state.laneCount}/${state.totalLaneCount} · Enter: Keep · Esc: Clear`;
+    message = `SEARCH LANES › ${state.filterQuery || "type to filter"}_ · MATCHES ${state.matchedLaneCount}/${state.totalLaneCount} · Enter: Keep · Esc: Clear`;
   } else if (state.filterQuery) {
-    message = `SEARCH LANES › ${state.filterQuery} · MATCHES ${state.laneCount}/${state.totalLaneCount} · /: Edit or clear`;
+    message = `SEARCH LANES › ${state.filterQuery} · MATCHES ${state.matchedLaneCount}/${state.totalLaneCount} · /: Edit or clear`;
   } else if (state.notice) {
     message = state.notice;
   }
@@ -129,6 +115,8 @@ export function createConsoleController(options = {}) {
     exitRequested: false,
     filterEditing: false,
     filterQuery: "",
+    groupMode: "flat",
+    matchedLaneCount: snapshot.lanes.length,
     frame: 0,
     notice: null,
     confirmation: null,
@@ -141,13 +129,38 @@ export function createConsoleController(options = {}) {
   let previousScreen = null;
   let firstRender = true;
   let refreshGeneration = 0;
+  let collapsedGroups = new Set();
+  let navigationCache = null;
 
-  function visibleSnapshot() {
-    return filteredSnapshot(snapshot, ui.filterQuery);
+  function navigation() {
+    if (!navigationCache || navigationCache.snapshot !== snapshot
+      || navigationCache.query !== ui.filterQuery || navigationCache.mode !== ui.groupMode
+      || navigationCache.collapsed !== collapsedGroups) {
+      navigationCache = { snapshot, query: ui.filterQuery, mode: ui.groupMode,
+        collapsed: collapsedGroups, value: buildLaneNavigation(snapshot.lanes, {
+          query: ui.filterQuery, mode: ui.groupMode, collapsed: collapsedGroups
+        }) };
+    }
+    return navigationCache.value;
+  }
+
+  function visibleSnapshot() { return { ...snapshot, lanes: navigation().lanes }; }
+  function selectedRow() { return navigation().rows[ui.selectedIndex] ?? null; }
+
+  function toggleGroup() {
+    const row = selectedRow();
+    const id = row?.kind === "group" ? row.id : row?.parentId;
+    if (!id) return;
+    collapsedGroups = new Set(collapsedGroups);
+    if (collapsedGroups.has(id)) collapsedGroups.delete(id);
+    else collapsedGroups.add(id);
+    ui.selectedLaneId = id;
+    ui.confirmation = null;
   }
 
   function clampSelection() {
-    const lanes = visibleSnapshot().lanes;
+    const lanes = navigation().rows;
+    ui.matchedLaneCount = navigation().lanes.length;
     ui.laneCount = lanes.length;
     ui.totalLaneCount = snapshot.lanes.length;
     ui.visibleLaneCapacity = Math.max(
@@ -176,7 +189,8 @@ export function createConsoleController(options = {}) {
 
   function selectedLane() {
     clampSelection();
-    return visibleSnapshot().lanes[ui.selectedIndex] ?? null;
+    const row = selectedRow();
+    return row?.kind === "group" ? null : row;
   }
 
   async function renderCurrent() {
@@ -189,7 +203,8 @@ export function createConsoleController(options = {}) {
       {
         viewportOffset: ui.viewportOffset,
         visibleLaneCapacity: ui.visibleLaneCapacity,
-        observation: ui.observation
+        observation: ui.observation,
+        navigationRows: ui.groupMode === "flat" ? undefined : navigation().rows
       }
     );
     const frame = selectedFormationFrame(lane?.status, ui.frame);
@@ -371,7 +386,7 @@ export function createConsoleController(options = {}) {
     const index = ui.viewportOffset + visibleIndex;
     if (event.row >= firstLaneRow && visibleIndex >= 0 && index < ui.laneCount) {
       ui.selectedIndex = index;
-      ui.selectedLaneId = visibleSnapshot().lanes[index]?.id ?? null;
+      ui.selectedLaneId = navigation().rows[index]?.id ?? null;
       ui.notice = null;
     }
   }
@@ -455,10 +470,24 @@ export function createConsoleController(options = {}) {
       setNotice("FILTER CLEARED");
     } else if (event.type === "help") {
       setNotice(
-        "FLEET CONTROLS · ↑↓ select · PgUp/PgDn page · Home/End jump · Enter open agent · Tab change view · / search · X cancel · P motion · Ctrl+G return"
+        "FLEET CONTROLS · ↑↓ select · PgUp/PgDn page · Home/End jump · Enter open agent · Tab change view · / search · G groups · Space fold · [/] all · X cancel · Ctrl+G return"
       );
+    } else if (event.type === "groupMode" && !ui.session && !ui.filterEditing) {
+      ui.groupMode = GROUP_MODES[(GROUP_MODES.indexOf(ui.groupMode) + 1) % GROUP_MODES.length];
+      ui.confirmation = null;
+      setNotice(`GROUP ${ui.groupMode.toUpperCase()} · G cycle · Space fold · [ collapse all · ] expand all`);
+    } else if (event.type === "toggleGroup" && !ui.session && !ui.filterEditing) {
+      toggleGroup();
+    } else if (["collapseGroups", "expandGroups"].includes(event.type) && !ui.session && !ui.filterEditing) {
+      collapsedGroups = event.type === "collapseGroups"
+        ? new Set(navigation().groups.map((group) => group.id)) : new Set();
+      ui.selectedLaneId = null;
+      ui.selectedIndex = 0;
+      ui.viewportOffset = 0;
+      ui.confirmation = null;
     } else if (event.type === "activate") {
-      await openSession();
+      if (selectedRow()?.kind === "group") toggleGroup();
+      else await openSession();
     } else if (event.type === "edit") {
       if (!draftPath) setNotice("draft-path-not-provided");
       else if (typeof spawnEditor !== "function") setNotice("original-editor-unavailable");
@@ -544,7 +573,7 @@ export function createConsoleController(options = {}) {
         setNotice(`ONLY ${ui.laneCount} LANE · selection unchanged`);
       } else {
         ui = { ...ui, ...reduceInput(ui, event) };
-        ui.selectedLaneId = visibleSnapshot().lanes[ui.selectedIndex]?.id ?? null;
+        ui.selectedLaneId = navigation().rows[ui.selectedIndex]?.id ?? null;
         ui.notice = null;
       }
     } else if (event.type === "cyclePanel") {

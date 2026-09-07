@@ -1,3 +1,5 @@
+import { validateGroupPath } from "./lane-navigation.mjs";
+
 export const LANE_STATUSES = Object.freeze([
   "queued",
   "running",
@@ -133,6 +135,7 @@ export function createLane(input) {
     role: input.role,
     label: input.label,
     workspaceKey: input.workspaceKey,
+    ...(input.groupPath === undefined ? {} : { groupPath: validateGroupPath(input.groupPath) }),
     model: input.model,
     effort: input.effort,
     authority: cloneData(input.authority),
