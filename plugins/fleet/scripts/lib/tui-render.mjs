@@ -618,7 +618,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  : Commands  W: Scope  G: Groups  K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return",
+      "Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -656,7 +656,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  : Commands  W: Scope  G: Groups  K: KITE  /: Filter  X: Cancel  Ctrl+G: Return",
+      "Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Filter  X: Cancel  Ctrl+G: Return",
       terminal.columns
     )
   ];
@@ -686,7 +686,7 @@ function renderNarrow(view, terminal, border, useUnicode, preferences) {
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("Enter: Open agent  X: Cancel  G: Groups  K: KITE  /: Filter  Ctrl+G: Return", terminal.columns)
+    truncate("Enter: Open agent  X: Cancel  G: Groups  I: Inbox · K: KITE  /: Filter  Ctrl+G: Return", terminal.columns)
   ];
 }
 
