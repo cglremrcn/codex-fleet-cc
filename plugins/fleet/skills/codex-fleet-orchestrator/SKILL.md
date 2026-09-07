@@ -195,3 +195,12 @@ as Ungrouped. Group headers never execute bulk mutations. Keep active parallelis
 Read only the status/result fields needed for the next decision; do not repeatedly paste whole
 transcripts or historical results into the parent. Token counts are reported cumulative thread
 usage, not subscription quota percentages, dollars, or independently measured correctness.
+
+## Mid-turn intervention
+
+For a job that needs interactive operator decisions, set the lane's `interactive: true`; keep its
+existing sandbox and authority. This selects Codex on-request behavior, not permission to approve.
+Read compact status pending counts and use the `inbox` skill when an agent is waiting. Propose a
+scoped answer instead of copying whole transcripts or asking the user to restart work. Only answer
+a technical question after the human delegates that exact request. Never use operator-only review
+endpoints, fake confirmation or repeated sends after uncertain delivery.

@@ -319,6 +319,23 @@ class AppServerBroker {
     this.eventHandler = handler;
   }
 
+  setServerRequestHandler(handler) {
+    if (handler !== null && typeof handler !== "function") throw new TypeError("Invalid server request handler.");
+    this.serverRequestHandler = handler;
+  }
+
+  replyToServer(id, envelope) {
+    if (this.closed || this.exited || !this.child?.stdin?.writable) return Promise.reject(new Error("Broker response transport is closed."));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(); };
+      const timer = setTimeout(() => finish(new Error("Server response delivery is unknown.")), 5_000);
+      timer.unref?.();
+      try { this.child.stdin.write(`${JSON.stringify({ id, ...envelope })}\n`, finish); }
+      catch (error) { finish(error); }
+    });
+  }
+
   request(method, params, options = {}) {
     if (this.closed || !this.child?.stdin?.writable) {
       return Promise.reject(requestFailure(
@@ -394,13 +411,16 @@ class AppServerBroker {
       // Diagnostics cannot alter the broker state machine.
     }
 
-    if (message.id !== undefined && message.method) {
-      this.send({
-        id: message.id,
-        error: { code: -32601, message: `Unsupported server request: ${message.method}` }
-      });
+    if (message && typeof message === "object" && message.id !== undefined && message.method) {
+      let handled = false;
+      try { handled = this.serverRequestHandler?.(message) === true; }
+      catch { /* Unsupported/malformed requests receive a bounded error, never implicit approval. */ }
+      if (!handled) this.replyToServer(message.id, {
+        error: { code: -32601, message: "Unsupported or invalid Fleet server request; no permission granted." }
+      }).catch(() => undefined);
       return;
     }
+    if (!message || typeof message !== "object") return;
 
     if (message.id !== undefined) {
       const pending = this.pending.get(message.id);
@@ -443,6 +463,7 @@ class AppServerBroker {
       ));
     }
     this.pending.clear();
+    try { this.eventHandler?.({ method: "fleet/brokerClosed", params: {} }); } catch { /* Lifecycle observers are non-authoritative. */ }
     this.resolveExit?.();
   }
 

@@ -66,3 +66,5 @@ future upstream diffs.
 
 The Apache-2.0 license permits use, modification, and redistribution subject to its conditions.
 It does not grant trademark rights or imply an endorsement by OpenAI.
+
+The intervention review branch extends the derived broker with a bounded server-request callback, same-ID JSONL responses, and disconnect invalidation. It does not auto-approve unsupported server requests or expose authentication refresh via the intervention UI.

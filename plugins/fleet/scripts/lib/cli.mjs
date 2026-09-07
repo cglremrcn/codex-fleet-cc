@@ -1,3 +1,5 @@
+import { waitForInbox } from "./inbox-wait.mjs";
+import { requestExistingInbox } from "./inbox-client.mjs";
 import { readFleetInventory, paginateInventory } from "./fleet-inventory.mjs";
 import { registerWorkspace, listRegisteredWorkspaces } from "./workspace-registry.mjs";
 import { spawnSync } from "node:child_process";
@@ -47,6 +49,7 @@ export const EXIT_CODES = Object.freeze({
 
 const MAX_CONTRACT_BYTES = 128 * 1024;
 const COMMANDS = new Set([
+  "inbox", "inbox-wait", "inbox-propose", "inbox-answer",
   "projects", "register", "inventory",
   "doctor",
   "models",
@@ -72,6 +75,7 @@ const BOOLEAN_FLAGS = new Set([
   "--summary"
 ]);
 const VALUE_FLAGS = new Set([
+  "--request", "--after",
   "--query", "--cursor", "--name",
   "--contract",
   "--workspace",
@@ -86,8 +90,12 @@ const VALUE_FLAGS = new Set([
   "--status",
   "--since"
 ]);
-const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel"]);
+const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel", "inbox-propose", "inbox-answer"]);
 const COMMAND_FLAGS = Object.freeze({
+  inbox: new Set(["--json", "--workspace", "--request"]),
+  "inbox-wait": new Set(["--json", "--workspace", "--timeout-ms", "--after"]),
+  "inbox-propose": new Set(["--json", "--stdin", "--contract"]),
+  "inbox-answer": new Set(["--json", "--stdin", "--contract"]),
   projects: new Set(["--json", "--workspace"]),
   register: new Set(["--json", "--workspace", "--name"]),
   inventory: new Set(["--json", "--workspace", "--native", "--archived", "--query", "--cursor", "--limit"]),
@@ -772,6 +780,29 @@ async function runUninstallCommand(parsed, io) {
 }
 
 async function execute(parsed, io, dependencies) {
+  if (parsed.command === "inbox-wait") {
+    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+    const textTimeout = parsed.flags.get("--timeout-ms") ?? "60000";
+    const after = parsed.flags.get("--after");
+    if (!/^\d{1,5}$/u.test(textTimeout) || Number(textTimeout) < 1 || Number(textTimeout) > 90000 || (after !== undefined && !/^[a-f0-9]{64}$/u.test(after))) throw new InvalidInputError("Invalid bounded inbox wait options.");
+    return { exitCode: EXIT_CODES.success, payload: await waitForInbox({ ...context, platform: io.platform }, { timeoutMs: Number(textTimeout), after }, dependencies) };
+  }
+  if (["inbox", "inbox-propose", "inbox-answer"].includes(parsed.command)) {
+    if (parsed.command === "inbox") {
+      const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+      const id = parsed.flags.get("--request");
+      if (id && !/^[a-f0-9-]{36}$/u.test(id)) throw new InvalidInputError("Invalid intervention request identity.");
+      return { exitCode: EXIT_CODES.success, payload: await requestExistingInbox({ ...context, platform: io.platform }, id ? "inboxInspect" : "inbox", id ? { id } : {}, dependencies) };
+    }
+    const input = await readContract(parsed, io);
+    const allowed = parsed.command === "inbox-propose" ? ["workspacePath", "id", "revision", "proposal"] : ["workspacePath", "id", "revision", "delegationToken", "result"];
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key))
+      || typeof input.workspacePath !== "string" || !path.isAbsolute(input.workspacePath)
+      || !/^[a-f0-9-]{36}$/u.test(input.id ?? "") || !Number.isSafeInteger(input.revision) || input.revision < 1) throw new InvalidInputError("Malformed bounded inbox contract.");
+    const context = await stateContext(input.workspacePath, io);
+    const { workspacePath: _workspace, ...params } = input;
+    return { exitCode: EXIT_CODES.success, payload: await requestExistingInbox({ ...context, platform: io.platform }, parsed.command === "inbox-propose" ? "inboxPropose" : "inboxAnswer", params, dependencies) };
+  }
   if (["projects", "register", "inventory"].includes(parsed.command)) {
     const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
     if (parsed.command === "projects") return { payload: await listRegisteredWorkspaces(context.dataDir), exitCode: EXIT_CODES.success };

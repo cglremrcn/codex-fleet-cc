@@ -25,6 +25,7 @@ const LANE_PROPERTIES = new Set([
   "effort",
   "prompt",
   "ephemeral",
+  "interactive",
   "authority",
   "checkoutKey",
   "groupPath",
@@ -252,6 +253,7 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
     );
   }
   collectBoolean(value.ephemeral, `${propertyPath}.ephemeral`, issues);
+  collectBoolean(value.interactive, `${propertyPath}.interactive`, issues);
   if (value.priority !== undefined && !PRIORITIES.has(value.priority)) {
     addIssue(issues, "input", `${propertyPath}.priority`, "must be high, normal, or low.");
   }

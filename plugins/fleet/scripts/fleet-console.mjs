@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { requestExistingInbox } from "./lib/inbox-client.mjs";
+
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -178,7 +180,18 @@ export async function createSupervisorRuntime(options = {}) {
     });
   }
 
+  async function inboxCall(method, params, lane = null) {
+    if (lane?.controlAvailable === false) throw new Error("Observed threads have no Fleet intervention authority.");
+    const projectKey = lane?.originWorkspaceKey ?? key;
+    if (projectKey !== key) await resolveRegisteredWorkspace(dataDir, projectKey);
+    return requestExistingInbox({ dataDir, key: projectKey, platform }, method, params, options);
+  }
+
   return Object.freeze({
+    inboxList: (lane) => inboxCall("inbox", {}, lane),
+    inboxInspect: (lane, id) => inboxCall("inboxInspect", { id }, lane),
+    inboxPreview: (lane, id, revision, action) => inboxCall("inboxPreview", { id, revision, action }, lane),
+    inboxApply: (lane, confirmationToken) => inboxCall("inboxApply", { confirmationToken }, lane),
     async nativeInventory() {
       const lanes = [], seen = new Set(); let cursor = null, result;
       for (let page = 0; page < 40; page += 1) {

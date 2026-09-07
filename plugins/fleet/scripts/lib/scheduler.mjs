@@ -200,6 +200,10 @@ function publicRecord(item, status = item.status) {
     sandbox: item.authority.sandbox,
     priority: item.priority,
     status,
+    interactive: item.contract?.interactive === true || item.interactive === true,
+    pendingRequests: item.pendingRequests ?? 0,
+    pendingQuestionCount: item.pendingQuestionCount ?? 0,
+    pendingApprovalCount: item.pendingApprovalCount ?? 0,
     phase: item.phase ?? status,
     externalEffect: item.externalEffect,
     retryOf: item.retryOf,
@@ -258,6 +262,10 @@ function hydratePersistedRecord(record, sequence, clock) {
     ...(record.tokenUsage ? { tokenUsage: normalizeTokenUsage(record.tokenUsage) } : {}),
     model: validated.model,
     effort: validated.effort,
+    interactive: record.interactive === true,
+    pendingRequests: 0,
+    pendingQuestionCount: 0,
+    pendingApprovalCount: 0,
     authority,
     priority: PRIORITY_ORDER.includes(record.priority) ? record.priority : "normal",
     externalEffect: hasExternalEffect(authority),
@@ -856,6 +864,9 @@ class FleetScheduler {
       item.threadId = current.threadId ?? item.threadId;
       item.phase = current.phase ?? item.phase;
       item.tokenUsage = normalizeTokenUsage(current.tokenUsage) ?? item.tokenUsage;
+      item.pendingRequests = current.pendingRequests ?? 0;
+      item.pendingQuestionCount = current.pendingQuestionCount ?? 0;
+      item.pendingApprovalCount = current.pendingApprovalCount ?? 0;
       item.lastMessage = current.lastMessage ?? item.lastMessage;
       item.exitReason = current.exitReason ?? item.exitReason;
       item.outcome = current.outcome ?? item.outcome;
