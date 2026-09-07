@@ -54,7 +54,9 @@ export function renderOperatorOverlay(overlay, terminal, options = {}) {
     }
   }
   while (lines.length < rows - 1) lines.push("");
-  lines[rows - 1] = "↑↓ Select · Enter Run · Esc Close · No model turn for navigation";
+  lines[rows - 1] = overlay.error
+    ? `SAVE FAILED · ${overlay.error}`
+    : "↑↓ Select · Enter Run · Esc Close · No model turn for navigation";
   return lines.slice(0, rows).map((line) => clipped(line, columns)).join("\n");
 }
 

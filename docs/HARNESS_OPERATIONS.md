@@ -1,9 +1,9 @@
 # Harness navigation and observability
 
-This guide describes the source changes in the navigation/observability review branch. It does not
-claim that the existing v0.2.1 marketplace installation has been upgraded. Review the diff and run the
-normal release gate before packaging a new version. Use a disposable Claude profile and workspace
-for a live canary; do not replace a working production integration merely to view this branch.
+This guide describes navigation and observability in the integrated source. The
+[control center](CONTROL_CENTER.md) extends it with cross-project/native inventory and saved views;
+the [shared inbox](SHARED_INTERVENTION.md) adds project-scoped interventions. Updating source alone
+does not upgrade an installed terminal runtime. Use a disposable profile for a live canary.
 
 ## Organize a large fleet
 
@@ -15,7 +15,7 @@ checkout, status, role, model**. In a grouped view, `Enter` on a heading or `Spa
 A heading is not an agent. Message, cancellation and other runtime actions cannot target a heading.
 Groups show matched agent counts, active counts and attention counts. Folding does not remove the
 underlying agents or alter their state. Selection is preserved by stable identity where possible.
-Fold state lasts for the current console session; saved views are not implemented in this change.
+Fold state lasts for the current console session unless saved in a named view from the command palette.
 
 Set an optional lane field such as:
 
@@ -29,7 +29,8 @@ absolute paths, backslashes and control characters are rejected. Old records wit
 appear under `Ungrouped` in folder mode. `checkout` groups use existing labels; labels alone do not
 prove that writers are physically isolated.
 
-This feature does not discover other workspaces, external Codex sessions or native child threads.
+Grouping itself does not discover other workspaces or native threads; use the control center scopes
+for registered-project and connected app-server inventory.
 The existing retained-state limit remains 256 lanes per workspace. Showing 100 agents does not mean
 running 100 model turns concurrently; the normal bounded scheduler remains in charge.
 
@@ -38,7 +39,7 @@ running 100 model turns concurrently; the normal bounded scheduler remains in ch
 Press `/` and type up to 256 characters. All terms must match. Commas mean alternatives within a
 field; prefix a term with `-` to exclude it. Double quotes preserve spaces. Matching is literal, not a
 regular expression. Supported fields are `id`, `status`, `role`, `model`, `effort`, `checkout`,
-`folder`, `label`, and `phase`. Status, role and effort match exactly; other fields are substrings.
+`folder`, `label`, and `phase`; the control center also supports `project`, `source` and `parent`. Status, role and effort match exactly; other fields are substrings.
 
 ```text
 status:running,blocked folder:backend -role:planner
@@ -46,7 +47,7 @@ label:"account settings" -status:cancelled
 model:gpt-5.6-sol effort:high
 ```
 
-Search covers the current workspace's retained records only. Folded groups keep the matched counts;
+Search covers the active scope's observed records; the default scope is the current workspace. Folded groups keep the matched counts;
 headers are not included in the agent total. Escape clears an in-progress filter, as before.
 
 ## Discover models rather than guessing names
@@ -115,7 +116,6 @@ Delayed retired-turn events cannot replace a known current turn. Identical recon
 longer cause repeated successful disk writes; a failed write remains visible to its caller and does
 not permanently poison the later write queue. None of these changes retries an external mutation.
 
-The next architectural steps, their risks and acceptance criteria are in
-[the dated harness review](reviews/2026-09-06-harness-review.md). Global inventory, an interactive
-approval inbox, revision-bound verification, saved views and full multi-worktree scheduling are
-explicitly not implemented here.
+The [dated harness review](reviews/2026-09-06-harness-review.md) preserves the earlier review baseline.
+Registered-project/native inventory, saved views and a shared intervention inbox are now integrated.
+Revision-bound verification and full multi-worktree scheduling remain separate architectural work.

@@ -368,6 +368,7 @@ class FleetScheduler {
     this.active = new Map();
     this.history = new Map();
     this.writerCounts = new Map();
+    this.continuationReservations = new Map();
     this.nextSequence = 1;
     this.lastStartedAt = null;
     this.drainPromise = null;
@@ -390,6 +391,7 @@ class FleetScheduler {
       this.nextSequence += 1;
       this.assertUnique(item.id);
       this.history.set(item.id, item);
+      if (item.pendingContinuation) this.continuationReservations.set(item.id, item);
     }
   }
 
@@ -530,16 +532,24 @@ class FleetScheduler {
   }
 
   writerAvailable(item) {
+    const reservedWriters = [...this.continuationReservations.values()].filter((reserved) =>
+      reserved.authority.sandbox === "workspace-write"
+      && this.writerKey(reserved) === this.writerKey(item)
+    ).length;
     return item.authority.sandbox !== "workspace-write"
-      || (this.writerCounts.get(this.writerKey(item)) ?? 0)
+      || (this.writerCounts.get(this.writerKey(item)) ?? 0) + reservedWriters
         < this.limits.maxWritersPerCheckout;
+  }
+
+  occupiedSlots() {
+    return this.active.size + this.continuationReservations.size;
   }
 
   selectNextIndex() {
     const ordered = this.queue
       .map((item, index) => ({ item, index }))
       .sort((left, right) => sortQueue(left.item, right.item));
-    const availableSlots = this.limits.maxActive - this.active.size;
+    const availableSlots = this.limits.maxActive - this.occupiedSlots();
 
     for (const candidate of ordered) {
       if (!this.writerAvailable(candidate.item)) {
@@ -577,7 +587,7 @@ class FleetScheduler {
     }
     this.drainPromise = this.runDrain().finally(() => {
       this.drainPromise = null;
-      if (this.active.size < this.limits.maxActive && this.selectNextIndex() !== -1) {
+      if (this.occupiedSlots() < this.limits.maxActive && this.selectNextIndex() !== -1) {
         void this.drain();
       }
     });
@@ -585,13 +595,17 @@ class FleetScheduler {
   }
 
   async runDrain() {
-    while (this.active.size < this.limits.maxActive) {
+    while (this.occupiedSlots() < this.limits.maxActive) {
+      if (this.selectNextIndex() === -1) return;
+      await this.stagger();
+      // A continuation or cancellation can change admission eligibility during the stagger.
+      if (this.occupiedSlots() >= this.limits.maxActive) return;
       const index = this.selectNextIndex();
       if (index === -1) {
         return;
       }
       const [item] = this.queue.splice(index, 1);
-      await this.stagger();
+      item.startPending = true;
       item.status = "starting";
       item.phase = "starting";
       item.startedAt = new Date(this.clock.now()).toISOString();
@@ -605,6 +619,7 @@ class FleetScheduler {
       try {
         await this.persist();
       } catch (error) {
+        item.startPending = false;
         this.release(item, "failed");
         try {
           await this.persist();
@@ -636,9 +651,11 @@ class FleetScheduler {
         item.stopReason = started.stopReason ?? null;
         item.automaticContinuations = started.automaticContinuations ?? 0;
         this.lastStartedAt = this.clock.now();
+        item.startPending = false;
         await this.persist();
         item.resolve(publicRecord(item));
       } catch (error) {
+        item.startPending = false;
         const current = this.runtime.inspectLane(item.id);
         const acceptanceUnknown = error?.requestAcceptance === "unknown"
           || current?.status === "outcome_unknown";
@@ -695,11 +712,11 @@ class FleetScheduler {
         `Lane ${id} has a pending continuation outcome that requires reconciliation.`
       );
     }
-    if (
-      item.authority.sandbox === "workspace-write"
-      && (this.writerCounts.get(this.writerKey(item)) ?? 0) >= this.limits.maxWritersPerCheckout
-    ) {
+    if (!this.writerAvailable(item)) {
       throw new Error(`Lane ${id} cannot continue while its checkout already has an active writer.`);
+    }
+    if (this.occupiedSlots() >= this.limits.maxActive) {
+      throw new Error(`Lane ${id} cannot continue while the fleet is at active capacity.`);
     }
     const resumeRecord = { ...item };
     const runtimeAlreadyOwnsLane = this.runtime.inspectLane(id) !== null;
@@ -710,10 +727,13 @@ class FleetScheduler {
       previousPhase: item.phase,
       previousTurnId: item.turnId
     });
+    // Reserve before the first await so admissions and other follow-ups see this dispatch.
+    this.continuationReservations.set(id, item);
     try {
       await this.persist();
     } catch (error) {
       item.pendingContinuation = null;
+      this.continuationReservations.delete(id);
       throw error;
     }
 
@@ -726,11 +746,13 @@ class FleetScheduler {
       item.pendingContinuation = error?.requestAcceptance === "unknown"
         ? Object.freeze({ ...item.pendingContinuation, state: "outcome_unknown" })
         : null;
+      if (!item.pendingContinuation) this.continuationReservations.delete(id);
       await this.persist();
       throw error;
     }
 
     this.history.delete(id);
+    this.continuationReservations.delete(id);
     item.status = resumed.status ?? "running";
     item.phase = resumed.phase ?? item.status;
     item.finishedAt = null;
@@ -855,6 +877,7 @@ class FleetScheduler {
 
   async reconcile() {
     for (const item of [...this.active.values()]) {
+      if (item.startPending) continue;
       const current = this.runtime.inspectLane(item.id);
       if (!current) {
         this.release(item, item.externalEffect ? "outcome_unknown" : "failed");

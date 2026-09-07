@@ -26,17 +26,25 @@ def draw_ansi_line(
     origin: tuple[int, int],
     font: ImageFont.FreeTypeFont,
     cell_width: int,
+    fallback_font: ImageFont.FreeTypeFont | None = None,
 ) -> None:
     x, y = origin
     foreground = INK
     bold = False
     cursor = 0
+    missing = bytes(font.getmask("\uffff"))
+
+    def glyph_font(character: str) -> ImageFont.FreeTypeFont:
+        if fallback_font is not None and bytes(font.getmask(character)) == missing:
+            return fallback_font
+        return font
+
     for match in ANSI.finditer(line):
         segment = line[cursor:match.start()]
         for character in segment:
-            draw.text((x, y), character, font=font, fill=foreground)
+            draw.text((x, y), character, font=glyph_font(character), fill=foreground)
             if bold and character.strip():
-                draw.text((x + 1, y), character, font=font, fill=foreground)
+                draw.text((x + 1, y), character, font=glyph_font(character), fill=foreground)
             x += cell_width * cell_span(character)
         code = match.group(1)
         if code is not None:
@@ -50,9 +58,9 @@ def draw_ansi_line(
                 foreground = tuple(values[2:5])
         cursor = match.end()
     for character in line[cursor:]:
-        draw.text((x, y), character, font=font, fill=foreground)
+        draw.text((x, y), character, font=glyph_font(character), fill=foreground)
         if bold and character.strip():
-            draw.text((x + 1, y), character, font=font, fill=foreground)
+            draw.text((x + 1, y), character, font=glyph_font(character), fill=foreground)
         x += cell_width * cell_span(character)
 
 
@@ -61,6 +69,7 @@ def render_terminal(
     columns: int,
     rows: int,
     font: ImageFont.FreeTypeFont,
+    fallback_font: ImageFont.FreeTypeFont | None = None,
 ) -> Image.Image:
     cell_width = round(font.getlength("M"))
     line_height = 22
@@ -70,26 +79,30 @@ def render_terminal(
     image = Image.new("RGB", (width, height), GROUND)
     draw = ImageDraw.Draw(image)
     for index, line in enumerate(source.splitlines()):
-        draw_ansi_line(draw, line, (padding, padding + index * line_height), font, cell_width)
+        draw_ansi_line(
+            draw, line, (padding, padding + index * line_height), font, cell_width, fallback_font
+        )
     return image
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: render-preview-gif.py previews.json font.ttf output-dir")
+    if len(sys.argv) not in {4, 5}:
+        raise SystemExit("usage: render-preview-gif.py previews.json font.ttf output-dir [symbols.ttf]")
     payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     font = ImageFont.truetype(sys.argv[2], 16)
+    fallback_font = ImageFont.truetype(sys.argv[4], 16) if len(sys.argv) == 5 else None
     output_dir = Path(sys.argv[3])
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dashboard = payload["previews"]["dashboard"]
     frames = [
-        render_terminal(source, dashboard["columns"], dashboard["rows"], font).quantize(
+        render_terminal(source, dashboard["columns"], dashboard["rows"], font, fallback_font).quantize(
             colors=128,
             method=Image.Quantize.MEDIANCUT,
         )
         for source in dashboard["frames"]
     ]
+    frames[0].convert("RGB").save(output_dir / "fleet-console-dashboard.png", optimize=True)
     frames[0].save(
         output_dir / "fleet-console-dashboard.gif",
         save_all=True,
@@ -101,7 +114,7 @@ def main() -> None:
     )
 
     session = payload["previews"]["session"]
-    render_terminal(session["frame"], session["columns"], session["rows"], font).save(
+    render_terminal(session["frame"], session["columns"], session["rows"], font, fallback_font).save(
         output_dir / "fleet-console-session.png",
         optimize=True,
     )
