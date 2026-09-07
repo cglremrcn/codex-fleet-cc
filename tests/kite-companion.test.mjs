@@ -97,3 +97,24 @@ test("timed-out session reads stay single-flight and cannot replace a reopened s
   await new Promise((r) => setImmediate(r)); assert.equal(controller.state().session.messages[0].text, "current");
   controller.dispose();
 });
+
+test("a late successful read refreshes the still-open session after its UI deadline", async (t) => {
+  let resolveRead;
+  let calls = 0;
+  const controller = createConsoleController({
+    snapshot: { lanes: [lane("running", { threadId: "thread-1" })] },
+    runtime: { session: () => { calls++; return new Promise((resolve) => { resolveRead = resolve; }); } },
+    refreshTimeoutMs: 5,
+    write: () => {}
+  });
+  t.after(() => controller.dispose());
+  await controller.dispatch({ type: "activate" });
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  assert.match(controller.state().session.error, /timed out/iu);
+  for (let i = 0; i < 8; i++) await controller.dispatch({ type: "tick" });
+  assert.equal(calls, 1);
+  resolveRead({ threadId: "thread-1", messages: [{ kind: "assistant", text: "Slow but current" }] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(controller.state().session.error, null);
+  assert.equal(controller.state().session.messages[0].text, "Slow but current");
+});

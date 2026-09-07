@@ -495,6 +495,20 @@ export class FleetRuntime {
     }
   }
 
+  async dispatchTurn(lane, params) {
+    const dispatch = Symbol("turn dispatch");
+    lane.turnDispatch = dispatch;
+    try {
+      const response = await this.broker.request("turn/start", params);
+      // Notifications can complete this turn and dispatch recovery before its reply arrives.
+      if (lane.turnDispatch === dispatch && response.turn?.id) {
+        this.bindTurn(lane, response.turn.id);
+      }
+    } catch (error) {
+      if (lane.turnDispatch === dispatch) throw error;
+    }
+  }
+
   handleNotification(message) {
     if (message.method === "fleet/brokerClosed") { this.inbox.disconnect(); return; }
     if (message.method === "serverRequest/resolved") {
@@ -797,7 +811,7 @@ export class FleetRuntime {
         "lane.started",
         { threadId: lane.threadId }
       );
-      const turn = await this.broker.request("turn/start", {
+      await this.dispatchTurn(lane, {
         threadId: lane.threadId,
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
@@ -807,7 +821,6 @@ export class FleetRuntime {
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
       });
-      if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
       return copyLane(lane);
     } catch (error) {
       const unknown = isAcceptanceUnknown(error);
@@ -839,7 +852,7 @@ export class FleetRuntime {
       { threadId: lane.threadId, attempt }
     );
     try {
-      const turn = await this.broker.request("turn/start", {
+      await this.dispatchTurn(lane, {
         threadId: lane.threadId,
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
@@ -849,7 +862,6 @@ export class FleetRuntime {
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
       });
-      if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
     } catch (error) {
       const unknown = isAcceptanceUnknown(error);
       this.updateLane(
@@ -915,7 +927,7 @@ export class FleetRuntime {
       { threadId: lane.threadId }
     );
     try {
-      const turn = await this.broker.request("turn/start", {
+      await this.dispatchTurn(lane, {
         threadId: lane.threadId,
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
@@ -925,7 +937,6 @@ export class FleetRuntime {
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
       });
-      if (turn.turn?.id) this.bindTurn(lane, turn.turn.id);
       return copyLane(lane);
     } catch (error) {
       this.unbindTurn(lane);

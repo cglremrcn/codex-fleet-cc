@@ -59,7 +59,7 @@ export function buildLaneNavigation(lanes, options = {}) {
   const groups = [];
   for (const lane of matches) {
     const parts = mode === "folder" ? folderParts(lane)
-      : [String(lane[mode === "checkout" ? "checkoutKey" : mode] ?? "Unreported")];
+      : [String(lane[FIELDS[mode] ?? mode] ?? "Unreported")];
     let parent = root;
     for (let depth = 0; depth < parts.length; depth += 1) {
       const name = parts[depth];

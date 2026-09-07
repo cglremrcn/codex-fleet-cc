@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — 2026-09-07
+
+- Add logical task folders, literal field filters, large-fleet navigation, connected-runtime model
+  discovery, compact controller observations and reported cumulative token usage.
+- Add registered-project and native Codex thread inventory with bounded revision-aware pagination,
+  read-only observed sessions, project-safe controls, command palette, pins and saved views.
+- Add KITE companion state semantics, typed pending-request signals and responsive single-flight
+  session reads with stale-generation protection.
+- Add the project-scoped shared intervention inbox for supported Codex questions and approvals,
+  exact-action human previews, Claude proposals, short-lived technical delegation and bounded waiting.
+- Keep writer serialization rooted in the actual supervisor workspace, ignore retired-turn events,
+  and avoid redundant successful state writes while allowing recovery after failed writes.
+- Enforce active-lane and writer limits atomically on follow-up, and begin initial lane monitoring
+  before waiting on a batch of starts.
+- Correct native parent-thread grouping, render completed delayed transcript reads promptly, and
+  invalidate obsolete inbox previews and clear resolved request titles.
+- Preserve saved-view state when persistence fails and reject late old-turn start acknowledgements
+  that could replace the current owned turn.
+- Advance all package and runtime version surfaces to 0.3.0 so existing installations receive the
+  versioned owned-runtime upgrade instead of treating changed source as already current.
+- Refresh operating guides and regenerate README visuals from the current terminal renderer using
+  deterministic synthetic fixtures.
+
+Migration: update the plugin and accept its versioned owned-runtime upgrade, then restart Claude Code
+and confirm `v0.3.0` in the masthead. Existing lanes retain their admitted authority. Native discovery does not adopt
+threads. Saved views do not change scheduling. The new inbox requires an installed live-account canary
+before claiming operational certification; fixtures never spend model credits or approve real actions.
+
 ## 0.2.1 — 2026-09-01
 
 - Make `/fleet:doctor` resolve the exact first Codex executable on `PATH`, matching the app-server

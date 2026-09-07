@@ -327,8 +327,8 @@ export function createControlPlane(options) {
           workspaceKey: options.workspaceKey,
           checkoutKey: lane.checkoutKey ?? options.workspaceKey
         }));
-        const lanes = await Promise.all(admissions);
         monitorActive();
+        const lanes = await Promise.all(admissions);
         return {
           schemaVersion: 1,
           background: true,

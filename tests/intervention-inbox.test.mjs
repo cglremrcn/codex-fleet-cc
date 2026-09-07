@@ -198,3 +198,26 @@ test("terminal entries clear request bodies and proposals, retaining only identi
   assert.equal(d.questions, null); assert.equal(d.proposal, null); assert.match(d.responseDigest, /^[a-f0-9]{64}$/);
   assert.ok(!JSON.stringify(f.inbox.entries.get(f.id)).includes("Private contextual advice"));
 });
+
+test("revision changes release obsolete previews and their private answer drafts", () => {
+  const f = fixture();
+  for (let index = 0; index < 64; index += 1) {
+    preview(f, { type: "answer", result: answer("Private draft context") });
+  }
+  f.inbox.propose(f.id, 1, { note: "Updated advice" });
+  assert.equal(f.inbox.previews.size, 0);
+  assert.doesNotThrow(() => preview(f, { type: "reject" }));
+});
+
+test("terminal cleanup removes titles and every outstanding answer preview", () => {
+  const f = fixture();
+  const request = question(42);
+  request.params.questions[0].header = "Private project question";
+  const id = f.inbox.receive(request, lane());
+  const review = f.inbox.preview(id, 1, {
+    type: "answer", result: answer("Private answer context")
+  });
+  f.inbox.resolved("thread-a", 42);
+  assert.equal(f.inbox.previews.has(review.confirmationToken), false);
+  assert.ok(!JSON.stringify(f.inbox.inspect(id)).includes("Private project question"));
+});

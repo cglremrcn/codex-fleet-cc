@@ -94,6 +94,12 @@ export class InterventionInbox {
   }
   changed(entry) {
     this.version += 1;
+    // A changed revision cannot use an older review; discard its answer draft immediately.
+    for (const [token, preview] of this.previews) {
+      if (preview.id === entry.id && preview.revision !== entry.revision) {
+        this.previews.delete(token);
+      }
+    }
     try { this.onChange(entry.laneId); } catch { /* Observers cannot authorize or break request state. */ }
   }
   validate(message, lane) { normalizeRequest(message, lane); }
@@ -142,6 +148,7 @@ export class InterventionInbox {
   finish(entry, state, reason) {
     entry.state = state; entry.reason = reason; entry.revision += 1; entry.delegation = null;
     entry.proposal = null; entry.params = null;
+    entry.title = entry.kind === "question" ? "Closed question" : "Closed approval";
     entry.details = "The live request was cleared. Only identity, state and digests are retained; no answer is replayable.";
     this.changed(entry);
   }

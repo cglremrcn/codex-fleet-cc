@@ -33,7 +33,8 @@ it exists only to verify the terminal handoff.
    evidence, deliverable, verification and cleanup.
 3. The CLI and supervisor use one shared admission validator that returns every input and authority
    issue before opening the runtime.
-4. The scheduler caps active lanes and serializes writers that share a checkout.
+4. The scheduler caps active lanes and serializes writers within its canonical workspace root;
+   different display checkout labels do not create separate write authority.
 5. The runtime adapter maps the stable Fleet operations to Codex app-server threads and turns.
 6. Sanitized lane metadata is written atomically outside the repository.
 7. Fleet Console reads that state. Viewing does not start a model turn.
@@ -100,6 +101,41 @@ states are locked. Panel focus and motion changes always produce visible text fe
 
 Snapshot refresh is bounded to 750 ms and never blocks local navigation or quit. A late read cannot
 replace a newer generation; the renderer keeps the last good snapshot and marks stale observation.
+
+## Inventory, navigation and model discovery
+
+The workspace registry retains canonical paths privately. Public project inventory exposes sanitized
+metadata and stable composite row identities. Controls revalidate registration and route to the owning
+project supervisor; discovering a native Codex thread never admits it as a Fleet lane. Native inventory
+uses bounded metadata calls and treats observed sessions as read-only, without resume or inference.
+Revision-bound pagination reports partial discovery separately from remaining local pages.
+
+Filtering and grouping operate on observations. Logical folders and checkout labels are display metadata,
+not sandbox or lock boundaries. Named views persist pins, scope, folds and selection through a private
+atomic record with revision checks and exclusive transactions. Model discovery uses bounded cached
+`model/list` results; runtime-policy contracts are revalidated against that catalogue at admission.
+Reported cumulative usage replaces prior snapshots; absent counters remain unknown.
+
+## Shared intervention boundary
+
+Interactive contracts opt into upstream `on-request` behavior without widening the admitted sandbox or
+network policy. The broker maps supported server requests to a connection-local inbox, preserving exact
+thread, turn, item, wire ID and revision identity. The console uses authenticated supervisor methods to
+preview one action and confirm it once. Claude-facing commands support inspection, proposals and one
+human-delegated technical answer; a proposal is not a transport reply or approval.
+
+Pending request contents, answers and grants remain in memory. Durable lane state receives counts only.
+Timeout, completion, disconnect and takeover invalidate stale work. Uncertain sends are never retried;
+transport handoff and server resolution are not independent verification of the underlying work.
+The supervisor is a cooperative same-user boundary, not an OS sandbox against another process running
+with the user's credentials. Unsupported request methods and unavailable file diffs fail closed.
+
+KITE projects reported state and typed pending counts without granting authority. Session and inbox reads
+are asynchronous, single-flight and guarded against late generations; local navigation remains available
+while the UI waits for bounded transport operations.
+
+See [control center](docs/CONTROL_CENTER.md), [inbox protocol and trust boundaries](docs/SHARED_INTERVENTION.md)
+and [KITE behavior](docs/KITE_COMPANION.md).
 
 ## Installation version boundary
 

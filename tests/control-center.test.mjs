@@ -244,6 +244,46 @@ test("operator overlays fit Unicode, narrow and monochrome terminal dimensions",
   }
 });
 
+test("failed saved-view writes show an error and allow retrying the same name", async (t) => {
+  let attempts = 0;
+  const writes = [];
+  const controller = createConsoleController({ snapshot: snapshot(),
+    terminal: { columns: 100, rows: 24 }, write: (text) => writes.push(stripAnsi(text)),
+    saveViewState: async () => { if (++attempts === 1) throw new Error("Disk unavailable"); }
+  });
+  t.after(() => controller.dispose());
+  await controller.dispatch({ type: "palette" });
+  await controller.dispatch({ type: "text", value: "save this view" });
+  await controller.dispatch({ type: "applyFilter" });
+  await controller.dispatch({ type: "text", value: "My view" });
+  await controller.dispatch({ type: "applyFilter" });
+  assert.match(writes.at(-1), /Disk unavailable/u);
+  assert.equal(controller.state().overlay.kind, "saveView");
+  assert.equal(controller.viewState().savedViews.length, 0);
+  await controller.dispatch({ type: "applyFilter" });
+  assert.equal(attempts, 2);
+  assert.equal(controller.state().overlay, null);
+  assert.deepEqual(controller.viewState().savedViews.map((saved) => saved.name), ["My view"]);
+  assert.match(writes.at(-1), /VIEW SAVED/u);
+});
+
+test("saved-view validation errors are visible within the overlay", async (t) => {
+  const writes = [];
+  const controller = createConsoleController({ snapshot: snapshot(),
+    terminal: { columns: 100, rows: 24 }, write: (text) => writes.push(stripAnsi(text))
+  });
+  t.after(() => controller.dispose());
+  await controller.dispatch({ type: "palette" });
+  await controller.dispatch({ type: "text", value: "save this view" });
+  await controller.dispatch({ type: "applyFilter" });
+  await controller.dispatch({ type: "applyFilter" });
+  assert.match(writes.at(-1), /View name is empty/u);
+  await controller.dispatch({ type: "text", value: "Unsaved view" });
+  await controller.dispatch({ type: "applyFilter" });
+  assert.match(writes.at(-1), /preference saving is unavailable/u);
+  assert.equal(controller.viewState().savedViews.length, 0);
+});
+
 test("new operator keys stay text while composing", () => {
   const decoder = createInputDecoder();
   assert.deepEqual(decoder.push(":waf").map((event) => event.type), ["palette", "scope", "attention", "favorite"]);

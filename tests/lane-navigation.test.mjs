@@ -53,6 +53,24 @@ test("nested folders collapse without losing global counts or changing agent IDs
   assert.ok(expanded.groups.every(g => g.active <= g.count && g.attention <= g.count));
 });
 
+test("native parent grouping separates siblings by their reported parent thread", () => {
+  const rows = [
+    { id: "codex:root", parentThreadId: null },
+    { id: "codex:child-a", parentThreadId: "root" },
+    { id: "codex:child-b", parentThreadId: "root" },
+    { id: "codex:other-child", parentThreadId: "other-root" }
+  ];
+  const expanded = buildLaneNavigation(rows, { mode: "parent" });
+  const siblings = expanded.groups.find((group) => group.label === "root");
+  assert.ok(siblings, "reported parent must become a group");
+  assert.equal(siblings.count, 2);
+  assert.equal(expanded.groups.length, 3);
+  const folded = buildLaneNavigation(rows, { mode: "parent", collapsed: new Set([siblings.id]) });
+  assert.deepEqual(folded.rows.filter((row) => row.kind !== "group").map((row) => row.id).sort(),
+    ["codex:other-child", "codex:root"]);
+  assert.equal(folded.lanes.length, 4);
+});
+
 test("group identifiers cannot collide with admitted lane identifiers", () => {
   const row = lanes(1)[0]; const group = buildLaneNavigation([row], { mode: "folder" }).groups[0];
   assert.throws(() => createLane({ ...row, id: group.id }), /Lane id/);

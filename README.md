@@ -19,10 +19,10 @@ navigate Fleet. Use `Ctrl+G` for Fleet, then the arrow keys or `j`/`k` inside th
 Claude background agents/tasks and Fleet lanes are separate background systems: Claude's manager
 does not show Fleet lanes, and Fleet status does not create or control Claude background agents.
 
-> **Development preview:** the runtime, console, reversible setup, terminal handoff, live follow-up
-> and exact owned-lane cancellation are implemented. The release gate passes on Windows, macOS
-> Intel and Apple Silicon, Linux x64 and ARM64 with Node 22 and 24. The project is installable from
-> its GitHub marketplace today; it is not yet published to a central marketplace catalog.
+> **Development preview:** includes grouped navigation, registered-project and native-thread inventory,
+> saved views, KITE companion and a shared intervention inbox. Source verification and an installed
+> live-account canary are separate gates. The GitHub personal marketplace is available; the project
+> is not yet published to a central marketplace catalog.
 
 ## See the fleet without leaving Claude Code
 
@@ -30,19 +30,31 @@ Press `Ctrl+G` to open the operator console in the same terminal. Select a lane,
 status and authority, then press `Enter` to open that lane's Codex session. `Ctrl+G` returns from the
 session to the dashboard; `q` or `Esc` returns to Claude Code.
 
-![Historical Fleet Console v0.1.7 field-report dashboard with four sanitized fixture lanes and live KITE motion](docs/assets/fleet-console-dashboard.gif)
+![Current Fleet Console renderer with synthetic grouped lanes and status-driven KITE motion](docs/assets/fleet-console-dashboard.gif)
 
-This historical field-report recording was generated from the v0.1.7 renderer with sanitized fixture
-lanes. It is not a UI mockup or a claim about a live external account. The current Fleet source release
-is v0.2.1; its renderer is covered by the current preview and golden tests.
+This recording is generated from the current production terminal renderer with deterministic synthetic
+lanes. It shows the actual source UI, not a live account or workload. The version is read from package
+metadata when regenerating the assets. The current Fleet source release is v0.3.0. Installation
+requires the matching owned-runtime upgrade; retaining v0.2.1 would leave the old terminal runtime
+classified as current. The new shared inbox still needs an installed live-account canary. A [static dashboard image](docs/assets/fleet-console-dashboard.png)
+is also available.
 
-## Navigation and observability review
+## What the console includes
 
-The review branch adds collapsible task folders, field filters, connected-runtime model discovery,
-compact controller status and reported usage propagation. See the [operations guide](docs/HARNESS_OPERATIONS.md)
-and [evidence-backed review and roadmap](docs/reviews/2026-09-06-harness-review.md). These source changes
-do not claim that v0.2.1 installations already have them; global thread inventory and an approval inbox
-remain separate work.
+- **Find work:** collapsible task folders, literal field filters, attention ordering and pins.
+- **Change scope:** current workspace, registered Fleet projects, or connected native Codex threads.
+  Native discovery is read-only and never transfers ownership or starts inference.
+- **Keep a working view:** command palette and up to 16 named views, with conflict-aware private saves.
+- **Resolve interruptions:** a project-scoped inbox for human-reviewed questions and supported approvals.
+  Claude can propose an answer; delegation requires review of one exact technical question.
+- **Read real signals:** KITE reflects reported state and pending requests; token counters remain unknown
+  when upstream does not report them. Neither is a cost, quota or success guarantee.
+
+See [navigation and observability](docs/HARNESS_OPERATIONS.md), the
+[control center](docs/CONTROL_CENTER.md), [KITE](docs/KITE_COMPANION.md), and the
+[shared intervention inbox](docs/SHARED_INTERVENTION.md) for controls and boundaries.
+The [dated harness review](docs/reviews/2026-09-06-harness-review.md) records the earlier review baseline;
+its remaining-work list predates the integrated control center and inbox.
 
 ## Why this exists
 
@@ -89,9 +101,9 @@ The console starts on demand and exits completely when you return.
 
 The interface is intentionally closer to an operator terminal than an AI chat dashboard:
 near-black surfaces, dense alignment, restrained cyan and amber, green reserved for verified work,
-and no ambient decorative motion. Its one living signature is KITE: a small terminal-native fleet
-formation driven by the selected lane's real status. Active work assembles and releases the
-formation at a capped four frames per second; completed work keeps a subtle awaiting-verification
+and no ambient decorative motion. Its one living signature is KITE: a terminal-native companion
+driven by the selected lane's reported status and typed pending requests. Active work moves at a
+capped four frames per second; completed work keeps a subtle awaiting-verification
 motion; verified work locks it; blocked and failed work use distinct static postures. Wide terminals
 show lanes, selected evidence, controls, and authority with visible panel focus.
 Compact and narrow layouts progressively collapse KITE into a small signal sigil without hiding
@@ -111,7 +123,13 @@ Core navigation is designed around:
 | `Home` / `End` | Select the first or last filtered lane |
 | `Enter` / `m` | Open the selected real Codex thread; `Enter` sends inside it |
 | `Tab` | Move between visibly labelled dashboard panels |
-| `/` | Filter lanes |
+| `/` | Filter lanes with literal field queries |
+| `W` | Cycle workspace, registered-project and native-thread scope |
+| `G`, `Space`, `[`, `]` | Cycle grouping, toggle a group, collapse or expand groups |
+| `:` | Open the command palette; save or load a named view |
+| `A`, `F` | Attention-first ordering; pin the selected lane |
+| `I` | Open the selected Fleet project's intervention inbox |
+| `K` | Open KITE controls |
 | `h`, `?`, `F1` | Open contextual help (including Turkish-keyboard-safe alternatives) |
 | `x` | Request confirmed cancellation |
 | `e` | Open the editor Fleet preserved during setup |
@@ -242,7 +260,7 @@ The dashboard has no idle background UI process. The runtime shares one Codex ap
 defaults to at most three active lanes and one writer per checkout, bounds retained history, and
 redraws only when its view changes or a capped refresh tick fires.
 
-The latest local Windows gate measured a 6.1 ms renderer-startup p95, 0% median CPU in the
+A historical local Windows gate measured a 6.1 ms renderer-startup p95, 0% median CPU in the
 synthetic idle harness, a configured 4 Hz refresh ceiling, 1.5 MiB retained heap growth for the
 256-lane fixture, a 50,841-byte state snapshot and zero owned PTY children after exit. These are
 development guardrails, not product workload or universal benchmarks; CI records the same
@@ -261,17 +279,17 @@ listing proves only old configuration; reload/restart and run a lane-local smoke
 
 ## Current status
 
-This table describes evidence available in the repository today, not the intended final support
-matrix.
+This table records the established baseline and the verification boundary for newer source features.
+Historical live checks do not certify a newly installed integration or replace current platform CI.
 
 | Surface | Status |
 | --- | --- |
 | Windows live terminal handoff | **Proven** on Claude Code v2.1.234 in a disposable profile |
-| Current Claude plugin validation | Passing locally with Claude Code v2.1.252 |
+| Claude plugin validation baseline | Claude Code v2.1.252; run `npm run validate:plugin` on the current checkout |
 | Windows runtime and PTY fixture | Passing: installed launcher, exact draft, restored terminal, zero owned child |
 | macOS Intel and Apple Silicon | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
 | Linux x64 and ARM64 | Passing on Node 22/24: generated launcher command smoke and real PTY runtime |
-| Fleet Console | Real Codex transcript/session input, renderer, controller, input, accessibility and fixture E2E implemented |
+| Fleet Console | Grouped navigation, inventory, saved views, KITE and shared inbox implemented with deterministic fixture coverage; installed live-account canary remains separate |
 | Marketplace install | Available from the GitHub personal marketplace; not yet published to a central catalog |
 | Reversible settings setup | Fresh install/version upgrade preview, atomic swap/rollback, uninstall and late-mutation refusal tested |
 | Real Codex account workflow | Passing on August 19, 2026 with Codex CLI 0.147.0: investigator and same-thread follow-up read separate random nonces, an independent verifier rechecks both, then exact cancellation completes |
@@ -361,6 +379,7 @@ The plugin contract uses Claude Code's marketplace/plugin directory mechanism an
 /fleet:result     inspect a sanitized lane result
 /fleet:follow-up  continue a completed or needs-controller lane on its existing Codex thread
 /fleet:cancel     request confirmed cancellation
+/fleet:inbox      inspect requests, propose answers and use exact human delegation
 /fleet:export     preview and create a redacted support bundle
 /fleet:uninstall restore only settings owned by Fleet
 ```
@@ -396,9 +415,28 @@ The implementation plan and current release gates live in
 The approved product and threat-boundary design lives in
 [`docs/specs/2026-08-17-codex-fleet-cc-design.md`](docs/specs/2026-08-17-codex-fleet-cc-design.md).
 
+### Regenerate the documentation visuals
+
+The preview script imports the production renderer and emits deterministic synthetic dashboard and
+session frames. It does not connect to an account. Save its UTF-8 JSON output, then render with Python
+and Pillow using a monospace font; an optional symbols font supplies missing Unicode glyphs:
+
+```text
+node scripts/render-console-preview.mjs
+python scripts/render-preview-gif.py previews.json /path/to/mono.ttf docs/assets /path/to/symbols.ttf
+```
+
+On Windows the checked-in images use Consolas and Segoe UI Symbol. The images show source behavior;
+renderer fixture tests and live terminal/account tests remain separate verification steps.
+
 ## Project guides
 
 - [Architecture](ARCHITECTURE.md)
+- [Navigation and observability](docs/HARNESS_OPERATIONS.md)
+- [Control center and saved views](docs/CONTROL_CENTER.md)
+- [KITE companion](docs/KITE_COMPANION.md)
+- [Shared intervention inbox](docs/SHARED_INTERVENTION.md)
+- [Changelog](CHANGELOG.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
@@ -421,13 +459,3 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before a broad change. Bug and feature f
 in GitHub. Report vulnerabilities through the private path described in [SECURITY.md](SECURITY.md),
 never in a public issue. Do not attach credentials, prompts, customer data or unsanitized support
 output.
-
-### Control center source review
-
-The [control center guide](docs/CONTROL_CENTER.md) describes project/native-thread inventory,
-read-only discovery, the command palette, saved views and pins in the review branch. These source
-changes do not automatically update the existing v0.2.1 integration.
-
-See [KITE companion v2](docs/KITE_COMPANION.md) for state semantics and local controls in the review branch.
-
-See [Shared intervention inbox](docs/SHARED_INTERVENTION.md) for human review, Claude proposals, exact-request delegation and supported protocol boundaries in the review branch.

@@ -2,8 +2,8 @@
 
 Implemented as a connection-local state machine, an app-server request bridge, authenticated existing-
 supervisor methods, Claude-facing read/proposal/delegated-answer commands, and an interactive terminal
-view. This source package is stacked on the control-center and KITE review branches; it is not an
-installed marketplace upgrade or a live-account certification.
+view. This layer is integrated with the control center and KITE. Updating the source is not an
+installed-runtime upgrade or a live-account certification.
 
 ## Human workflow
 

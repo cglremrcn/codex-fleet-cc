@@ -284,11 +284,10 @@ export function createConsoleController(options = {}) {
       ui.session = { ...ui.session, loading: false, error: lane ? "Runtime thread inspection is unavailable." : "Lane is no longer available." };
       return false;
     }
-    const read = { generation: sessionGeneration, timer: null, expired: false };
+    const read = { generation: sessionGeneration, timer: null };
     sessionRead = read;
     const current = () => !disposed && read.generation === sessionGeneration && ui.session?.laneId === laneId;
     read.timer = setTimeout(() => {
-      read.expired = true;
       if (current()) {
         ui.session = { ...ui.session, loading: false, error: "Session read timed out; transcript is stale. Navigation remains available." };
         void renderCurrent();
@@ -298,7 +297,9 @@ export function createConsoleController(options = {}) {
     // Do not await a remote transcript on the input queue. Keep one underlying
     // read in flight even after the UI deadline to avoid a timeout retry storm.
     Promise.resolve().then(() => runtime.session(lane)).then((session) => {
-      if (!current() || read.expired) return;
+      // The deadline marks stale UI, not an invalid response. A late success is
+      // still useful while the same session generation remains open.
+      if (!current()) return;
       ui.session = { ...session, laneId, loading: false, error: null,
         scroll: ui.session.scroll ?? 0, activityExpanded: ui.session.activityExpanded === true };
     }, (error) => {
@@ -510,19 +511,25 @@ export function createConsoleController(options = {}) {
     const overlay = ui.overlay;
     const items = () => overlay.kind === "kite" ? companionItems({ extraCommands }) : paletteItems(overlay.query, savedViews, extraCommands);
     if (["quit", "closeSession", "clearFilter", "discardMessage"].includes(event.type)) ui.overlay = null;
-    else if (event.type === "text" && overlay.kind !== "kite") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; }
-    else if (event.type === "backspace") { overlay.query = Array.from(overlay.query).slice(0, -1).join(""); overlay.index = 0; }
+    else if (event.type === "text" && overlay.kind !== "kite") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; overlay.error = null; }
+    else if (event.type === "backspace") { overlay.query = Array.from(overlay.query).slice(0, -1).join(""); overlay.index = 0; overlay.error = null; }
     else if (event.type === "move") overlay.index = Math.max(0, Math.min(items().length - 1, overlay.index + event.delta));
     else if (["activate", "applyFilter", "submitMessage"].includes(event.type)) {
       if (overlay.kind === "saveView") {
         const name = overlay.query.trim();
-        if (!name) setNotice("View name is empty.");
-        else if (savedViews.some((saved) => saved.name === name)) setNotice("View name already exists; choose a different name.");
-        else if (savedViews.length >= 16) setNotice("Saved-view limit reached (16).");
+        const failSave = (message) => {
+          overlay.error = boundedStatus(message, 160);
+          setNotice(message);
+        };
+        if (!name) failSave("View name is empty.");
+        else if (savedViews.some((saved) => saved.name === name)) failSave("View name already exists; choose a different name.");
+        else if (savedViews.length >= 16) failSave("Saved-view limit reached (16).");
+        else if (typeof options.saveViewState !== "function") failSave("Console preference saving is unavailable.");
         else {
-          savedViews.push({ name, view: captureView() }); preferencesDirty = true;
+          const previousViews = savedViews;
+          savedViews = [...savedViews, { name, view: captureView() }]; preferencesDirty = true;
           try { await saveState(); ui.overlay = null; setNotice(`VIEW SAVED · ${name}`); }
-          catch (error) { setNotice(error.message); }
+          catch (error) { savedViews = previousViews; failSave(error?.message ?? "View could not be saved."); }
         }
       } else {
         const item = items()[overlay.index];

@@ -8,6 +8,8 @@ import {
   renderScreen
 } from "../plugins/fleet/scripts/lib/tui-render.mjs";
 
+import { buildLaneNavigation } from "../plugins/fleet/scripts/lib/lane-navigation.mjs";
+
 const project = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, "..", "package.json"), "utf8"));
 const version = project.version;
 
@@ -27,6 +29,7 @@ const lanes = [
     id: "runtime-audit",
     role: "investigator",
     label: "Inspect the Codex runtime boundary",
+    groupPath: "Runtime",
     model: "gpt-5.6-sol",
     effort: "high",
     status: "complete",
@@ -40,6 +43,7 @@ const lanes = [
     id: "console-build",
     role: "implementer",
     label: "Build the responsive operator console",
+    groupPath: "Console",
     model: "gpt-5.6-sol",
     effort: "high",
     status: "running",
@@ -53,6 +57,7 @@ const lanes = [
     id: "qa-browser",
     role: "browser-qa-operator",
     label: "Verify the same-session terminal handoff",
+    groupPath: "Console",
     model: "gpt-5.6-sol",
     effort: "high",
     status: "blocked",
@@ -66,6 +71,7 @@ const lanes = [
     id: "release-proof",
     role: "independent-verifier",
     label: "Verify package evidence independently",
+    groupPath: "Runtime",
     model: "gpt-5.6-sol",
     effort: "high",
     status: "verified",
@@ -80,12 +86,15 @@ const lanes = [
 
 const snapshot = {
   schemaVersion: 1,
-  workspace: { name: "codex-fleet-cc", branch: "main" },
+  workspace: { name: "codex-fleet-cc", branch: "synthetic-preview" },
   runtime: { health: "ready", protocol: "compatible", activeLimit: 3 },
-  updatedAt: "2026-08-17T12:00:00.000Z",
+  updatedAt: "2026-09-07T12:00:00.000Z",
   lanes
 };
-const dashboardView = buildViewModel(snapshot, "console-build", "detail");
+const navigation = buildLaneNavigation(lanes, { mode: "folder" });
+const dashboardView = buildViewModel(snapshot, "console-build", "detail", {
+  navigationRows: navigation.rows
+});
 const sessionView = buildViewModel(snapshot, "runtime-audit", "detail");
 
 const frames = Array.from({ length: 4 }, (_, frame) => renderScreen(
@@ -113,26 +122,28 @@ const sessionFrame = renderScreen(
       messages: [
         {
           kind: "user",
-          text: "Check whether the cited source supports the exact launch claim."
+          text: "Inspect native-thread ownership and the shared inbox boundary."
         },
         {
           kind: "assistant",
-          text: "The source supports availability by April 2015, so the narrower date range is safer."
+          text: "Native threads remain observe-only. Inbox actions require a current Fleet-owned turn and an exact human-reviewed preview."
         },
         {
           kind: "activity",
-          text: "WEB SEARCH · sanitized source inspection"
+          text: "SOURCE REVIEW · synthetic evidence fixture"
         }
       ],
       scroll: 0
     },
-    composer: { laneId: "runtime-audit", value: "Continue with the narrower verified claim." },
+    composer: { laneId: "runtime-audit", value: "Recheck the same-turn approval boundary independently." },
     notice: "SAME CODEX THREAD · READY FOR FOLLOW-UP"
   }
 );
 
 process.stdout.write(JSON.stringify({
   schemaVersion: 1,
+  fixture: "Deterministic synthetic data; current production renderer; no live account.",
+  version,
   previews: {
     dashboard: { columns: 160, rows: 28, frames },
     session: { columns: 140, rows: 30, frame: sessionFrame }

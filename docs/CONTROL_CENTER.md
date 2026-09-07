@@ -1,8 +1,8 @@
 # Fleet control center
 
-These changes are source improvements on top of the navigation/observability PR, not an automatic
-upgrade of an installed v0.2.1 plugin. Keep the working profile until a reviewed source release and
-an isolated live canary have passed.
+The integrated source combines navigation, project/native-thread inventory, KITE and the shared inbox.
+An installed plugin requires its matching owned-runtime upgrade. Source and fixture checks do not
+replace a disposable-profile live canary.
 
 ## One terminal, three explicit scopes
 
@@ -68,7 +68,7 @@ folder:images -role:planner
 ```
 
 KITE can be hidden, reduced-motion preferences are respected, and clicking its top-right header
-area focuses attention ordering. It is not an invented progress meter. The panel never equates a
+area opens the KITE operator panel. It is not an invented progress meter. The panel never equates a
 model's completion claim, an observed idle thread, or a rendered mascot posture with independent
 verification.
 
@@ -79,5 +79,6 @@ metadata-only discovery, ephemeral children, read-only native controls, saved-vi
 real keyboard-to-palette dispatch, fixed viewport bounds and the existing terminal handoff.
 No authenticated model turns or subscription savings benchmark were run by these tests.
 
-Global worktree scheduling, native-thread adoption, durable archive migration and the shared
-mid-turn request inbox are distinct capabilities, not implied by the new inventory.
+Global worktree scheduling, native-thread adoption and durable archive migration remain separate
+capabilities. The [shared mid-turn inbox](SHARED_INTERVENTION.md) is integrated but project-scoped;
+native discovery does not grant access to an external thread's approval requests.
