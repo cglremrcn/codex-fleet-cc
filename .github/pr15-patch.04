@@ -1,0 +1,371 @@
+ath.resolve(workspacePath ?? io.cwd);
++  const resolver = dependencies.resolveImplicitWorkspace ?? resolveImplicitWorkspace;
++  const workspace = resolver(candidate, {
++    implicit: options.implicit === true,
++    spawnSync: dependencies.spawnSync
++  });
++  const key = await workspaceKey(workspace, { platform: io.platform });
+   const dataDir = getFleetDataDir(io.env, io.platform, io.home);
+   const root = resolveOwnedPath(dataDir, "workspaces", key);
+   return { workspace, key, dataDir, root };
+ }
+ 
++async function parsedStateContext(parsed, io, dependencies = {}) {
++  const explicit = parsed.flags.has("--workspace");
++  return stateContext(explicit ? parsed.flags.get("--workspace") : io.cwd, io, dependencies, {
++    implicit: !explicit
++  });
++}
++
++async function requestExistingSupervisor(context, method, params, io, dependencies) {
++  const readManifest = dependencies.readSupervisorManifest ?? readSupervisorManifest;
++  const request = dependencies.requestSupervisor ?? requestSupervisor;
++  const manifest = await readManifest({
++    dataDir: context.dataDir,
++    workspaceKey: context.key,
++    platform: io.platform
++  });
++  if (!manifest) return null;
++  return request({
++    address: manifest.address,
++    workspaceKey: context.key,
++    token: manifest.token,
++    method,
++    params
++  });
++}
++
+ async function readStateWithoutCreating(root) {
+   try {
+     const metadata = await fs.stat(root);
+@@ -623,7 +704,8 @@ async function requestLiveSupervisor(context, method, params, io, dependencies)
+ }
+ 
+ async function runStart(contract, io, dependencies) {
+-  const context = await stateContext(contract.workspacePath, io);
++  const context = await stateContext(contract.workspacePath, io, dependencies, { implicit: false });
++  await (dependencies.validateQualifiedRetryRefs ?? validateQualifiedRetryRefs)(contract, context, dependencies);
+   const requestStartedAt = new Date((dependencies.now ?? Date.now)()).toISOString();
+   let payload;
+   try {
+@@ -685,7 +767,7 @@ async function runStart(contract, io, dependencies) {
+ }
+ 
+ async function runControl(contract, command, io, dependencies) {
+-  const context = await stateContext(contract.workspacePath, io);
++  const context = await stateContext(contract.workspacePath, io, dependencies, { implicit: false });
+   const params = command === "follow-up"
+     ? { laneId: contract.laneId, message: contract.message }
+     : {
+@@ -780,42 +862,101 @@ async function runUninstallCommand(parsed, io) {
+ }
+ 
+ async function execute(parsed, io, dependencies) {
++  if (parsed.command === "help") {
++    return { exitCode: EXIT_CODES.success, payload: { helpText: renderCliHelp(parsed.helpTarget ?? null) } };
++  }
++
+   if (parsed.command === "inbox-wait") {
+-    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
++    const context = await parsedStateContext(parsed, io, dependencies);
+     const textTimeout = parsed.flags.get("--timeout-ms") ?? "60000";
+     const after = parsed.flags.get("--after");
+-    if (!/^\d{1,5}$/u.test(textTimeout) || Number(textTimeout) < 1 || Number(textTimeout) > 90000 || (after !== undefined && !/^[a-f0-9]{64}$/u.test(after))) throw new InvalidInputError("Invalid bounded inbox wait options.");
+-    return { exitCode: EXIT_CODES.success, payload: await waitForInbox({ ...context, platform: io.platform }, { timeoutMs: Number(textTimeout), after }, dependencies) };
++    if (!/^\d{1,5}$/u.test(textTimeout) || Number(textTimeout) < 1 || Number(textTimeout) > 90000
++      || (after !== undefined && !/^[a-f0-9]{64}$/u.test(after))) {
++      throw new InvalidInputError("Invalid bounded inbox wait options.");
++    }
++    return {
++      exitCode: EXIT_CODES.success,
++      payload: await waitForInbox(
++        { ...context, platform: io.platform },
++        { timeoutMs: Number(textTimeout), after },
++        dependencies
++      )
++    };
+   }
++
+   if (["inbox", "inbox-propose", "inbox-answer"].includes(parsed.command)) {
+     if (parsed.command === "inbox") {
+-      const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
++      const context = await parsedStateContext(parsed, io, dependencies);
+       const id = parsed.flags.get("--request");
+       if (id && !/^[a-f0-9-]{36}$/u.test(id)) throw new InvalidInputError("Invalid intervention request identity.");
+-      return { exitCode: EXIT_CODES.success, payload: await requestExistingInbox({ ...context, platform: io.platform }, id ? "inboxInspect" : "inbox", id ? { id } : {}, dependencies) };
++      return {
++        exitCode: EXIT_CODES.success,
++        payload: await requestExistingInbox(
++          { ...context, platform: io.platform },
++          id ? "inboxInspect" : "inbox",
++          id ? { id } : {},
++          dependencies
++        )
++      };
+     }
+     const input = await readContract(parsed, io);
+-    const allowed = parsed.command === "inbox-propose" ? ["workspacePath", "id", "revision", "proposal"] : ["workspacePath", "id", "revision", "delegationToken", "result"];
+-    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key))
++    const allowed = parsed.command === "inbox-propose"
++      ? ["workspacePath", "id", "revision", "proposal"]
++      : ["workspacePath", "id", "revision", "delegationToken", "result"];
++    if (!input || typeof input !== "object" || Array.isArray(input)
++      || Object.keys(input).some((key) => !allowed.includes(key))
+       || typeof input.workspacePath !== "string" || !path.isAbsolute(input.workspacePath)
+-      || !/^[a-f0-9-]{36}$/u.test(input.id ?? "") || !Number.isSafeInteger(input.revision) || input.revision < 1) throw new InvalidInputError("Malformed bounded inbox contract.");
+-    const context = await stateContext(input.workspacePath, io);
++      || !/^[a-f0-9-]{36}$/u.test(input.id ?? "")
++      || !Number.isSafeInteger(input.revision) || input.revision < 1) {
++      throw new InvalidInputError("Malformed bounded inbox contract.");
++    }
++    const context = await stateContext(input.workspacePath, io, dependencies, { implicit: false });
+     const { workspacePath: _workspace, ...params } = input;
+-    return { exitCode: EXIT_CODES.success, payload: await requestExistingInbox({ ...context, platform: io.platform }, parsed.command === "inbox-propose" ? "inboxPropose" : "inboxAnswer", params, dependencies) };
++    return {
++      exitCode: EXIT_CODES.success,
++      payload: await requestExistingInbox(
++        { ...context, platform: io.platform },
++        parsed.command === "inbox-propose" ? "inboxPropose" : "inboxAnswer",
++        params,
++        dependencies
++      )
++    };
+   }
++
+   if (["projects", "register", "inventory"].includes(parsed.command)) {
+-    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+-    if (parsed.command === "projects") return { payload: await listRegisteredWorkspaces(context.dataDir), exitCode: EXIT_CODES.success };
+-    if (parsed.command === "register") return { payload: await registerWorkspace(context.dataDir, context.workspace, { name: parsed.flags.get("--name") }), exitCode: EXIT_CODES.success };
+-    if (parsed.flags.has("--archived") && !parsed.flags.has("--native")) throw new InvalidInputError("--archived requires --native.");
+-    const selection = { query: parsed.flags.get("--query"), cursor: parsed.flags.get("--cursor"),
+-      limit: parsed.flags.has("--limit") ? Number(parsed.flags.get("--limit")) : 100 };
+-    if (!Number.isInteger(selection.limit) || selection.limit < 1 || selection.limit > 500) throw new InvalidInputError("Inventory limit must be 1-500.");
++    const context = await parsedStateContext(parsed, io, dependencies);
++    if (parsed.command === "projects") {
++      return { payload: await listRegisteredWorkspaces(context.dataDir), exitCode: EXIT_CODES.success };
++    }
++    if (parsed.command === "register") {
++      return {
++        payload: await registerWorkspace(context.dataDir, context.workspace, { name: parsed.flags.get("--name") }),
++        exitCode: EXIT_CODES.success
++      };
++    }
++    if (parsed.flags.has("--archived") && !parsed.flags.has("--native")) {
++      throw new InvalidInputError("inventory --archived requires --native.");
++    }
++    const selection = {
++      query: parsed.flags.get("--query"),
++      cursor: parsed.flags.get("--cursor"),
++      limit: parsed.flags.has("--limit") ? Number(parsed.flags.get("--limit")) : 100
++    };
++    if (!Number.isInteger(selection.limit) || selection.limit < 1 || selection.limit > 500) {
++      throw new InvalidInputError("Inventory limit must be 1-500.");
++    }
+     const payload = parsed.flags.has("--native")
+-      ? await requestLiveSupervisor(context, "nativeInventory", { ...selection, archived: parsed.flags.has("--archived") }, io, dependencies)
++      ? await requestLiveSupervisor(
++          context,
++          "nativeInventory",
++          { ...selection, archived: parsed.flags.has("--archived") },
++          io,
++          dependencies
++        )
+       : paginateInventory(await readFleetInventory(context.dataDir), selection);
+     return { payload, exitCode: EXIT_CODES.success };
+   }
++
+   if (parsed.command === "init") {
+     if (parsed.flags.has("--list")) {
+       if (["--workspace", "--template", "--objective", "--confirmation-ref"]
+@@ -836,98 +977,174 @@ async function execute(parsed, io, dependencies) {
+       );
+     }
+     const objective = parsed.flags.get("--objective");
+-    if (!objective) {
+-      throw new InvalidInputError("init requires --objective <bounded-observable-outcome>.");
+-    }
++    if (!objective) throw new InvalidInputError("init requires --objective <bounded-observable-outcome>.");
+     const confirmationRef = parsed.flags.get("--confirmation-ref");
+     if (definition.confirmationRequired && !confirmationRef) {
+       throw new AuthorityDeniedError(
+         `Template ${templateName} requires --confirmation-ref from the user's explicit approval.`
+       );
+     }
++    const context = await parsedStateContext(parsed, io, dependencies);
+     const contract = buildStartContractTemplate({
+       name: templateName,
+-      workspacePath: parsed.flags.get("--workspace") ?? io.cwd,
++      workspacePath: context.workspace,
+       objective: boundedText(objective, "objective", 4096),
+-      confirmationRef: confirmationRef
+-        ? boundedText(confirmationRef, "confirmationRef", 512)
+-        : null
++      confirmationRef: confirmationRef ? boundedText(confirmationRef, "confirmationRef", 512) : null
+     });
++    return { exitCode: EXIT_CODES.success, payload: validateStartContract(contract) };
++  }
++
++  if (parsed.command === "models") {
++    const context = await parsedStateContext(parsed, io, dependencies);
++    const payload = await requestLiveSupervisor(
++      context,
++      "models",
++      { refresh: parsed.flags.has("--refresh") },
++      io,
++      dependencies
++    );
++    const configuredModel = await (dependencies.readConfiguredCodexModel ?? readConfiguredCodexModel)(io, dependencies);
++    if (!configuredModel) return { exitCode: EXIT_CODES.success, payload };
++    const present = Array.isArray(payload.models)
++      && payload.models.some((entry) => entry?.model === configuredModel);
+     return {
+       exitCode: EXIT_CODES.success,
+-      payload: validateStartContract(contract)
++      payload: {
++        ...payload,
++        configuredModel,
++        configuredModelPresent: present,
++        ...(!present ? {
++          hint: parsed.flags.has("--refresh")
++            ? "The configured Codex model is still absent after an idle runtime refresh. Verify the installed Codex version/account capability; Fleet will not substitute another model."
++            : "The configured Codex model is absent from this process catalog. Run `fleet models --refresh` when the Fleet runtime is idle; a recently upgraded Codex process may still have a stale catalog."
++        } : {})
++      }
+     };
+   }
+ 
+-  if (parsed.command === "models") {
+-    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
+-    const payload = await requestLiveSupervisor(context, "models", {}, io, dependencies);
+-    return { exitCode: EXIT_CODES.success, payload };
++  if (parsed.command === "watch") {
++    const context = await parsedStateContext(parsed, io, dependencies);
++    const timeoutMs = parsed.flags.has("--timeout-ms")
++      ? boundedWatchTimeout(parsed.flags.get("--timeout-ms"))
++      : 14_400_000;
++    const stallMs = parsed.flags.has("--stall-ms")
++      ? boundedStall(parsed.flags.get("--stall-ms"))
++      : 20 * 60_000;
++    const payload = await requestExistingSupervisor(
++      context,
++      "watchForEvent",
++      { timeoutMs, stallMs },
++      io,
++      dependencies
++    );
++    return {
++      exitCode: EXIT_CODES.success,
++      payload: payload ?? { schemaVersion: 1, changed: false, reason: "no-live-supervisor" }
++    };
+   }
+ 
+   if (parsed.command === "doctor") {
+-    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
++    const context = await parsedStateContext(parsed, io, dependencies);
+     const report = await doctorReport(context, io, dependencies);
+     return {
+-      exitCode: report.overall === "blocked"
+-        ? EXIT_CODES.runtimeUnavailable
+-        : EXIT_CODES.success,
++      exitCode: report.overall === "blocked" ? EXIT_CODES.runtimeUnavailable : EXIT_CODES.success,
+       payload: report
+     };
+   }
+ 
++  if (["reconcile", "resolve", "archive"].includes(parsed.command)) {
++    const context = await parsedStateContext(parsed, io, dependencies);
++    const laneId = boundedLaneId(parsed.flags.get("--lane"), `${parsed.command} lane id`);
++    if (parsed.command === "archive") {
++      const payload = await requestLiveSupervisor(context, "archive", { laneId }, io, dependencies);
++      return { exitCode: EXIT_CODES.success, payload };
++    }
++    if (parsed.command === "reconcile") {
++      const assumeNotStarted = parsed.flags.has("--assume-not-started");
++      if (assumeNotStarted && !parsed.flags.has("--confirm")) {
++        throw new AuthorityDeniedError("Manual continuation release requires --confirm and --evidence-ref. Run probe-only reconcile first when possible.");
++      }
++      const evidenceRef = parsed.flags.get("--evidence-ref");
++      if (assumeNotStarted && !evidenceRef) {
++        throw new AuthorityDeniedError("Manual continuation release requires --evidence-ref.");
++      }
++      if (!assumeNotStarted && (parsed.flags.has("--confirm") || evidenceRef)) {
++        throw new InvalidInputError("--confirm/--evidence-ref are only valid with --assume-not-started for reconcile.");
++      }
++      const payload = await requestLiveSupervisor(
++        context,
++        "reconcileContinuation",
++        {
++          laneId,
++          assumeNotStarted,
++          ...(evidenceRef ? { evidenceRef: boundedEvidenceRef(evidenceRef) } : {})
++        },
++        io,
++        dependencies
++      );
++      return { exitCode: payload.resolved === false ? EXIT_CODES.outcomeUnknown : EXIT_CODES.success, payload };
++    }
++    if (!parsed.flags.has("--confirm")) {
++      throw new AuthorityDeniedError("resolve changes terminal truth and requires --confirm plus explicit evidence.");
++    }
++    const evidenceRef = boundedEvidenceRef(parsed.flags.get("--evidence-ref"));
++    const outcome = parsed.flags.get("--outcome");
++    if (!["complete", "failed", "cancelled"].includes(outcome)) {
++      throw new InvalidInputError("resolve --outcome must be complete, failed, or cancelled.");
++    }
++    const payload = await requestLiveSupervisor(
++      context,
++      "resolve",
++      { laneId, evidenceRef, outcome },
++      io,
++      dependencies
++    );
++    return { exitCode: EXIT_CODES.success, payload };
++  }
++
+   if (parsed.command === "status" || parsed.command === "result" || parsed.command === "export") {
+-    const context = await stateContext(parsed.flags.get("--workspace") ?? io.cwd, io);
++    const context = await parsedStateContext(parsed, io, dependencies);
+     const readState = dependencies.readStateWithoutCreating ?? readStateWithoutCreating;
+     let state = await readState(context.root);
+-    if (parsed.command === "export") {
+-      return runExport(parsed, context, state, io, dependencies);
+-    }
+-    let lanes = state.lanes;
++    if (parsed.command === "export") return runExport(parsed, context, state, io, dependencies);
++
++    let lanes = state.lanes ?? [];
++    let wait = null;
+     if (parsed.command === "result") {
+-      const laneId = parsed.flags.get("--lane");
+-      if (!laneId) {
+-        throw new InvalidInputError("result requires --lane <id>.");
+-      }
+-      lanes = state.lanes.filter((lane) => lane.id === laneId);
+-      if (lanes.length === 0) {
+-        throw new InvalidInputError(`Lane result was not found: ${laneId}.`);
+-      }
+-      if (parsed.flags.has("--wait")) {
+-        if (!parsed.flags.has("--timeout-ms")) {
+-          throw new InvalidInputError("result --wait requires --timeout-ms.");
+-        }
+-        const deadline = Date.now() + boundedTimeout(parsed.flags.get("--timeout-ms"));
+-        while (!isTerminalStatus(lanes[0].status)) {
+-          if (Date.now() >= deadline) {
+-            throw new RuntimeUnavailableError(`Timed out waiting for lane ${laneId}.`);
+-          }
+-          const liveLane = await requestLiveSupervisor(
+-            context,
+-            "result",
+-            { laneId },
+-            io,
+-            dependencies
+-          );
+-          lanes = [liveLane];
+-          if (isTerminalStatus(liveLane.status)) break;
+-          await new Promise((resolve) => setTimeout(resolve, 250));
+-          state = await readState(context.root);
+-          const persisted = state.lanes.find((lane) => lane.id === laneId);
+-          if (!persisted) {
+-            throw new RuntimeUnavailableError(
+-              `Lane disappeared while waiting: ${laneId}.`
+-       
