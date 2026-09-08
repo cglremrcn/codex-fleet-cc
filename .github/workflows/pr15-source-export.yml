@@ -16,11 +16,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build source archive
         shell: bash
-        run: tar --exclude=.git -czf fleet-pr15-source.tgz .
+        run: tar --exclude=.git -czf /tmp/fleet-pr15-source.tgz .
       - name: Upload source archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fleet-pr15-source
-          path: fleet-pr15-source.tgz
+          path: /tmp/fleet-pr15-source.tgz
           if-no-files-found: error
           retention-days: 1
