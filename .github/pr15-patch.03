@@ -1,0 +1,376 @@
+es",
++  "lanes": [{
++    "id": "bounded-task",
++    "role": "implementer",
++    "model": "<exact fleet models id>",
++    "effort": "high",
++    "prompt": "task-specific objective",
++    "verificationPlan": {
++      "start": ["preconditions only"],
++      "completion": ["lane-runnable checks"],
++      "controller": ["checks requiring unavailable DB/browser/build capability"]
++    },
++    "authority": {"sandbox":"workspace-write","process":{"start":true}}
++  }]
++}
++
++Important: modelPolicy belongs at the ROOT, never inside a lane. Prefer <=2 coherent surfaces and <=1 migration per lane; split independent chunks.`,
++  "follow-up": `Usage: fleet follow-up --stdin --json | --contract <file> --json
++
++JSON:
++{"schemaVersion":1,"workspacePath":"/absolute/worktree","laneId":"lane-a","message":"Continue the bounded task."}
++
++Follow-up preserves the owned Codex thread and existing authority.`,
++  cancel: `Usage:
++  fleet cancel <laneId> --workspace <worktree> [--json]          # preview
++  fleet cancel <laneId> --workspace <worktree> --confirm        # one-command confirmed shortcut
++  fleet cancel --stdin --json                                   # compatibility contract preview
++  fleet cancel --stdin --json --confirm                         # exact token/turn compatibility flow
++
++The shortcut still performs an identity-bound server preview before cancellation. Success is reported only after accepted:true. Touched files are returned so cancellation never implies a clean worktree.`,
++  status: `Usage: fleet status [--workspace <worktree>] [--summary] [--all] [--archived] [--json]
++
++Without --workspace, Fleet resolves cwd to its Git worktree root. Archived lanes are hidden unless --archived is supplied. An empty ledger warns when sibling Git worktrees contain Fleet lanes; Fleet does not silently merge their authority.`,
++  result: `Usage: fleet result --lane <id> [--workspace <worktree>] [--summary|--pretty|--full] [--wait] [--timeout-ms <ms>] [--json]
++
++--wait defaults to 600000 ms and blocks on the supervisor's event signal rather than 250 ms shell/status polling. Timeout is returned as a truthful still-running/queued result, including queue blocker data. --full prints the full retained decoded result.`,
++  watch: `Usage: fleet watch [--workspace <worktree>] [--timeout-ms <ms>] [--stall-ms <ms>] [--json]
++
++Waits on ONE existing supervisor for lane-terminal, controller-attention, intervention, queue-stalled, or continuation-unknown. It never creates a supervisor and never calls a model. Default timeout: 4h. Default queued-stall threshold: 20m.`,
++  models: `Usage: fleet models [--workspace <worktree>] [--refresh] [--json]
++
++Returns exact connected-runtime model IDs, discovery timestamp and age. --refresh restarts only an IDLE Fleet-owned Codex app-server; it refuses while lanes/reservations are active. If ~/.codex/config.toml names a model missing from the catalog, Fleet reports that mismatch and a refresh/restart hint instead of inventing an alias.`,
++  reconcile: `Usage:
++  fleet reconcile --lane <id> --workspace <worktree> [--json]
++  fleet reconcile --lane <id> --workspace <worktree> --assume-not-started --evidence-ref <ref> --confirm
++
++First form performs authoritative Codex-history probing only. Manual release of an ambiguous writer reservation requires BOTH explicit evidence and --confirm.`,
++  resolve: `Usage: fleet resolve --lane <id> --workspace <worktree> --evidence-ref <ref> --outcome complete|failed|cancelled --confirm [--json]
++
++Only outcome_unknown/interrupted lanes can be resolved. Evidence is required; this command never fabricates a successful result.`,
++  archive: `Usage: fleet archive --lane <id> --workspace <worktree> [--json]
++
++Archives a terminal lane. Default status hides archived lanes; status --archived includes them. Archive does not delete evidence or Codex history.`,
++  init: `Usage: fleet init --list --json
++   or: fleet init --template research|implementation|verification|image-generation --workspace <path> --objective <text> [--confirmation-ref <ref>] --json
++
++Templates separate start/completion/controller verification gates and include environment-safe verification posture.`,
++  doctor: `Usage: fleet doctor [--workspace <worktree>] [--json]
++
++Read/probe local capabilities. It never widens lane authority.`,
++  projects: `Usage: fleet projects [--json]
++
++Lists registered Fleet workspace ledgers without exposing canonical private paths.`,
++  register: `Usage: fleet register --workspace <worktree> [--name <label>] [--json]`,
++  inventory: `Usage: fleet inventory [--workspace <path>] [--native] [--archived] [--query <literal>] [--limit 1..500] [--cursor <cursor>] [--json]`,
++  inbox: `Usage: fleet inbox [--workspace <worktree>] [--request <id>] [--json]`,
++  "inbox-wait": `Usage: fleet inbox-wait [--workspace <worktree>] [--timeout-ms 1..90000] [--after <cursor>] [--json]`,
++  "inbox-propose": `Usage: fleet inbox-propose --stdin --json | --contract <file> --json`,
++  "inbox-answer": `Usage: fleet inbox-answer --stdin --json | --contract <file> --json`,
++  export: `Usage: fleet export --workspace <worktree> --output <file> [--confirm-token <preview-token>] [--json]`,
++  setup: `Usage: fleet setup [--confirm-token <preview-token>] [--json]`,
++  uninstall: `Usage: fleet uninstall [--confirm-token <preview-token>] [--json]`
++});
++
++export function renderCliHelp(command = null) {
++  if (!command) return ROOT;
++  return HELP[command] ?? `${ROOT}\n\nNo command-specific help is registered for ${String(command)}.`;
++}
+diff --git a/plugins/fleet/scripts/lib/cli.mjs b/plugins/fleet/scripts/lib/cli.mjs
+index 58a86a0..4f23f6d 100644
+--- a/plugins/fleet/scripts/lib/cli.mjs
++++ b/plugins/fleet/scripts/lib/cli.mjs
+@@ -2,6 +2,13 @@ import { waitForInbox } from "./inbox-wait.mjs";
+ import { requestExistingInbox } from "./inbox-client.mjs";
+ import { readFleetInventory, paginateInventory } from "./fleet-inventory.mjs";
+ import { registerWorkspace, listRegisteredWorkspaces } from "./workspace-registry.mjs";
++import { renderCliHelp } from "./cli-help.mjs";
++import {
++  findRelatedWorkspaceLedgers,
++  readConfiguredCodexModel,
++  resolveImplicitWorkspace,
++  validateQualifiedRetryRefs
++} from "./operator-context.mjs";
+ import { spawnSync } from "node:child_process";
+ import fs from "node:fs/promises";
+ import os from "node:os";
+@@ -32,6 +39,7 @@ import {
+   SupervisorRequestTimeoutError,
+   ensureSupervisor,
+   probeExistingSupervisor,
++  readSupervisorManifest,
+   requestSupervisor
+ } from "./supervisor-protocol.mjs";
+ import {
+@@ -57,21 +65,29 @@ const COMMANDS = new Set([
+   "start",
+   "status",
+   "result",
++  "watch",
+   "follow-up",
+   "cancel",
++  "reconcile",
++  "resolve",
++  "archive",
+   "export",
+   "setup",
+   "uninstall"
+ ]);
+ const BOOLEAN_FLAGS = new Set([
++  "--help",
+   "--native", "--archived",
+   "--json",
+   "--stdin",
+   "--confirm",
++  "--refresh",
++  "--assume-not-started",
+   "--wait",
+   "--list",
+   "--all",
+   "--pretty",
++  "--full",
+   "--summary"
+ ]);
+ const VALUE_FLAGS = new Set([
+@@ -83,6 +99,9 @@ const VALUE_FLAGS = new Set([
+   "--output",
+   "--confirm-token",
+   "--timeout-ms",
++  "--stall-ms",
++  "--evidence-ref",
++  "--outcome",
+   "--template",
+   "--objective",
+   "--confirmation-ref",
+@@ -90,49 +109,36 @@ const VALUE_FLAGS = new Set([
+   "--status",
+   "--since"
+ ]);
+-const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "cancel", "inbox-propose", "inbox-answer"]);
++const STRUCTURED_COMMANDS = new Set(["start", "follow-up", "inbox-propose", "inbox-answer"]);
+ const COMMAND_FLAGS = Object.freeze({
+-  inbox: new Set(["--json", "--workspace", "--request"]),
+-  "inbox-wait": new Set(["--json", "--workspace", "--timeout-ms", "--after"]),
+-  "inbox-propose": new Set(["--json", "--stdin", "--contract"]),
+-  "inbox-answer": new Set(["--json", "--stdin", "--contract"]),
+-  projects: new Set(["--json", "--workspace"]),
+-  register: new Set(["--json", "--workspace", "--name"]),
+-  inventory: new Set(["--json", "--workspace", "--native", "--archived", "--query", "--cursor", "--limit"]),
+-  doctor: new Set(["--json", "--workspace"]),
+-  models: new Set(["--json", "--workspace"]),
++  inbox: new Set(["--help", "--json", "--workspace", "--request"]),
++  "inbox-wait": new Set(["--help", "--json", "--workspace", "--timeout-ms", "--after"]),
++  "inbox-propose": new Set(["--help", "--json", "--stdin", "--contract"]),
++  "inbox-answer": new Set(["--help", "--json", "--stdin", "--contract"]),
++  projects: new Set(["--help", "--json", "--workspace"]),
++  register: new Set(["--help", "--json", "--workspace", "--name"]),
++  inventory: new Set(["--help", "--json", "--workspace", "--native", "--archived", "--query", "--cursor", "--limit"]),
++  doctor: new Set(["--help", "--json", "--workspace"]),
++  models: new Set(["--help", "--json", "--workspace", "--refresh"]),
+   init: new Set([
+-    "--json",
+-    "--list",
+-    "--workspace",
+-    "--template",
+-    "--objective",
+-    "--confirmation-ref"
++    "--help", "--json", "--list", "--workspace", "--template", "--objective", "--confirmation-ref"
+   ]),
+-  start: new Set(["--json", "--stdin", "--contract"]),
++  start: new Set(["--help", "--json", "--stdin", "--contract"]),
+   status: new Set([
+-    "--json",
+-    "--workspace",
+-    "--all",
+-    "--limit",
+-    "--status",
+-    "--since",
+-    "--summary"
++    "--help", "--json", "--workspace", "--all", "--archived", "--limit", "--status", "--since", "--summary"
+   ]),
+   result: new Set([
+-    "--json",
+-    "--workspace",
+-    "--lane",
+-    "--wait",
+-    "--timeout-ms",
+-    "--pretty",
+-    "--summary"
++    "--help", "--json", "--workspace", "--lane", "--wait", "--timeout-ms", "--pretty", "--full", "--summary"
+   ]),
+-  "follow-up": new Set(["--json", "--stdin", "--contract"]),
+-  cancel: new Set(["--json", "--stdin", "--contract", "--confirm"]),
+-  export: new Set(["--json", "--workspace", "--output", "--confirm-token"]),
+-  setup: new Set(["--json", "--workspace", "--confirm-token"]),
+-  uninstall: new Set(["--json", "--workspace", "--confirm-token"])
++  watch: new Set(["--help", "--json", "--workspace", "--timeout-ms", "--stall-ms"]),
++  "follow-up": new Set(["--help", "--json", "--stdin", "--contract"]),
++  cancel: new Set(["--help", "--json", "--stdin", "--contract", "--workspace", "--lane", "--confirm"]),
++  reconcile: new Set(["--help", "--json", "--workspace", "--lane", "--assume-not-started", "--evidence-ref", "--confirm"]),
++  resolve: new Set(["--help", "--json", "--workspace", "--lane", "--evidence-ref", "--outcome", "--confirm"]),
++  archive: new Set(["--help", "--json", "--workspace", "--lane"]),
++  export: new Set(["--help", "--json", "--workspace", "--output", "--confirm-token"]),
++  setup: new Set(["--help", "--json", "--workspace", "--confirm-token"]),
++  uninstall: new Set(["--help", "--json", "--workspace", "--confirm-token"])
+ });
+ 
+ class CliError extends Error {
+@@ -186,13 +192,17 @@ function boundedText(value, label, maximum = 512) {
+ 
+ function parseArguments(argv) {
+   if (!Array.isArray(argv) || argv.length === 0) {
+-    throw new InvalidInputError(`A command is required: ${[...COMMANDS].join(", ")}.`);
++    throw new InvalidInputError(`A command is required: ${[...COMMANDS].join(", ")}. Run fleet --help.`);
++  }
++  if (["--help", "-h"].includes(argv[0])) {
++    if (argv.length !== 1) throw new InvalidInputError("fleet --help does not accept additional arguments.");
++    return { command: "help", flags: new Map(), positionals: [] };
+   }
+-  const [command, ...tokens] = argv;
++  const [command, ...rawTokens] = argv;
+   if (!COMMANDS.has(command)) {
+-    throw new InvalidInputError(`Unknown command: ${String(command)}.`);
++    throw new InvalidInputError(`Unknown command: ${String(command)}. Run fleet --help.`);
+   }
+-
++  const tokens = rawTokens.map((token) => token === "-h" ? "--help" : token);
+   const flags = new Map();
+   const positionals = [];
+   for (let index = 0; index < tokens.length; index += 1) {
+@@ -202,7 +212,7 @@ function parseArguments(argv) {
+       continue;
+     }
+     if (!BOOLEAN_FLAGS.has(token) && !VALUE_FLAGS.has(token)) {
+-      throw new InvalidInputError(`Unknown flag for ${command}: ${token}.`);
++      throw new InvalidInputError(`Unknown flag for ${command}: ${token}. Run fleet ${command} --help.`);
+     }
+     if (flags.has(token) && token !== "--status") {
+       throw new InvalidInputError(`Duplicate flag: ${token}.`);
+@@ -215,48 +225,59 @@ function parseArguments(argv) {
+     if (value === undefined || value.startsWith("--")) {
+       throw new InvalidInputError(`Flag ${token} requires a value.`);
+     }
+-    if (token === "--status") {
+-      flags.set(token, [...(flags.get(token) ?? []), value]);
+-    } else {
+-      flags.set(token, value);
+-    }
++    if (token === "--status") flags.set(token, [...(flags.get(token) ?? []), value]);
++    else flags.set(token, value);
+     index += 1;
+   }
+ 
+-  if (positionals.length > 0) {
++  for (const flag of flags.keys()) {
++    if (!COMMAND_FLAGS[command].has(flag)) {
++      throw new InvalidInputError(`Flag ${flag} is not valid for ${command}. Run fleet ${command} --help.`);
++    }
++  }
++  if (flags.has("--help")) {
++    if (positionals.length > 0 || flags.size > 1) {
++      throw new InvalidInputError(`${command} --help does not accept other arguments.`);
++    }
++    return { command: "help", helpTarget: command, flags, positionals: [] };
++  }
++  if (positionals.length > 0 && command !== "cancel") {
+     if (STRUCTURED_COMMANDS.has(command)) {
+       throw new InvalidInputError(
+-        `${command} accepts task data only through a JSON contract file or stdin; `
+-        + "inline task text is not allowed."
++        `${command} accepts task data only through a JSON contract file or stdin; inline task text is not allowed.`
+       );
+     }
+-    throw new InvalidInputError(`Unexpected positional input for ${command}.`);
++    throw new InvalidInputError(`Unexpected positional input for ${command}. Run fleet ${command} --help.`);
+   }
+-  for (const flag of flags.keys()) {
+-    if (!COMMAND_FLAGS[command].has(flag)) {
+-      throw new InvalidInputError(`Flag ${flag} is not valid for ${command}.`);
+-    }
++  if (command === "cancel") {
++    if (positionals.length > 1) throw new InvalidInputError("cancel accepts at most one positional lane ID.");
++    if (positionals.length === 1 && flags.has("--lane")) throw new InvalidInputError("Use either cancel <laneId> or --lane <laneId>, not both.");
+   }
+   if (flags.has("--stdin") && flags.has("--contract")) {
+     throw new InvalidInputError("Use either --contract or --stdin, not both.");
+   }
+   if (STRUCTURED_COMMANDS.has(command)) {
+     if (!flags.has("--stdin") && !flags.has("--contract")) {
+-      throw new InvalidInputError(
+-        `${command} requires a JSON contract file or stdin.`
+-      );
++      throw new InvalidInputError(`${command} requires a JSON contract file or stdin. Run fleet ${command} --help.`);
++    }
++  }
++  if (command === "cancel") {
++    const shortcut = positionals.length === 1 || flags.has("--lane");
++    const structured = flags.has("--stdin") || flags.has("--contract");
++    if (!shortcut && !structured) {
++      throw new InvalidInputError("cancel requires a lane ID or a JSON contract. Run fleet cancel --help.");
++    }
++    if (shortcut && structured) {
++      throw new InvalidInputError("Use either the short cancel lane ID form or a structured cancel contract, not both.");
+     }
+-  } else if (flags.has("--stdin") || flags.has("--contract") || flags.has("--confirm")) {
+-    throw new InvalidInputError(`Structured input flags are not valid for ${command}.`);
+   }
+   if (flags.has("--all") && flags.has("--limit")) {
+     throw new InvalidInputError("Use either --all or --limit, not both.");
+   }
+-  if (flags.has("--pretty") && flags.has("--summary")) {
+-    throw new InvalidInputError("Use either --pretty or --summary, not both.");
+-  }
++  const resultModes = ["--pretty", "--summary", "--full"].filter((flag) => flags.has(flag));
++  if (resultModes.length > 1) throw new InvalidInputError("Use only one of --pretty, --summary, or --full.");
+ 
+-  return { command, flags };
++  return { command, flags, positionals };
+ }
+ 
+ function decodeUtf8(buffer) {
+@@ -369,6 +390,36 @@ function boundedTimeout(value) {
+   return milliseconds;
+ }
+ 
++function boundedWatchTimeout(value) {
++  if (!/^\d+$/u.test(value ?? "")) throw new InvalidInputError("--timeout-ms must be an integer.");
++  const milliseconds = Number(value);
++  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1 || milliseconds > 14_400_000) {
++    throw new InvalidInputError("watch --timeout-ms must be between 1 and 14400000.");
++  }
++  return milliseconds;
++}
++
++function boundedStall(value) {
++  if (!/^\d+$/u.test(value ?? "")) throw new InvalidInputError("--stall-ms must be an integer.");
++  const milliseconds = Number(value);
++  if (!Number.isSafeInteger(milliseconds) || milliseconds < 60_000 || milliseconds > 86_400_000) {
++    throw new InvalidInputError("--stall-ms must be between 60000 and 86400000.");
++  }
++  return milliseconds;
++}
++
++function boundedLaneId(value, label = "lane id") {
++  const result = boundedText(value, label, 64);
++  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(result)) {
++    throw new InvalidInputError(`${label} must be URL-safe (letters, numbers, _ or -).`);
++  }
++  return result;
++}
++
++function boundedEvidenceRef(value) {
++  return boundedText(value, "evidence-ref", 512);
++}
++
+ function boundedStatusLimit(value) {
+   if (!/^\d+$/u.test(value ?? "")) {
+     throw new InvalidInputError("--limit must be an integer.");
+@@ -475,14 +526,44 @@ function renderResultSummary(payload) {
+   return lines.join("\n");
+ }
+ 
+-async function stateContext(workspacePath, io) {
+-  const workspace = path.resolve(workspacePath ?? io.cwd);
+-  const key = await workspaceKey(workspace);
++async function stateContext(workspacePath, io, dependencies = {}, options = {}) {
++  const candidate = p
