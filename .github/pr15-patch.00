@@ -1,0 +1,225 @@
+diff --git a/README.md b/README.md
+index abb2418..06d1bcb 100644
+--- a/README.md
++++ b/README.md
+@@ -429,6 +429,25 @@ python scripts/render-preview-gif.py previews.json /path/to/mono.ttf docs/assets
+ On Windows the checked-in images use Consolas and Segoe UI Symbol. The images show source behavior;
+ renderer fixture tests and live terminal/account tests remain separate verification steps.
+ 
++## Operator recovery and low-token background work
++
++Fleet's incident-driven operator surface is self-describing: `fleet --help` and `fleet <command> --help`
++show exact shapes. `result --wait` uses supervisor events with a 10-minute default instead of shell polling;
++`watch` observes one existing supervisor without creating a model turn. The plugin's async Stop hook can wake
++an idle Claude only on meaningful terminal/controller/intervention/stall transitions, so long-running lanes
++do not need fragile `until ... sleep` loops.
++
++`reconcile`, evidence-backed `resolve`, and `archive` provide a supported path out of ambiguous continuation
++reservations and crowded terminal history. `cancel <laneId>` adds a human-friendly preview/confirm shortcut
++while preserving identity binding and returning touched-file evidence. `models --refresh` exposes catalog age
++and refreshes only an idle Fleet-owned app-server. Default status hides archived lanes and warns rather than
++lying when the selected Git worktree ledger is empty but sibling worktree ledgers contain lanes.
++
++Generated implementation/verifier contracts separate start/completion/controller gates and record verification
++as passed/failed/skipped/blocked. They explicitly guard Windows scratch-path/mutation false greens, wrong-worktree
++Python provenance, source-pinning tests, gate blind spots, and visual claims without browser/image evidence.
++See [Harness operations](docs/HARNESS_OPERATIONS.md) and [Troubleshooting](docs/TROUBLESHOOTING.md).
++
+ ## Project guides
+ 
+ - [Architecture](ARCHITECTURE.md)
+@@ -459,3 +478,5 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before a broad change. Bug and feature f
+ in GitHub. Report vulnerabilities through the private path described in [SECURITY.md](SECURITY.md),
+ never in a public issue. Do not attach credentials, prompts, customer data or unsanitized support
+ output.
++
++- [Sep 7–8 incident findings closure matrix](docs/reviews/2026-09-09-incident-findings-closure.md)
+diff --git a/docs/HARNESS_OPERATIONS.md b/docs/HARNESS_OPERATIONS.md
+index 732ac7f..cb0fde8 100644
+--- a/docs/HARNESS_OPERATIONS.md
++++ b/docs/HARNESS_OPERATIONS.md
+@@ -119,3 +119,82 @@ not permanently poison the later write queue. None of these changes retries an e
+ The [dated harness review](reviews/2026-09-06-harness-review.md) preserves the earlier review baseline.
+ Registered-project/native inventory, saved views and a shared intervention inbox are now integrated.
+ Revision-bound verification and full multi-worktree scheduling remain separate architectural work.
++
++## Incident-driven operator recovery and event delivery
++
++The operator CLI is self-describing. Use `fleet --help` or `fleet <command> --help`; do not inspect a
++versioned plugin cache directory to discover syntax. Invoke only the current plugin root:
++
++```sh
++node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" --help
++```
++
++### Wait without shell polling
++
++`result --wait` defaults to 10 minutes and uses the supervisor's state-change signal. A timeout returns
++the still-current lane and `timedOut:true`; it does not convert a running/queued lane into failure.
++For broader background observation, `watch` waits on one existing supervisor for a meaningful
++terminal/controller/intervention/queue-stall/continuation-unknown transition. It does not create a
++supervisor or model turn.
++
++Fleet also installs an `asyncRewake` Stop hook. When Claude becomes idle while Fleet has live work, one
++bounded watcher is registered for that Claude session/workspace. A meaningful transition exits with
++feedback that wakes Claude to inspect exact Fleet evidence and continue the original user request.
++Duplicate watchers are suppressed; timeout/no-supervisor exits silently. This replaces `until ... sleep`
++loops without creating a reasoning-agent polling loop.
++
++### Recover ambiguous continuation reservations
++
++Probe first:
++
++```sh
++node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" reconcile --workspace . --lane <id> --json
++```
++
++Fleet releases a writer reservation automatically only when runtime history proves the follow-up did not
++start. If runtime history proves a turn did start, Fleet preserves/rebinds that truth. If evidence remains
++ambiguous, manual `--assume-not-started` requires an explicit evidence reference plus `--confirm`; do not
++edit `state.json` out of band.
++
++An `outcome_unknown`/`interrupted` lane can be resolved only with evidence:
++
++```sh
++node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs" resolve --workspace . --lane <id> \
++  --evidence-ref <ref> --outcome complete --confirm --json
++```
++
++After terminal truth is settled, `archive --lane <id>` hides the lane from default status without deleting
++its evidence/history. `status --archived` includes archived lanes.
++
++### Cancellation without losing touched-file truth
++
++`cancel <laneId> --workspace .` is the short preview. It returns the exact thread/turn identity plus bounded
++`touchedFiles`. A human typing the CLI may add `--confirm`; Fleet internally performs a fresh identity-bound
++preview before the cancellation request. Claude-controlled cancellation still shows the preview to the
++user and confirms the exact structured token/identity. Cancellation never reverts touched files.
++
++### Worktree ledgers and model catalog freshness
++
++Without `--workspace`, Fleet resolves cwd to its actual Git worktree root. An explicitly supplied workspace
++is never silently rewritten. If that ledger is empty while registered sibling worktrees in the same Git
++repository have lanes, status emits a bounded `workspaceWarning`; it never merges their control authority.
++Cross-worktree retry lineage uses `<workspaceKey>:<laneId>` and is validated against the registered source
++ledger before admission.
++
++`models` reports `discoveredAt`/`ageMs`. If the root Codex config names a model absent from the connected
++catalog, Fleet reports the mismatch. `models --refresh` may restart only an idle Fleet-owned app-server; it
++never guesses an alias or changes the user's configured model.
++
++### Verification and false-green prevention
++
++Generated contracts separate `verificationPlan.start`, `.completion`, and `.controller`. A completion-only
++build/database/browser limitation must not become a reason to spend a full turn and write nothing. Checks
++are recorded as `passed`, `failed`, `skipped`, or `blocked`. Read-only pytest can use
++`PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider` when cache writes are incidental. Mutation checks must
++assert the intended mutation actually applied before interpreting a green result; Windows tasks must not
++assume `/tmp` is visible to native tooling. Visual/CSS/layout claims require browser/image evidence or stay
++explicitly unverified.
++
++### Cancellation is an interrupt protocol, not an undo
++
++The short human CLI form still performs the same identity-bound preview internally. `accepted: true` means Codex accepted the interrupt request; Fleet does not release writer capacity or claim the lane is stopped until `terminalObserved: true` arrives. If acknowledgement is delayed, status remains live/cancelling and the completion watcher will surface the eventual terminal transition. `touchedFiles` is evidence only; cancellation never rolls those files back.
+diff --git a/docs/TROUBLESHOOTING.md b/docs/TROUBLESHOOTING.md
+index 7dc7900..e4f4b5e 100644
+--- a/docs/TROUBLESHOOTING.md
++++ b/docs/TROUBLESHOOTING.md
+@@ -146,3 +146,37 @@ node scripts/check-doc-links.mjs
+ Platform-specific failures should include the runner/OS, Node version, Claude version, Codex
+ version and the exact failing command. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the expected
+ report shape.
++
++## A lane is queued but nothing is actually running
++
++Read `status --summary --json` and inspect `queueBlocker`. Fleet distinguishes capacity, active-writer,
++unresolved-continuation reservation, and scheduler ordering. `queued` is not proof of progress. If an
++unknown follow-up reservation holds the writer lock, run `reconcile --lane <id>`; never delete the field
++from state storage manually.
++
++## `status` says no lanes but I know a worktree has them
++
++Fleet state is keyed to the physical worktree. Omitting `--workspace` resolves cwd to the current Git
++worktree root. If an explicitly selected/root ledger is empty while sibling registered worktrees have lanes,
++status returns `workspaceWarning` with bounded related-ledger counts. Use the exact worktree or `fleet projects`;
++Fleet deliberately does not merge writer/control authority across worktrees.
++
++## I upgraded Codex but a new model is missing
++
++Run `models --json` and inspect `discoveredAt`, `ageMs`, and `configuredModelPresent`. If the user's root
++Codex config names a model missing from the current app-server catalog, run `models --refresh` only when
++Fleet is idle. If still absent, verify the installed Codex version/account capability. Do not hard-code a
++model alias or fall back silently.
++
++## A completion gate is impossible inside the lane sandbox
++
++Do not make it a start gate. Generated templates separate start, completion, and controller checks. A real
++DB, browser rendering, full build subprocess, network font download, or read-only-incompatible cache write
++can be `blocked`/`skipped` and delegated to the controller. This is different from a failed implementation.
++For read-only pytest, prefer `PYTHONDONTWRITEBYTECODE=1` plus `-p no:cacheprovider` where applicable.
++
++## I cancelled a lane but files changed
++
++This is expected: cancellation stops owned execution; it is not rollback. The preview and accepted cancel
++response include bounded `touchedFiles`. Inspect/preserve/revert those changes with normal Git/project tools
++before assuming the worktree is clean.
+diff --git a/docs/reviews/2026-09-09-incident-findings-closure.md b/docs/reviews/2026-09-09-incident-findings-closure.md
+new file mode 100644
+index 0000000..ad31ee7
+--- /dev/null
++++ b/docs/reviews/2026-09-09-incident-findings-closure.md
+@@ -0,0 +1,46 @@
++# Sep 7–8 Fleet incident findings — closure matrix
++
++This file maps the measured operator incidents to the source changes in the stacked hardening series.
++It distinguishes a Fleet fix from an external project prerequisite. “Guarded” means Fleet cannot create
++the missing external capability, but it now fails early or records `skipped` / `blocked` / `unverified`
++instead of turning missing evidence into a green result.
++
++| Finding | Disposition | Closure |
++| --- | --- | --- |
++| 1.1 / 3.1 invalid final JSON after useful mutable work | Fixed in #14 | One same-thread report-only repair, read-only/network-off; a second malformed report remains reconciliation-required. |
++| 1.2 / 2.1 sandbox gate failures (`spawn EPERM`, Python environment) | Fixed/guarded | Zero-inference nested-process and Python provenance preflight in #14; #15 templates route unavailable full-build/DB/browser checks to explicit controller/skipped/blocked states. |
++| 1.3 / 3.10 oversized multi-surface lanes | Fixed as orchestration policy | Shared stable context is separated from task text; default topology is <=2 coherent surfaces / <=1 migration per lane. Fleet does not use brittle semantic auto-splitting heuristics. |
++| 1.4 / 2.8 cancel and terminal-history ergonomics | Fixed in #15 | `cancel <laneId>`, `archive`, `resolve`, `reconcile`, help/examples, identity-bound confirmation and retained history. |
++| 1.5 misplaced `modelPolicy` / stale model catalog | Fixed across #14/#15 | Root-placement diagnostic; catalog timestamp/age; idle `models --refresh`; config/catalog mismatch hint without alias substitution. |
++| 1.6 / 3.5 wrong worktree ledger | Fixed in #15 | Implicit cwd resolves to its Git worktree root. Explicit workspace stays exact and an empty ledger warns about sibling worktree ledgers instead of silently saying “nothing exists.” |
++| 1.7 / 2.2 completion gate mistaken for start gate | Fixed across #14/#15 | Structured `verificationPlan.start/completion/controller`; templates explicitly prohibit treating completion gates as permission to avoid implementation. |
++| 1.8 / 1.11 missing completion notification | Fixed in #15 | One local event wait per idle Claude session via `Stop` + `asyncRewake`; terminal/controller/inbox/stall/unknown-continuation events; private cursor closes fast-finish attach races; no model polling loop. |
++| 1.9 / 2.4 Windows `/tmp` and mutation false-green | Fixed in #15 policy | Workspace/native scratch only; mutation must assert that it actually changed the target before gate interpretation. |
++| 1.10 / 2.10 token economy | Fixed/observable | #14 `sharedContext`, fresh-vs-cached input and cache-hit telemetry; #15 event waits and `noMutationObserved` prevent unnecessary controller/status/model turns. |
++| 1.11 fake “running/queued” progress | Fixed across #14/#15 | Queue blockers name capacity/writer/reservation holder and duration; stalled queues wake Claude; terminal writers with no observed mutation are explicitly flagged. |
++| 1.12 / 3.9 sibling-worktree Python environment | Fixed in #14 | Local `.venv` provenance detects editable distributions outside the admitted worktree before inference; an unproven environment is not reported green. |
++| 2.3 `result --wait` polling/timeouts | Fixed in #15 | Default bounded timeout; one supervisor event wait; timeout returns current lane + blocker as “still running/queued,” not lane failure. |
++| 2.5 gate blind-spot optimization | Guarded in #15 | Standard execution posture forbids passing one gate by moving behavior/data into another gate’s blind spot; verification evidence makes the tradeoff reviewable. |
++| 2.6 source-pinning instead of behavior verification | Guarded in #15 | Templates require behavior checks or explicit rationale when exact source text is itself the contract. Static source-pin detection is intentionally not guessed. |
++| 2.7 report-text anomaly | Fixed/guarded in #15 | Actual Unicode replacement characters are rejected as decode corruption; unusual valid scripts are not heuristically called corrupt. Parent verifies artifact/source before changing code to match prose. |
++| 2.9 cancellation while writes may still be in flight | Fixed in #15 | Interrupt acknowledgement is not terminal acknowledgement. Writer capacity stays reserved until terminal observation; response says `terminalObserved`; touched-file evidence is returned and no rollback is implied. |
++| 2.11 visual/CSS claims without render evidence | Guarded in #15 | Visual/layout claims require browser/image evidence; otherwise verification is `skipped`, `blocked`, or explicitly unverified. |
++| 3.2 verifier cache/temp cleanup blockers | Fixed/guarded in #15 | Read-only verification template uses `PYTHONDONTWRITEBYTECODE=1` and pytest `-p no:cacheprovider` where appropriate; controller-only gates are not falsely claimed. |
++| 3.3 / 3.15 old plugin-cache runtime path | Fixed in #15 | Skills use `${CLAUDE_PLUGIN_ROOT}` only. Version mismatch blocks mutating Fleet commands until ownership-verified setup/reload; no manual cache-version selection. |
++| 3.4 stale Codex model process | Fixed in #15 | Catalog provenance + idle process refresh + configured-model mismatch guidance. |
++| 3.6 truncated verifier evidence | Fixed across #14/#15 | Longer retained structured evidence plus `result --full`; compact status remains bounded. |
++| 3.7 undiscoverable follow-up syntax | Fixed in #15 | Root and per-command `--help` with exact JSON examples. |
++| 3.8 unavailable real PostgreSQL tests | Guarded, external prerequisite remains external | Verification results distinguish passed/failed/skipped/blocked and name the actual environment. Fleet does not fabricate a PostgreSQL target. |
++| 3.11 contradictory/underspecified parent brief | Guarded in #15 orchestration | Parent Claude performs edge-case/contradiction review before admission; genuine unresolved user choices still stop rather than being guessed by a worker. |
++| 3.13 >1 MiB persisted-thread resume | Fixed in #14 | `excludeTurns:true`, bounded paged recent history, larger bounded broker budget and specific diagnostics. |
++| 3.14 ambiguous continuation permanently holding writer lock | Fixed across #14/#15 | Runtime probing can safely release proven-not-started reservations or rebind started truth; manual release requires evidence; queue status names the lock; CLI exposes `reconcile`. |
++| 3.15 cross-worktree retry lineage | Fixed across #14/#15 | Qualified `<workspaceKey>:<laneId>` lineage is validated against registered source state; unknown/interrupted sources require reconciliation evidence. |
++
++## Deliberate external boundaries
++
++Fleet does **not** pretend to fix project-specific missing infrastructure such as a real PostgreSQL test
++target, a repository-local font asset, or browser access. It also does not guess whether a source-text test
++is semantically wrong or automatically split arbitrary prose into semantic subprojects. Those are judgment or
++project-capability boundaries. The harness now makes each boundary explicit before or in verification, so a
++missing capability is not silently converted into success and does not consume a needless worker turn when a
++zero-inference preflight can prove the blocker.
+diff --git a/package.json b/package.json
+index 3fd038f..6d15793 100644
+--- a/package.json
++++ b/package.json
+@@ -19,7 +19,7 @@
+     "test:pty": "node --test tests/pty-console.test.mjs",
+     "smoke:live": "node scripts/run-live-smoke.mjs --confirm-live-account",
+     "test:security": "node --test tests/process-ownership.test.mjs tests/property-input.test.mjs tes
