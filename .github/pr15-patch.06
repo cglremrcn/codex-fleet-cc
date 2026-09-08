@@ -1,0 +1,358 @@
+the environment actually exercised.",
++      "Completion gates: Re-run read-only-compatible checks and attempt to falsify behavior. For pytest, prefer PYTHONDONTWRITEBYTECODE=1 and -p no:cacheprovider when cache writes are unnecessary.",
++      "Controller gates: If a check requires cache/temp writes, a real PostgreSQL target, subprocess capability, browser rendering, or other unavailable authority, mark that check blocked/skipped and hand the exact gate to the controller.",
++      "Visual evidence: CSS/layout/optical-size claims require browser/image inspection; source/render strings alone cannot prove final rendering.",
+       "Stop conditions: Stop when evidence is missing, ambiguous, environment-mismatched, or out of authority.",
+-      "Cleanup: Preserve all inspected artifacts and remove only verifier-owned temporary resources.",
++      "Cleanup: Preserve inspected artifacts; do not make cleanup writes merely to satisfy a template.",
+       EXECUTION_POSTURE
+     ].join("\n");
+   }
+@@ -97,9 +150,10 @@ function promptFor(name, objective) {
+     "Inputs: Use Codex built-in $imagegen (GPT Image 2); name exact source images when editing is requested.",
+     "Exclusions: Do not use API-key scripts, another provider, network fallback, copyrighted characters, or unapproved text/logos.",
+     "Authority: Write only inside the approved workspace and perform one confirmed image generation; no external effects.",
+-    "Capability evidence: If $imagegen is unavailable or denied in this lane, stop without substituting another generator.",
++    "Start gates: If $imagegen is unavailable or denied in this lane, stop before spending an image turn; do not substitute another generator.",
+     "Deliverable: Copy the selected result from generated_images to a new workspace path and return that workspace-relative path.",
+-    "Verification: Verify file existence, type, dimensions, and visual fit. The parent Claude must open the returned image with its Read tool before presenting it.",
++    "Completion gates: Verify file existence/type/dimensions. Do not call visual fit passed without actual visual inspection.",
++    "Controller gates: Parent Claude must open the returned image with its Read tool and perform visual QA; consequential work can add a fresh visual verifier.",
+     "Stop conditions: Stop on missing artifact, wrong provider, denied tool, ambiguous composition, or any need for broader authority.",
+     "Cleanup: Preserve the delivered image and source images; remove only lane-owned intermediate files.",
+     EXECUTION_POSTURE
+@@ -132,6 +186,7 @@ export function buildStartContractTemplate(options) {
+       model: "gpt-5.6-sol",
+       effort: "medium",
+       prompt: promptFor(definition.name, options.objective),
++      verificationPlan: verificationPlanFor(definition.name),
+       authority: authority({ writable, imageGenerate }),
+       checkoutKey: `${definition.name}-checkout`,
+       priority: "normal"
+diff --git a/plugins/fleet/scripts/lib/lane-outcome.mjs b/plugins/fleet/scripts/lib/lane-outcome.mjs
+index 36d8355..354b422 100644
+--- a/plugins/fleet/scripts/lib/lane-outcome.mjs
++++ b/plugins/fleet/scripts/lib/lane-outcome.mjs
+@@ -151,8 +151,8 @@ export const LANE_OUTCOME_SCHEMA = Object.freeze({
+ });
+ 
+ function boundedText(value, label, maximum, allowEmpty = false) {
+-  if (typeof value !== "string" || value.length > maximum || value.includes("\0")) {
+-    throw new TypeError(`${label} must be a safe string no longer than ${maximum} characters.`);
++  if (typeof value !== "string" || value.length > maximum || value.includes("\0") || value.includes("\uFFFD")) {
++    throw new TypeError(`${label} must be valid decoded text with no null/replacement characters and no longer than ${maximum} characters.`);
+   }
+   const text = redactText(value).trim();
+   if (!allowEmpty && !text) throw new TypeError(`${label} cannot be empty.`);
+diff --git a/plugins/fleet/scripts/lib/operator-context.mjs b/plugins/fleet/scripts/lib/operator-context.mjs
+new file mode 100644
+index 0000000..e051aa2
+--- /dev/null
++++ b/plugins/fleet/scripts/lib/operator-context.mjs
+@@ -0,0 +1,147 @@
++import fs from "node:fs/promises";
++import path from "node:path";
++import { spawnSync } from "node:child_process";
++
++import { resolveOwnedPath, workspaceKey } from "./paths.mjs";
++import { readWorkspaceState } from "./safe-state.mjs";
++import {
++  listRegisteredWorkspaces,
++  resolveRegisteredWorkspace
++} from "./workspace-registry.mjs";
++
++const MAX_CONFIG_BYTES = 256 * 1024;
++const MAX_RELATED_LEDGERS = 16;
++
++function safeSpawn(workspace, args, options = {}) {
++  const run = options.spawnSync ?? spawnSync;
++  return run("git", args, {
++    cwd: workspace,
++    encoding: "utf8",
++    maxBuffer: 128 * 1024,
++    shell: false,
++    timeout: 2_000,
++    windowsHide: true
++  });
++}
++
++function firstLine(result) {
++  if (result?.status !== 0 || result?.error) return null;
++  const value = String(result.stdout ?? "").trim().split(/\r?\n/u)[0];
++  return value || null;
++}
++
++/** Resolve only implicit CWDs to their actual Git worktree root. Explicit --workspace stays exact. */
++export function resolveImplicitWorkspace(candidate, options = {}) {
++  const absolute = path.resolve(candidate);
++  if (options.implicit !== true) return absolute;
++  const top = firstLine(safeSpawn(absolute, ["rev-parse", "--show-toplevel"], options));
++  return top && path.isAbsolute(top) ? path.resolve(top) : absolute;
++}
++
++export function gitCommonDirectory(workspace, options = {}) {
++  const value = firstLine(safeSpawn(workspace, ["rev-parse", "--git-common-dir"], options));
++  if (!value) return null;
++  return path.resolve(workspace, value);
++}
++
++async function canonical(value) {
++  try { return await fs.realpath(value); }
++  catch { return path.resolve(value); }
++}
++
++/**
++ * Warn instead of silently merging ledgers when sibling worktrees contain Fleet state.
++ * Returned data contains keys/names/counts, never private paths.
++ */
++export async function findRelatedWorkspaceLedgers(context, options = {}) {
++  const readState = options.readState ?? readWorkspaceState;
++  const listProjects = options.listRegisteredWorkspaces ?? listRegisteredWorkspaces;
++  const resolveProject = options.resolveRegisteredWorkspace ?? resolveRegisteredWorkspace;
++  const currentCommon = gitCommonDirectory(context.workspace, options);
++  if (!currentCommon) return null;
++  const common = await canonical(currentCommon);
++  let registry;
++  try { registry = await listProjects(context.dataDir); }
++  catch { return null; }
++  const related = [];
++  for (const project of registry.projects ?? []) {
++    if (project.workspaceKey === context.key || project.registered !== true) continue;
++    if (related.length >= MAX_RELATED_LEDGERS) break;
++    try {
++      const resolved = await resolveProject(context.dataDir, project.workspaceKey);
++      const otherCommon = gitCommonDirectory(resolved.workspacePath, options);
++      if (!otherCommon || await canonical(otherCommon) !== common) continue;
++      const root = resolveOwnedPath(context.dataDir, "workspaces", project.workspaceKey);
++      const state = await readState(root);
++      const visible = (state.lanes ?? []).filter((lane) => !lane.archivedAt);
++      if (visible.length === 0) continue;
++      related.push(Object.freeze({
++        workspaceKey: project.workspaceKey,
++        name: project.name,
++        laneCount: visible.length,
++        activeCount: visible.filter((lane) => ["queued", "starting", "running"].includes(lane.status)).length,
++        attentionCount: visible.filter((lane) => lane.controllerRequest || ["blocked", "interrupted", "outcome_unknown"].includes(lane.status)).length
++      }));
++    } catch {
++      // A stale/unreadable sibling registration cannot make the current ledger unsafe.
++    }
++  }
++  if (related.length === 0) return null;
++  return Object.freeze({
++    kind: "related-worktree-ledgers",
++    message: "This Fleet ledger has no visible lanes, but related Git worktrees have Fleet lanes. Use the exact worktree workspace or `fleet projects`; Fleet will not merge control authority across ledgers.",
++    relatedLedgerCount: related.length,
++    relatedLaneCount: related.reduce((sum, item) => sum + item.laneCount, 0),
++    ledgers: Object.freeze(related)
++  });
++}
++
++/** Read only the top-level Codex model preference; never parse or return other config values. */
++export async function readConfiguredCodexModel(io, options = {}) {
++  const home = options.codexHome
++    ?? io.env.CODEX_HOME
++    ?? path.join(io.home, ".codex");
++  const configPath = path.join(path.resolve(home), "config.toml");
++  try {
++    const metadata = await fs.lstat(configPath);
++    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_CONFIG_BYTES) return null;
++    const text = await fs.readFile(configPath, "utf8");
++    let inTable = false;
++    for (const rawLine of text.split(/\r?\n/u)) {
++      const line = rawLine.trim();
++      if (!line || line.startsWith("#")) continue;
++      if (line.startsWith("[")) { inTable = true; continue; }
++      if (inTable) continue;
++      const match = /^model\s*=\s*(["'])([^"'\r\n]{1,80})\1\s*(?:#.*)?$/u.exec(line);
++      if (match && !/[\u0000-\u001f\u007f]/u.test(match[2])) return match[2];
++    }
++  } catch (error) {
++    if (error?.code !== "ENOENT") return null;
++  }
++  return null;
++}
++
++export async function validateQualifiedRetryRefs(contract, context, options = {}) {
++  const resolveProject = options.resolveRegisteredWorkspace ?? resolveRegisteredWorkspace;
++  const readState = options.readState ?? readWorkspaceState;
++  for (const lane of contract.lanes ?? []) {
++    if (typeof lane.retryOf !== "string" || !lane.retryOf.includes(":")) continue;
++    const separator = lane.retryOf.indexOf(":");
++    const sourceKey = lane.retryOf.slice(0, separator);
++    const sourceLaneId = lane.retryOf.slice(separator + 1);
++    let source;
++    try { source = await resolveProject(context.dataDir, sourceKey); }
++    catch {
++      throw new Error(`Qualified retry source workspace is not registered or readable: ${sourceKey}.`);
++    }
++    const sourceRoot = resolveOwnedPath(context.dataDir, "workspaces", source.workspaceKey);
++    const state = await readState(sourceRoot);
++    const prior = (state.lanes ?? []).find((candidate) => candidate.id === sourceLaneId);
++    if (!prior) throw new Error(`Qualified retry source lane was not found: ${lane.retryOf}.`);
++    if (["outcome_unknown", "interrupted"].includes(prior.status) && !lane.reconciliationRef) {
++      throw new Error(
++        `Qualified retry source ${lane.retryOf} is ${prior.status}; provide reconciliationRef before a new worktree retries it.`
++      );
++    }
++  }
++}
+diff --git a/plugins/fleet/scripts/lib/plain-status.mjs b/plugins/fleet/scripts/lib/plain-status.mjs
+index 9f48274..e4ba366 100644
+--- a/plugins/fleet/scripts/lib/plain-status.mjs
++++ b/plugins/fleet/scripts/lib/plain-status.mjs
+@@ -82,6 +82,16 @@ export function renderPlainStatus(snapshot = {}) {
+     `Runtime ${field(runtime.health)}, protocol ${field(runtime.protocol)}`,
+     `Showing ${selection.shown}/${selection.total} lanes.`
+   ];
++  if (Number.isSafeInteger(snapshot.archivedCount) && snapshot.archivedCount > 0) {
++    lines.push(`${snapshot.archivedCount} archived lane(s) hidden unless status --archived is used.`);
++  }
++  if (snapshot.workspaceWarning?.message) {
++    lines.push(`WORKSPACE WARNING: ${field(snapshot.workspaceWarning.message)}`);
++    lines.push(
++      `  Related worktree ledgers: ${snapshot.workspaceWarning.relatedLedgerCount ?? 0}; `
++      + `visible lanes there: ${snapshot.workspaceWarning.relatedLaneCount ?? 0}.`
++    );
++  }
+ 
+   if (lanes.length === 0) {
+     lines.push("No Fleet lanes recorded.");
+@@ -112,6 +122,26 @@ export function renderPlainStatus(snapshot = {}) {
+             .replaceAll("_", " ")
+         );
+       }
++      if (lane?.queueBlocker && typeof lane.queueBlocker === "object") {
++        lines.push(
++          `  QUEUE BLOCKER [${field(lane.queueBlocker.kind)}]: ${field(lane.queueBlocker.message)}`
++        );
++        if (Number.isSafeInteger(lane.queueBlocker.queuedForMs)) {
++          lines.push(`  QUEUED FOR ${lane.queueBlocker.queuedForMs} ms`);
++        }
++        const holders = Array.isArray(lane.queueBlocker.heldBy)
++          ? lane.queueBlocker.heldBy.map((item) => field(item?.laneId)).filter(Boolean)
++          : [];
++        if (holders.length > 0) lines.push(`  HELD BY ${holders.join(", ")}`);
++      }
++      const noMutationObserved = lane?.authority?.sandbox === "workspace-write"
++        && ["complete", "blocked", "failed", "cancelled", "outcome_unknown"].includes(lane?.status)
++        && (lane?.touchedFiles?.length ?? 0) === 0
++        && (lane?.commitRefs?.length ?? 0) === 0
++        && (lane?.artifactRefs?.length ?? 0) === 0;
++      if (noMutationObserved) {
++        lines.push("  NO WORKSPACE MUTATION OBSERVED · do not infer implementation work from the terminal label alone.");
++      }
+     });
+     if (selection.omitted > 0) {
+       const counts = Object.entries(selection.omittedByStatus)
+@@ -127,7 +157,7 @@ export function renderPlainStatus(snapshot = {}) {
+ /** Compact controller observation; deliberately excludes transcript and evidence bodies. */
+ export function summarizeStatusLane(lane) {
+   const result = {};
+-  for (const key of ["id", "admissionId", "threadId", "turnId", "role", "model", "effort", "status", "phase", "groupPath"]) {
++  for (const key of ["id", "admissionId", "threadId", "turnId", "role", "model", "effort", "status", "phase", "groupPath", "archivedAt", "retryOf", "reconciliationRef"]) {
+     if (typeof lane?.[key] === "string") result[key] = lane[key];
+   }
+   for (const key of ["pendingRequests", "pendingQuestionCount", "pendingApprovalCount"]) {
+@@ -136,10 +166,28 @@ export function summarizeStatusLane(lane) {
+   result.needsController = Boolean(lane?.controllerRequest) || (lane?.pendingRequests ?? 0) > 0;
+   result.evidenceCount = Array.isArray(lane?.evidenceRefs) ? lane.evidenceRefs.length : 0;
+   result.artifactCount = Array.isArray(lane?.artifactRefs) ? lane.artifactRefs.length : 0;
++  result.touchedFileCount = Array.isArray(lane?.touchedFiles) ? lane.touchedFiles.length : 0;
++  result.noMutationObserved = lane?.authority?.sandbox === "workspace-write"
++    && ["complete", "blocked", "failed", "cancelled", "outcome_unknown"].includes(lane?.status)
++    && result.touchedFileCount === 0
++    && (lane?.commitRefs?.length ?? 0) === 0
++    && result.artifactCount === 0;
++  if (lane?.queueBlocker) result.queueBlocker = lane.queueBlocker;
+   if (lane?.controllerRequest) {
+     const question = String(lane.controllerRequest.question ?? "");
+-    result.controllerRequest = { kind: lane.controllerRequest.kind,
+-      question: question.slice(0, 512), truncated: question.length > 512 };
++    result.controllerRequest = {
++      kind: lane.controllerRequest.kind,
++      question: question.slice(0, 512),
++      truncated: question.length > 512
++    };
++  }
++  if (Array.isArray(lane?.verificationResults)) {
++    result.verification = Object.fromEntries(
++      ["passed", "failed", "skipped", "blocked"].map((state) => [
++        state,
++        lane.verificationResults.filter((item) => item?.state === state).length
++      ])
++    );
+   }
+   if (lane?.tokenUsage) result.tokenUsage = lane.tokenUsage;
+   return result;
+diff --git a/plugins/fleet/scripts/lib/runtime-adapter.mjs b/plugins/fleet/scripts/lib/runtime-adapter.mjs
+index 34bb2e9..ec6d7e8 100644
+--- a/plugins/fleet/scripts/lib/runtime-adapter.mjs
++++ b/plugins/fleet/scripts/lib/runtime-adapter.mjs
+@@ -1479,10 +1479,15 @@ export class FleetRuntime {
+       turnId: lane.turnId
+     });
+     this.inbox.invalidateTurn(lane.threadId, lane.turnId, "interrupt-acknowledged");
+-    this.emit(lane.id, "lane.interrupt-requested", {
+-      threadId: lane.threadId,
+-      turnId: lane.turnId
+-    });
++    // An interrupt RPC acknowledgement proves only that Codex accepted the interrupt request.
++    // Keep the lane non-terminal until the matching turn/completed notification arrives so a
++    // writer cannot be released while it may still be mutating the workspace.
++    this.updateLane(
++      lane,
++      { phase: "cancelling" },
++      "lane.interrupt-requested",
++      { threadId: lane.threadId, turnId: lane.turnId }
++    );
+     return copyLane(lane);
+   }
+ 
+diff --git a/plugins/fleet/scripts/lib/scheduler.mjs b/plugins/fleet/scripts/lib/scheduler.mjs
+index 49155ea..f502c38 100644
+--- a/plugins/fleet/scripts/lib/scheduler.mjs
++++ b/plugins/fleet/scripts/lib/scheduler.mjs
+@@ -23,6 +23,7 @@ const TERMINAL_STATUSES = new Set([
+ ]);
+ const RECOVERABLE_ACTIVE_STATUSES = new Set(["queued", "starting", "running"]);
+ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
++const DEFAULT_CANCEL_SETTLE_MS = 2_000;
+ 
+ function defaultClock() {
+   return {
+@@ -91,7 +92,8 @@ function boundedIdentifier(value, label) {
+ }
+ 
+ function hasExternalEffect(authority) {
+-  return authority.browser.mutate
++  return authority.sandbox === "workspace-write"
++    || authority.browser.mutate
+     || authority.database.write
+     || authority.image.generate
+     || authority.image.edit
+@@ -397,7 +399,8 @@ class FleetScheduler {
+     workspacePath,
+     workspaceObservation,
+     observeWorkspace,
+-    initialRecords
++    initialRecords,
++    cancelSettleMs
+   }) {
+     assertDependency(
+       runtime,
+@@ -417,6 +420,13 @@ class FleetScheduler {
+     this.continuationReservations = new Map();
+     this.changeWaiters = new Set();
+     this.changeVersion = 0;
++    this.cancelSettleMs = positiveInteger(
++      cancelSettleMs,
++      DEFAULT_CANCEL_SETTLE_MS,
++      "cancelSettleMs",
++      true
++    );
++    if (this.cancelSettleMs > 30_000) throw new TypeError("cancelSettleMs must not exceed 30000 ms.");
+     this.nextSequence = 1;
+     this.lastStartedAt = null;
+     this.drainPromise = null;
+@@ -1046,16 +1056,57 @@ cl
