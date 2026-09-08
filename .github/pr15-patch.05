@@ -1,0 +1,298 @@
+      );
+-          }
+-          lanes = [persisted];
+-        }
++      const laneId = boundedLaneId(parsed.flags.get("--lane"), "result lane id");
++      lanes = lanes.filter((lane) => lane.id === laneId);
++      if (lanes.length === 0) throw new InvalidInputError(`Lane result was not found: ${laneId}.`);
++      if (parsed.flags.has("--wait") && !isTerminalStatus(lanes[0].status)) {
++        const timeoutMs = parsed.flags.has("--timeout-ms")
++          ? boundedTimeout(parsed.flags.get("--timeout-ms"))
++          : 600_000;
++        wait = await requestLiveSupervisor(
++          context,
++          "waitForLane",
++          { laneId, timeoutMs },
++          io,
++          dependencies
++        );
++        lanes = [wait.lane];
+       }
+     }
++
+     let selection = null;
++    let workspaceWarning = null;
++    let archivedCount = 0;
+     if (parsed.command === "status") {
++      archivedCount = lanes.filter((lane) => lane.archivedAt).length;
++      if (!parsed.flags.has("--archived")) lanes = lanes.filter((lane) => !lane.archivedAt);
+       selection = selectStatusLanes(lanes, statusSelectionOptions(parsed, dependencies));
+       lanes = selection.lanes;
++      if (selection.total === 0) {
++        workspaceWarning = await (dependencies.findRelatedWorkspaceLedgers ?? findRelatedWorkspaceLedgers)(
++          context,
++          { ...dependencies, readState }
++        );
++      }
+     }
++
+     const branchReader = dependencies.inspectBranch ?? inspectGitBranch;
+     const branch = await branchReader(context.workspace);
+     let runtime = { health: "unknown", protocol: "unknown" };
+@@ -956,8 +1173,11 @@ async function execute(parsed, io, dependencies) {
+         updatedAt: state.updatedAt,
+         lanes: parsed.command === "status" && parsed.flags.has("--summary")
+           ? lanes.map(summarizeStatusLane) : lanes,
++        ...(wait ? { wait } : {}),
++        ...(parsed.command === "status" ? { archivedCount, workspaceWarning } : {}),
+         ...(parsed.command === "status" && parsed.flags.has("--summary") ? {
+-          summaryOnly: true, detail: "Use result for full evidence; summary fields do not authorize actions."
++          summaryOnly: true,
++          detail: "Use result --full for retained evidence; summary fields do not authorize actions."
+         } : {}),
+         ...(selectionSummary ? { selection: selectionSummary } : {})
+       }
+@@ -969,14 +1189,39 @@ async function execute(parsed, io, dependencies) {
+     return runStart(validateStartContract(raw, { deferModelValidation: true }), io, dependencies);
+   }
+ 
+-  if (parsed.command === "follow-up" || parsed.command === "cancel") {
++  if (parsed.command === "follow-up") {
+     const raw = await readContract(parsed, io);
+-    const contract = validateSimpleContract(
+-      raw,
+-      parsed.command,
+-      parsed.flags.has("--confirm")
+-    );
+-    return runControl(contract, parsed.command, io, dependencies);
++    return runControl(validateSimpleContract(raw, "follow-up", false), "follow-up", io, dependencies);
++  }
++
++  if (parsed.command === "cancel") {
++    const shortcutLane = parsed.positionals[0] ?? parsed.flags.get("--lane");
++    if (shortcutLane) {
++      const context = await parsedStateContext(parsed, io, dependencies);
++      const laneId = boundedLaneId(shortcutLane, "cancellation lane id");
++      const preview = await requestLiveSupervisor(context, "cancel", { laneId }, io, dependencies);
++      if (!parsed.flags.has("--confirm")) {
++        return { exitCode: EXIT_CODES.success, payload: { ...preview, shortcutAvailable: true } };
++      }
++      const payload = await requestLiveSupervisor(
++        context,
++        "cancel",
++        {
++          laneId,
++          confirmationToken: preview.confirmationToken,
++          shortcut: true
++        },
++        io,
++        dependencies
++      );
++      return {
++        exitCode: payload.accepted === true ? EXIT_CODES.success : EXIT_CODES.runtimeUnavailable,
++        payload: { ...payload, previewedThreadId: preview.expectedThreadId, previewedTurnId: preview.expectedTurnId }
++      };
++    }
++    const raw = await readContract(parsed, io);
++    const contract = validateSimpleContract(raw, "cancel", parsed.flags.has("--confirm"));
++    return runControl(contract, "cancel", io, dependencies);
+   }
+ 
+   if (parsed.command === "setup") return runSetupCommand(parsed, io);
+@@ -986,6 +1231,7 @@ async function execute(parsed, io, dependencies) {
+ }
+ 
+ function humanSummary(command, payload, flags) {
++  if (command === "help") return payload.helpText;
+   if (command === "init") return JSON.stringify(payload, null, 2);
+   if (command === "doctor") {
+     const broker = payload.checks.find((check) => check.id === "broker");
+@@ -999,15 +1245,63 @@ function humanSummary(command, payload, flags) {
+     }
+     return `Fleet doctor: ${payload.overall}.`;
+   }
+-  if (command === "status") {
+-    return renderPlainStatus(payload).trimEnd();
++  if (command === "status") return renderPlainStatus(payload).trimEnd();
++  if (command === "result") {
++    if (payload.wait?.timedOut) {
++      const lane = payload.lanes[0];
++      const blocker = lane?.queueBlocker?.message ? ` Queue: ${lane.queueBlocker.message}` : "";
++      return `Lane ${lane?.id ?? "unknown"} is still ${lane?.status ?? "non-terminal"} after ${payload.wait.elapsedMs} ms; this is a wait timeout, not a failed lane.${blocker}`;
++    }
++    if (flags.has("--pretty") || flags.has("--full")) {
++      return JSON.stringify(decodedResult(payload), null, 2);
++    }
++    if (flags.has("--summary")) return renderResultSummary(payload);
++  }
++  if (command === "watch") {
++    if (!payload.changed) return `Fleet watch: ${payload.reason ?? "no change"}.`;
++    return `Fleet event: ${payload.event.kind} · ${payload.event.laneId ?? "workspace"} · ${payload.event.status ?? "attention"}.`;
++  }
++  if (command === "models") {
++    const lines = [
++      `Fleet model catalog: ${payload.models?.length ?? 0} model(s); age ${payload.ageMs ?? "unknown"} ms${payload.refreshed ? "; refreshed" : ""}.`
++    ];
++    if (payload.configuredModel) {
++      lines.push(`Configured Codex model: ${payload.configuredModel} (${payload.configuredModelPresent ? "present" : "NOT PRESENT"}).`);
++    }
++    if (payload.hint) lines.push(payload.hint);
++    for (const item of payload.models ?? []) lines.push(`- ${item.model}: ${item.efforts.join(", ")}`);
++    return lines.join("\n");
+   }
+-  if (command === "result" && flags.has("--pretty")) {
+-    return JSON.stringify(decodedResult(payload), null, 2);
++  if (command === "cancel") {
++    if (payload.writesPerformed === false) {
++      return [
++        `Cancellation preview ready for ${payload.laneId}.`,
++        `Touched files observed: ${(payload.touchedFiles ?? []).join(", ") || "none reported"}.`,
++        "Re-run the short form with --confirm, or use the exact structured confirmation flow."
++      ].join("\n");
++    }
++    if (payload.accepted === true) {
++      return payload.terminalObserved === false
++        ? [
++            `Cancellation interrupt accepted for ${payload.laneId}, but a terminal Codex acknowledgement has not been observed yet.`,
++            `Current state: ${payload.status ?? "running"}/${payload.phase ?? "cancelling"}. The lane may still write, so Fleet keeps its writer reservation.`,
++            `Touched files observed so far: ${(payload.touchedFiles ?? []).join(", ") || "none reported"}.`,
++            "Use result --wait or status; cancellation never reverts workspace changes."
++          ].join("\n")
++        : [
++            `Cancellation settled for ${payload.laneId} (${payload.status ?? "cancelled"}).`,
++            `Touched files observed before/at cancellation: ${(payload.touchedFiles ?? []).join(", ") || "none reported"}.`,
++            "Cancellation does not revert those workspace changes."
++          ].join("\n");
++    }
+   }
+-  if (command === "result" && flags.has("--summary")) {
+-    return renderResultSummary(payload);
++  if (command === "reconcile") {
++    return payload.resolved
++      ? `Continuation reservation reconciled for ${payload.lane?.id ?? "lane"}: ${payload.resolution}.`
++      : `Continuation remains unresolved for ${payload.lane?.id ?? "lane"}: ${payload.resolution}. ${payload.message ?? ""}`.trim();
+   }
++  if (command === "resolve") return `Lane ${payload.id} resolved as ${payload.status} with explicit reconciliation evidence.`;
++  if (command === "archive") return `Lane ${payload.id} archived. Default status will hide it; use status --archived to include archived lanes.`;
+   if (command === "start" && payload.retrySafe === false && payload.requestId) {
+     return payload.admissionRecovered
+       ? `Fleet recovered ${payload.admissionIds.length} admitted lane(s) after the response timeout.`
+diff --git a/plugins/fleet/scripts/lib/contract-templates.mjs b/plugins/fleet/scripts/lib/contract-templates.mjs
+index 951aebc..0771798 100644
+--- a/plugins/fleet/scripts/lib/contract-templates.mjs
++++ b/plugins/fleet/scripts/lib/contract-templates.mjs
+@@ -33,7 +33,11 @@ const BY_NAME = new Map(DEFINITIONS.map((definition) => [definition.name, defini
+ 
+ const EXECUTION_POSTURE = [
+   "Execution posture:",
+-  ...executionPostureLines().map((line) => `- ${line}`)
++  ...executionPostureLines().map((line) => `- ${line}`),
++  "- Start gates are preconditions only. A completion/controller gate that is known to be unavailable does NOT justify stopping before the requested implementation starts.",
++  "- Never pass one quality gate by moving behavior into another gate's blind spot. Prefer behavior evidence; source-text pinning needs an explicit rationale.",
++  "- On Windows, do not assume /tmp or cygpath resolves to a path native tools can read. Use a workspace/controller-provided scratch path and assert a mutation actually changed its target before interpreting a green mutation run.",
++  "- A visual/layout claim requires browser/image evidence. If that capability is unavailable, report the verification as blocked/skipped/unverified rather than passed."
+ ].join("\n");
+ 
+ function authority({ writable = false, imageGenerate = false } = {}) {
+@@ -49,6 +53,50 @@ function authority({ writable = false, imageGenerate = false } = {}) {
+   };
+ }
+ 
++function verificationPlanFor(name) {
++  if (name === "implementation") {
++    return {
++      start: [
++        "Confirm the target exists, the admitted Git worktree is the intended workspace, and interpreter/package resolution does not point at a sibling worktree.",
++        "Record known environment limitations, but do not turn a completion-only build/database/browser limitation into a start blocker."
++      ],
++      completion: [
++        "Run the smallest deterministic checks that the lane sandbox can execute against the changed behavior.",
++        "For mutation testing, assert the mutation was actually applied before interpreting the gate result; do not rely on /tmp on Windows."
++      ],
++      controller: [
++        "Run full build, real database, browser/visual, or other environment-specific gates that the lane cannot execute; record passed/failed/skipped/blocked explicitly."
++      ]
++    };
++  }
++  if (name === "verification") {
++    return {
++      start: [
++        "Confirm the artifact/evidence and exact worktree are readable; do not rely on worker reasoning."
++      ],
++      completion: [
++        "Re-run only read-only-compatible checks. For Python/pytest prefer PYTHONDONTWRITEBYTECODE=1 and -p no:cacheprovider when cache writes are unnecessary.",
++        "Attempt to falsify behavior, not merely pin source text."
++      ],
++      controller: [
++        "If verification inherently needs writes, a real database, subprocess capability, browser rendering, or another unavailable surface, mark it blocked/skipped and hand that exact gate to the controller."
++      ]
++    };
++  }
++  if (name === "image-generation") {
++    return {
++      start: ["Confirm the target Codex runtime exposes the enabled system imagegen skill before inference."],
++      completion: ["Verify the delivered file exists, has the requested type/dimensions, and return its workspace-relative path."],
++      controller: ["Parent Claude must open the returned image and perform visual QA; path existence alone is not visual evidence."]
++    };
++  }
++  return {
++    start: ["Confirm required workspace evidence is readable."],
++    completion: ["Re-open cited evidence and distinguish observations from inference."],
++    controller: ["Escalate only evidence surfaces that genuinely require unavailable authority/capability."]
++  };
++}
++
+ function promptFor(name, objective) {
+   if (name === "research") {
+     return [
+@@ -56,9 +104,10 @@ function promptFor(name, objective) {
+       "Inputs: Inspect only the approved workspace and cite exact project-relative file evidence.",
+       "Exclusions: Do not edit files, access the network, invoke a browser, or perform external effects.",
+       "Authority: Read-only workspace access; process.start authorizes only this Fleet Codex lane.",
+-      "Capability evidence: Confirm required workspace files are readable before investigating.",
++      "Start gates: Confirm required workspace files are readable. This is a precondition, not a request to run unrelated completion gates.",
+       "Deliverable: Return a concise verdict followed by project-relative evidence references.",
+-      "Verification: Re-open the cited evidence and distinguish observed facts from inference.",
++      "Completion gates: Re-open the cited evidence and distinguish observed facts from inference.",
++      "Controller gates: Only evidence that requires unavailable authority/capability belongs here; mark it blocked/skipped instead of passed.",
+       "Stop conditions: Stop on missing inputs, conflicting evidence, or any need for wider authority.",
+       "Cleanup: Remove only lane-owned temporary resources; preserve the workspace unchanged.",
+       EXECUTION_POSTURE
+@@ -67,28 +116,32 @@ function promptFor(name, objective) {
+   if (name === "implementation") {
+     return [
+       `Objective: ${objective}`,
+-      "Inputs: Use only the approved workspace and the user-confirmed bounded objective.",
+-      "Exclusions: Do not access the network, mutate browsers or databases, deploy, send, delete, or widen scope.",
+-      "Authority: One workspace writer; no image generation or external effects.",
+-      "Capability evidence: Inspect the target and current worktree state before editing.",
+-      "Deliverable: Implement the objective and return changed project-relative paths.",
+-      "Verification: Run the smallest environment-relevant checks and report their exact outcome.",
+-      "Stop conditions: Stop on unrelated dirty changes, ambiguity, denied authority, or unsafe mutation.",
+-      "Cleanup: Remove only lane-owned temporary files and processes.",
++      "Inputs: Use only the approved workspace and the user-confirmed bounded objective. Default slice budget: at most two coherent surfaces and one migration; split independent work rather than growing one multi-hour lane.",
++      "Exclusions: Do not access the network, mutate browsers or databases, deploy, send, delete, widen scope, or pass one gate by relocating behavior into another gate's blind spot.",
++      "Authority: One physical-worktree writer; checkoutKey is metadata and never creates a second writer in the same worktree.",
++      "Start gates: Inspect the target/worktree and environment provenance before editing. A known full-build/DB/browser limitation is a completion/controller gate, NOT permission to stop before implementation.",
++      "Deliverable: Implement the objective and return changed project-relative paths. If the turn ends with no touched files/artifacts/commits, say explicitly that no workspace mutation was observed.",
++      "Completion gates: Run the smallest environment-relevant deterministic checks the lane can actually execute. Prefer behavior assertions; source pinning requires rationale.",
++      "Controller gates: Full build, real DB, browser/visual or other unavailable gates must be reported as blocked/skipped with environment, never as a failed implementation or false green.",
++      "Mutation protocol: Use a native/workspace scratch path, assert the mutation changed its intended target, then run the gate. On Windows do not assume /tmp is visible to native tools.",
++      "Stop conditions: Stop on unrelated dirty changes, objective ambiguity, denied mutation authority, wrong worktree/package provenance, or unsafe external effects—not merely because a completion-only gate is unavailable.",
++      "Cleanup: Remove only lane-owned temporary files/processes when authority permits; if cleanup itself is denied, report it rather than converting completed work into a fabricated failure.",
+       EXECUTION_POSTURE
+     ].join("\n");
+   }
+   if (name === "verification") {
+     return [
+       `Objective: ${objective}`,
+-      "Inputs: Independently inspect the requested outcome and its evidence; do not rely on worker reasoning.",
+-      "Exclusions: Do not edit files, access the network, or perform external effects.",
++      "Inputs: Independently inspect the requested outcome and its evidence; do not rely on worker reasoning or treat a lane report anomaly as artifact corruption without checking the artifact.",
++      "Exclusions: Do not edit project files, access the network, or perform external effects.",
+       "Authority: Fresh read-only independent-verifier lane.",
+-      "Capability evidence: Confirm the claimed artifact and verification surface are reachable.",
+-      "Deliverable: Return pass, fail, or blocked with project-relative evidence references.",
+-      "Verification: Re-run the relevant checks and attempt to falsify the worker claim.",
++      "Start gates: Confirm the claimed artifact and exact worktree are reachable.",
++      "Deliverable: Return pass, fail, skipped, or blocked with project-relative evidence references and 
