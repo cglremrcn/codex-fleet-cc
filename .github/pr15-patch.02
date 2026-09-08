@@ -1,0 +1,362 @@
+auncher while waiting.
+-
+-If `start` times out after dispatch, do not redispatch it. Return Fleet's reconciliation output and tell
+-the parent to run status. An `interrupted` lane also requires explicit reconciliation before retry.
+-
+-When a result contains an image artifact, return its exact workspace-relative path, reported file
+-type, dimensions, and lane status to the parent. Explicitly instruct the parent Claude to resolve that
+-path inside the approved workspace and open it with Claude Code's `Read` tool. A text description or
+-path alone does not prove that Claude saw the generated image.
+-
+-Immediately after the `start` dispatch begins, tell the parent once that the user can press `Ctrl+G` to
+-open Fleet Console while the bridge waits. Do not wait for the terminal result to surface this hint.
+-Claude Code's own “down arrow to manage” text controls Claude background agents; it is not Fleet
+-navigation. After successful admission, return the exact lane ID without repeating the hint.
++When a result contains an image artifact, return its exact workspace-relative path, type, dimensions, and
++verification state. The parent Claude must open the image with its Read tool before claiming visual QA.
++CSS/layout/optical-size claims without browser/image evidence remain blocked/skipped/unverified.
+ 
+-Do not invoke Codex directly. Do not construct an alternate shell command, bypass Fleet's scheduler,
+-or imitate a successful result. Return the Fleet CLI exit code and structured output to the parent.
+-An `outcome_unknown` result remains unknown until the parent explicitly reconciles it.
++Immediately after a start dispatch begins, tell the parent once that `Ctrl+G` opens Fleet Console. Claude
++Code's own down-arrow manager is a different background system. Do not invoke Codex directly, construct an
++alternate launcher, imitate success, or turn a lane report anomaly into an artifact/code mutation without
++checking the artifact evidence first.
+diff --git a/plugins/fleet/hooks/hooks.json b/plugins/fleet/hooks/hooks.json
+index a8ca26d..6f97c1b 100644
+--- a/plugins/fleet/hooks/hooks.json
++++ b/plugins/fleet/hooks/hooks.json
+@@ -1,5 +1,5 @@
+ {
+-  "description": "Read Fleet lane and setup state at session start without launching work or changing settings.",
++  "description": "Read Fleet state at session start and wake idle Claude only for meaningful local Fleet transitions.",
+   "hooks": {
+     "SessionStart": [
+       {
+@@ -11,6 +11,20 @@
+           }
+         ]
+       }
++    ],
++    "Stop": [
++      {
++        "hooks": [
++          {
++            "type": "command",
++            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/fleet-event-hook.mjs\"",
++            "timeout": 14410,
++            "asyncRewake": true,
++            "rewakeMessage": "Fleet background work changed state. Inspect the exact Fleet lane/inbox evidence below, handle only authority you already have, then continue the user's original request or continue waiting for their reply:",
++            "rewakeSummary": "Fleet lane needs attention"
++          }
++        ]
++      }
+     ]
+   }
+ }
+diff --git a/plugins/fleet/scripts/fleet-event-hook.mjs b/plugins/fleet/scripts/fleet-event-hook.mjs
+new file mode 100644
+index 0000000..328056a
+--- /dev/null
++++ b/plugins/fleet/scripts/fleet-event-hook.mjs
+@@ -0,0 +1,194 @@
++#!/usr/bin/env node
++
++import crypto from "node:crypto";
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import process from "node:process";
++
++import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./lib/paths.mjs";
++import { isMainModule } from "./lib/is-main.mjs";
++import { resolveImplicitWorkspace } from "./lib/operator-context.mjs";
++import { readSupervisorManifest, requestSupervisor } from "./lib/supervisor-protocol.mjs";
++
++const MAX_INPUT_BYTES = 64 * 1024;
++const WATCH_TIMEOUT_MS = 4 * 60 * 60_000;
++const STALL_MS = 20 * 60_000;
++const LOCK_TTL_MS = WATCH_TIMEOUT_MS + 5 * 60_000;
++const INITIAL_LOOKBACK_MS = 60_000;
++const STATE_TTL_MS = 7 * 24 * 60 * 60_000;
++
++async function readInput(stream = process.stdin) {
++  const chunks = [];
++  let size = 0;
++  for await (const chunk of stream) {
++    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
++    size += buffer.byteLength;
++    if (size > MAX_INPUT_BYTES) throw new Error("Fleet event hook input exceeds 64 KiB.");
++    chunks.push(buffer);
++  }
++  if (chunks.length === 0) return {};
++  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
++}
++
++function sessionIdentifier(input) {
++  const value = input?.session_id ?? input?.sessionId;
++  return typeof value === "string" && value.length > 0 && value.length <= 512
++    && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
++}
++
++function eventMessage(result) {
++  const event = result?.event ?? {};
++  const lane = event.laneId ? ` lane ${event.laneId}` : " Fleet";
++  if (event.kind === "lane-terminal") {
++    const touched = Array.isArray(event.touchedFiles) && event.touchedFiles.length
++      ? ` Touched files: ${event.touchedFiles.join(", ")}.`
++      : "";
++    return `Fleet${lane} reached terminal state ${event.status}/${event.phase ?? event.status}.${touched} Inspect the exact result/evidence, then continue the user's original request.`;
++  }
++  if (event.kind === "controller-attention") {
++    return `Fleet${lane} needs controller attention (${event.status}/${event.phase ?? "unknown"}). Inspect the exact request/result; do not invent user consent or widen authority. Then continue the user's original request.`;
++  }
++  if (event.kind === "intervention") {
++    return `Fleet${lane} has ${event.pendingRequests ?? 1} intervention request(s). Inspect the shared inbox; technical questions and operation approvals are different authority classes. Then continue the user's original request.`;
++  }
++  if (event.kind === "queue-stalled") {
++    const blocker = event.queueBlocker?.message ? ` ${event.queueBlocker.message}` : "";
++    return `Fleet${lane} has remained queued for ${event.queuedForMs ?? "an unknown duration"} ms.${blocker} Inspect status/reconcile instead of assuming queued means work is progressing.`;
++  }
++  if (event.kind === "continuation-unknown") {
++    return `Fleet${lane} has an ambiguous continuation outcome and may still hold writer authority. Reconcile it before starting/retrying another writer. Do not assume the turn did or did not start.`;
++  }
++  return `Fleet has a meaningful state transition. Inspect Fleet status/result before continuing the user's original request.`;
++}
++
++
++async function readWatcherState(statePath) {
++  try {
++    const metadata = await fs.lstat(statePath);
++    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4_096) return null;
++    const value = JSON.parse(await fs.readFile(statePath, "utf8"));
++    return value?.schemaVersion === 1 && Number.isSafeInteger(value.observedAtMs) && value.observedAtMs >= 0
++      ? value : null;
++  } catch (error) {
++    return error?.code === "ENOENT" ? null : null;
++  }
++}
++
++async function writeWatcherState(statePath, observedAtMs) {
++  if (!Number.isSafeInteger(observedAtMs) || observedAtMs < 0) return;
++  await fs.mkdir(path.dirname(statePath), { recursive: true, mode: 0o700 });
++  const temporary = `${statePath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
++  await fs.writeFile(temporary, `${JSON.stringify({ schemaVersion: 1, observedAtMs })}\n`, {
++    encoding: "utf8", flag: "wx", mode: 0o600
++  });
++  await fs.rename(temporary, statePath);
++}
++
++async function cleanupWatcherStates(directory, nowMs) {
++  let entries;
++  try { entries = await fs.readdir(directory, { withFileTypes: true }); }
++  catch (error) { if (error?.code === "ENOENT") return; return; }
++  for (const entry of entries.slice(0, 256)) {
++    if (!entry.isFile() || !entry.name.endsWith(".state.json")) continue;
++    const candidate = path.join(directory, entry.name);
++    try {
++      const metadata = await fs.lstat(candidate);
++      if (!metadata.isSymbolicLink() && nowMs - metadata.mtimeMs > STATE_TTL_MS) await fs.unlink(candidate);
++    } catch { /* best-effort bounded cleanup */ }
++  }
++}
++
++async function ensureLock(lockPath, now = Date.now) {
++  await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
++  await fs.chmod(path.dirname(lockPath), 0o700).catch((error) => {
++    if (process.platform !== "win32") throw error;
++  });
++  for (let attempt = 0; attempt < 2; attempt += 1) {
++    try {
++      const handle = await fs.open(lockPath, "wx", 0o600);
++      await handle.writeFile(`${JSON.stringify({ schemaVersion: 1, createdAt: now() })}\n`, "utf8");
++      await handle.close();
++      return true;
++    } catch (error) {
++      if (error?.code !== "EEXIST") throw error;
++      try {
++        const metadata = await fs.lstat(lockPath);
++        if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
++        if (now() - metadata.mtimeMs <= LOCK_TTL_MS) return false;
++        await fs.unlink(lockPath);
++      } catch (nested) {
++        if (nested?.code !== "ENOENT") return false;
++      }
++    }
++  }
++  return false;
++}
++
++export async function runEventHook(input, options = {}) {
++  const env = options.env ?? process.env;
++  const platform = options.platform ?? process.platform;
++  const home = options.home ?? os.homedir();
++  const sessionId = sessionIdentifier(input);
++  if (!sessionId) return Object.freeze({ code: 0, reason: "missing-session-id" });
++  const candidate = input?.cwd ?? env.CLAUDE_PROJECT_DIR ?? options.cwd ?? process.cwd();
++  const workspace = (options.resolveImplicitWorkspace ?? resolveImplicitWorkspace)(candidate, {
++    implicit: true,
++    spawnSync: options.spawnSync
++  });
++  const key = await workspaceKey(workspace, { platform });
++  const dataDir = getFleetDataDir(env, platform, home);
++  const manifest = await (options.readSupervisorManifest ?? readSupervisorManifest)({
++    dataDir,
++    workspaceKey: key,
++    platform
++  });
++  if (!manifest) return Object.freeze({ code: 0, reason: "no-live-supervisor" });
++
++  const now = options.now ?? Date.now;
++  const lockId = crypto.createHash("sha256").update(`${sessionId}\0${key}`).digest("hex").slice(0, 32);
++  const watcherRoot = resolveOwnedPath(dataDir, "watchers");
++  const lockPath = resolveOwnedPath(watcherRoot, `${lockId}.lock`);
++  const statePath = resolveOwnedPath(watcherRoot, `${lockId}.state.json`);
++  await cleanupWatcherStates(watcherRoot, now());
++  if (!await ensureLock(lockPath, now)) {
++    return Object.freeze({ code: 0, reason: "watcher-already-active" });
++  }
++  try {
++    const prior = await readWatcherState(statePath);
++    const startedAtMs = now();
++    const sinceMs = Math.max(0, prior?.observedAtMs ?? (startedAtMs - INITIAL_LOOKBACK_MS));
++    const result = await (options.requestSupervisor ?? requestSupervisor)({
++      address: manifest.address,
++      workspaceKey: key,
++      token: manifest.token,
++      method: "watchForEvent",
++      params: { timeoutMs: WATCH_TIMEOUT_MS, stallMs: STALL_MS, sinceMs },
++      timeoutMs: WATCH_TIMEOUT_MS + 10_000
++    });
++    // Advance the local cursor only after the supervisor gives a trustworthy observation boundary.
++    // A failed transport keeps the old cursor so a later Stop hook can recover a just-finished lane.
++    if (Number.isSafeInteger(result?.observedAtMs)) {
++      await writeWatcherState(statePath, result.observedAtMs);
++    }
++    if (!result?.changed) return Object.freeze({ code: 0, reason: result?.reason ?? "no-change" });
++    return Object.freeze({ code: 2, reason: "fleet-event", message: eventMessage(result) });
++  } catch {
++    // A stale/closed supervisor is not a reason to wake Claude or retry blindly.
++    return Object.freeze({ code: 0, reason: "watch-failed" });
++  } finally {
++    await fs.unlink(lockPath).catch(() => undefined);
++  }
++}
++
++async function main() {
++  try {
++    const result = await runEventHook(await readInput());
++    if (result.code === 2 && result.message) process.stderr.write(`${result.message}\n`);
++    process.exitCode = result.code;
++  } catch {
++    process.exitCode = 0;
++  }
++}
++
++if (isMainModule(import.meta.url)) await main();
+diff --git a/plugins/fleet/scripts/fleet-session-hook.mjs b/plugins/fleet/scripts/fleet-session-hook.mjs
+index 21406cb..c063d8b 100644
+--- a/plugins/fleet/scripts/fleet-session-hook.mjs
++++ b/plugins/fleet/scripts/fleet-session-hook.mjs
+@@ -7,6 +7,7 @@ import process from "node:process";
+ 
+ import { runCli } from "./lib/cli.mjs";
+ import { getFleetDataDir, resolveOwnedPath } from "./lib/paths.mjs";
++import { resolveImplicitWorkspace } from "./lib/operator-context.mjs";
+ 
+ const MAX_INPUT_BYTES = 64 * 1024;
+ const MAX_OWNERSHIP_BYTES = 64 * 1024;
+@@ -68,13 +69,13 @@ async function setupContext() {
+   if (applied?.version === installedVersion) return null;
+   if (applied) {
+     return `Fleet Ctrl+G integration runtime ${applied.version} does not match installed plugin `
+-      + `${installedVersion}. Invoke Fleet setup to preview an ownership-verified upgrade; do not `
+-      + "edit Claude settings or the launcher manually.";
++      + `${installedVersion}. Use only the current plugin entrypoint ${"${CLAUDE_PLUGIN_ROOT}"}/scripts/fleet.mjs; `
++      + "never resolve a versioned ~/.claude/plugins/cache/.../fleet/<version> path manually. Read-only status/doctor are safe, but do not start, follow-up, cancel, reconcile, resolve, or archive Fleet work until Fleet setup applies the ownership-verified upgrade and the plugin is reloaded. Do not edit Claude settings or the launcher manually.";
+   }
+   if (inspections.some((inspection) => inspection.state === "invalid")) {
+     return "Fleet integration ownership is unreadable or incomplete. Use /fleet:doctor before setup; do not overwrite settings or ownership state.";
+   }
+-  return "Fleet is installed but Ctrl+G Fleet Console is not configured. Ask the user exactly one plain confirmation question: \"Enable Ctrl+G Fleet Console now?\" Wait for an explicit yes. If the user explicitly agrees, invoke the Fleet setup skill, keep its preview token internal, and apply only the exact preview. Never ask the user to copy or paste a token. This SessionStart hook is read-only and must not modify settings.";
++  return "Fleet is installed but Ctrl+G Fleet Console is not configured. Use only ${CLAUDE_PLUGIN_ROOT}/scripts/fleet.mjs; never a manually selected versioned plugin-cache path. Ask the user exactly one plain confirmation question: \"Enable Ctrl+G Fleet Console now?\" Wait for an explicit yes. If the user explicitly agrees, invoke the Fleet setup skill, keep its preview token internal, and apply only the exact preview. Never ask the user to copy or paste a token. This SessionStart hook is read-only and must not modify settings.";
+ }
+ 
+ async function readHookInput() {
+@@ -107,7 +108,7 @@ async function main() {
+   try {
+     const input = await readHookInput();
+     const candidate = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+-    const workspace = path.resolve(candidate);
++    const workspace = resolveImplicitWorkspace(candidate, { implicit: true });
+     let output = "";
+     const exitCode = await runCli(["status", "--json", "--workspace", workspace], {
+       cwd: workspace,
+diff --git a/plugins/fleet/scripts/fleet-supervisor.mjs b/plugins/fleet/scripts/fleet-supervisor.mjs
+index f02185d..b3a7961 100644
+--- a/plugins/fleet/scripts/fleet-supervisor.mjs
++++ b/plugins/fleet/scripts/fleet-supervisor.mjs
+@@ -389,7 +389,8 @@ export function createControlPlane(options) {
+         const owner = await ensureScheduler();
+         return owner.waitForEvent({
+           timeoutMs: params.timeoutMs,
+-          stallMs: params.stallMs
++          stallMs: params.stallMs,
++          sinceMs: params.sinceMs
+         });
+       }
+       if (method === "waitForLane") {
+@@ -457,10 +458,16 @@ export function createControlPlane(options) {
+           turnId: lane.turnId ?? null
+         });
+         monitorActive();
++        const terminalObserved = [
++          "complete", "verified", "blocked", "failed", "cancelled", "interrupted", "outcome_unknown"
++        ].includes(cancelled?.status);
+         return {
+           schemaVersion: 1,
+           accepted: true,
++          terminalObserved,
+           laneId,
++          status: cancelled?.status ?? "unknown",
++          phase: cancelled?.phase ?? null,
+           touchedFiles: Array.isArray(cancelled?.touchedFiles) ? cancelled.touchedFiles : []
+         };
+       }
+diff --git a/plugins/fleet/scripts/lib/cli-help.mjs b/plugins/fleet/scripts/lib/cli-help.mjs
+new file mode 100644
+index 0000000..efbf272
+--- /dev/null
++++ b/plugins/fleet/scripts/lib/cli-help.mjs
+@@ -0,0 +1,107 @@
++const ROOT = `Codex Fleet CLI
++
++Usage:
++  fleet <command> [options]
++  fleet --help
++  fleet <command> --help
++
++Operator commands:
++  status       Read lane state without starting work
++  result       Read one lane result; --wait uses supervisor events, not shell polling
++  watch        Wait for one meaningful Fleet transition without model polling
++  models       Discover exact connected-runtime models; --refresh restarts an idle app-server
++  cancel       Preview/confirm cancellation; supports: cancel <laneId> --workspace <path>
++  reconcile    Resolve an ambiguous continuation reservation safely
++  resolve      Attach explicit reconciliation evidence to unknown/interrupted work
++  archive      Hide a terminal lane from default status
++  follow-up    Continue the same owned Codex thread using a JSON contract
++  start        Admit bounded lane contracts
++
++Use `fleet <command> --help` for exact JSON shapes and examples.`;
++
++const HELP = Object.freeze({
++  start: `Usage: fleet start --stdin --json | --contract <file> --json
++
++Root JSON shape:
++{
++  "schemaVersion": 1,
++  "workspacePath": "/absolute/worktree",
++  "modelPolicy": "runtime",
++  "sharedContext": "stable workspace rules shared by sibling lan
