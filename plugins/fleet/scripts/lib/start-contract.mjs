@@ -15,7 +15,8 @@ const ROOT_PROPERTIES = new Set([
   "lanes",
   "limits",
   "confirmationRef",
-  "modelPolicy"
+  "modelPolicy",
+  "sharedContext"
 ]);
 const LANE_PROPERTIES = new Set([
   "id",
@@ -31,8 +32,10 @@ const LANE_PROPERTIES = new Set([
   "groupPath",
   "priority",
   "retryOf",
-  "reconciliationRef"
+  "reconciliationRef",
+  "verificationPlan"
 ]);
+const VERIFICATION_PLAN_PROPERTIES = new Set(["start", "completion", "controller"]);
 const AUTHORITY_PROPERTIES = new Set([
   "sandbox",
   "network",
@@ -54,6 +57,7 @@ const LIMIT_PROPERTIES = new Set(["maxActive", "maxWritersPerCheckout", "stagger
 const UNSUPPORTED_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const ANY_CONTROL = /[\u0000-\u001f\u007f]/u;
 const ROLE_VALUES = new Set(LANE_ROLES);
+const QUALIFIED_RETRY_REF = /^[a-f0-9]{16,64}:[A-Za-z0-9_-]{1,64}$/u;
 export const MODEL_EFFORTS = Object.freeze({
   "gpt-5.6-sol": Object.freeze(["low", "medium", "high", "xhigh", "max", "ultra"]),
   "gpt-5.6-terra": Object.freeze(["low", "medium", "high", "xhigh", "max", "ultra"]),
@@ -89,12 +93,44 @@ function addIssue(issues, kind, propertyPath, message) {
 function collectUnknownProperties(value, allowed, propertyPath, issues) {
   for (const property of Object.keys(value)) {
     if (!allowed.has(property)) {
-      const message = propertyPath === "$"
+      const message = property === "modelPolicy" && propertyPath.startsWith("lanes[")
+        ? "modelPolicy belongs at the contract root as $.modelPolicy, not inside a lane."
+        : propertyPath === "$"
         ? `Unknown contract property: ${property}.`
         : `Unknown ${propertyPath} property: ${property}.`;
       addIssue(issues, "input", `${propertyPath}.${property}`, message);
     }
   }
+}
+
+function collectTextArray(value, propertyPath, issues, maximumItems = 32) {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    addIssue(issues, "input", propertyPath, `must be an array with at most ${maximumItems} items.`);
+    return Object.freeze([]);
+  }
+  const result = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = collectBoundedText(value[index], `${propertyPath}[${index}]`, 2_000, issues, {
+      multiline: true
+    });
+    if (item) result.push(item);
+  }
+  return Object.freeze(result);
+}
+
+function collectVerificationPlan(value, propertyPath, issues) {
+  if (value === undefined) return null;
+  if (!isPlainObject(value)) {
+    addIssue(issues, "input", propertyPath, "must be an object.");
+    return null;
+  }
+  collectUnknownProperties(value, VERIFICATION_PLAN_PROPERTIES, propertyPath, issues);
+  return Object.freeze({
+    start: collectTextArray(value.start, `${propertyPath}.start`, issues),
+    completion: collectTextArray(value.completion, `${propertyPath}.completion`, issues),
+    controller: collectTextArray(value.controller, `${propertyPath}.controller`, issues)
+  });
 }
 
 function collectBoundedText(value, propertyPath, maximum, issues, options = {}) {
@@ -199,7 +235,12 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
     }
     if (!options.deferModelValidation) {
       const entry = options.modelCatalog?.find((candidate) => candidate.model === model);
-      if (!entry) addIssue(issues, "input", `${propertyPath}.model`, "is not reported by the connected Codex runtime.");
+      if (!entry) addIssue(
+        issues,
+        "input",
+        `${propertyPath}.model`,
+        "is not reported by the connected Codex runtime. If Codex was recently upgraded or its model config changed, restart/refresh the runtime and run `fleet models` again."
+      );
       else if (!entry.efforts.includes(effort)) {
         addIssue(issues, "input", `${propertyPath}.effort`, "is not supported by the selected runtime model.");
       }
@@ -210,7 +251,7 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
         issues,
         "input",
         `${propertyPath}.model`,
-        `must be one of: ${MODEL_VALUES.join(", ")}.`
+        `must be one of: ${MODEL_VALUES.join(", ")}. For newly released models, set $.modelPolicy to "runtime" and select an exact model from fleet models.`
       );
     }
     if (effort && !EFFORT_VALUES.includes(effort)) {
@@ -239,9 +280,14 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
     collectBoundedText(value.checkoutKey, `${propertyPath}.checkoutKey`, 256, issues);
   }
   if (value.retryOf !== undefined && value.retryOf !== null) {
-    const retryOf = collectBoundedText(value.retryOf, `${propertyPath}.retryOf`, 64, issues);
-    if (retryOf && !LANE_ID_PATTERN.test(retryOf)) {
-      addIssue(issues, "input", `${propertyPath}.retryOf`, "must reference a URL-safe lane ID.");
+    const retryOf = collectBoundedText(value.retryOf, `${propertyPath}.retryOf`, 160, issues);
+    if (retryOf && !LANE_ID_PATTERN.test(retryOf) && !QUALIFIED_RETRY_REF.test(retryOf)) {
+      addIssue(
+        issues,
+        "input",
+        `${propertyPath}.retryOf`,
+        "must reference a local URL-safe lane ID or a qualified <workspaceKey>:<laneId> from another worktree."
+      );
     }
   }
   if (value.reconciliationRef !== undefined && value.reconciliationRef !== null) {
@@ -252,6 +298,11 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
       issues
     );
   }
+  const verificationPlan = collectVerificationPlan(
+    value.verificationPlan,
+    `${propertyPath}.verificationPlan`,
+    issues
+  );
   collectBoolean(value.ephemeral, `${propertyPath}.ephemeral`, issues);
   collectBoolean(value.interactive, `${propertyPath}.interactive`, issues);
   if (value.priority !== undefined && !PRIORITIES.has(value.priority)) {
@@ -280,7 +331,8 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
   return {
     ...value,
     priority: value.priority ?? "normal",
-    authority
+    authority,
+    ...(verificationPlan ? { verificationPlan } : {})
   };
 }
 
@@ -316,6 +368,13 @@ export function validateStartContract(value, options = {}) {
   if (value.modelPolicy !== undefined && value.modelPolicy !== "runtime") {
     addIssue(issues, "input", "modelPolicy", "must be runtime when provided; omit for the compatibility snapshot.");
   }
+  let sharedContext = null;
+  if (value.sharedContext !== undefined && value.sharedContext !== null) {
+    sharedContext = collectBoundedText(value.sharedContext, "sharedContext", 32 * 1024, issues, {
+      bytes: true,
+      multiline: true
+    });
+  }
   const lanes = [];
   const laneIds = new Set();
   if (!Array.isArray(value.lanes) || value.lanes.length === 0 || value.lanes.length > 256) {
@@ -340,6 +399,7 @@ export function validateStartContract(value, options = {}) {
   return Object.freeze({
     schemaVersion: 1,
     ...(value.modelPolicy === "runtime" ? { modelPolicy: "runtime" } : {}),
+    ...(sharedContext ? { sharedContext } : {}),
     workspacePath,
     lanes: Object.freeze(lanes),
     limits,

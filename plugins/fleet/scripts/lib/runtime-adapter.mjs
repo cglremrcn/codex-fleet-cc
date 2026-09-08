@@ -1,5 +1,6 @@
 import { InterventionInbox } from "./intervention-inbox.mjs";
 import { discoverNativeThreads } from "./fleet-inventory.mjs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -15,6 +16,7 @@ import { createLane } from "./domain.mjs";
 import {
   LANE_OUTCOME_SCHEMA,
   MAX_AUTOMATIC_CONTINUATIONS,
+  buildDeveloperInstructions,
   buildExecutionPrompt,
   decideLaneOutcome
 } from "./lane-outcome.mjs";
@@ -23,6 +25,9 @@ import { redactText } from "./redaction.mjs";
 const MAX_PROMPT_LENGTH = 128 * 1024;
 const MAX_TRANSCRIPT_ITEMS = 96;
 const MAX_TRANSCRIPT_ITEM_LENGTH = 4_096;
+const MAX_TRANSCRIPT_TURNS = 24;
+const MAX_PREFLIGHT_OUTPUT = 16 * 1024;
+const REPORT_REPAIR_LIMIT = 1;
 const IGNORED_NOTIFICATION_METHODS = new Set([
   "item/agentMessage/delta",
   "item/reasoning/summaryTextDelta",
@@ -70,6 +75,67 @@ export function sandboxPolicyForLane(lane) {
     access: Object.freeze({ type: "fullAccess" }),
     networkAccess: false
   });
+}
+
+function isInsideWorkspace(workspacePath, candidate) {
+  const relative = path.relative(path.resolve(workspacePath), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
+}
+
+function workspaceRelativePath(workspacePath, candidate) {
+  if (typeof candidate !== "string" || !candidate || /[\u0000-\u001f\u007f]/u.test(candidate)) return null;
+  const absolute = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(workspacePath, candidate);
+  if (!isInsideWorkspace(workspacePath, absolute)) return null;
+  const relative = path.relative(path.resolve(workspacePath), absolute).replaceAll(path.sep, "/");
+  return relative && relative.length <= 512 ? relative : null;
+}
+
+function recordTouchedFiles(lane, item) {
+  if (item?.type !== "fileChange" || !Array.isArray(item.changes)) return;
+  lane.touchedFiles ??= new Set();
+  for (const change of item.changes) {
+    const relative = workspaceRelativePath(lane.workspacePath, change?.path);
+    if (relative) lane.touchedFiles.add(relative);
+    if (lane.touchedFiles.size >= 128) break;
+  }
+}
+
+async function exists(candidate) {
+  try {
+    await fs.access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safePreflightText(value, maximum = 1_000) {
+  return redactText(String(value ?? "")).slice(0, maximum);
+}
+
+function preflightFailure(check, response, lane) {
+  const stderr = safePreflightText(response?.stderr ?? "");
+  const stdout = safePreflightText(response?.stdout ?? "");
+  const details = stderr || stdout || `exit ${String(response?.exitCode ?? "unknown")}`;
+  const windowsHint = process.platform === "win32" && /EPERM|access is denied|permission/iu.test(details)
+    ? " On Windows, verify the Codex `[windows] sandbox = \"elevated\"` configuration or choose controller-owned verification; Fleet did not spend a model turn."
+    : "";
+  return Object.freeze({
+    ok: false,
+    status: "blocked",
+    check,
+    reason: `${check} preflight failed: ${details}.${windowsHint}`.slice(0, 2_000),
+    modelTurnStarted: false,
+    workspace: path.basename(lane.workspacePath)
+  });
+}
+
+function preflightPass(check, details = null) {
+  return Object.freeze({ ok: true, status: "passed", check, details, modelTurnStarted: false });
+}
+
+function preflightWarning(check, details) {
+  return Object.freeze({ ok: true, status: "warning", check, details, modelTurnStarted: false });
 }
 
 function imageSkillCandidates(response) {
@@ -173,13 +239,17 @@ function copyLane(lane) {
     workPerformed: lane.workPerformed,
     evidenceRefs: lane.evidenceRefs,
     verification: lane.verification,
+    verificationResults: lane.verificationResults,
     artifactRefs: lane.artifactRefs,
     commitRefs: lane.commitRefs,
     configChanges: lane.configChanges,
     outcomeDiagnostics: lane.outcomeDiagnostics,
     controllerRequest: lane.controllerRequest,
     stopReason: lane.stopReason,
-    automaticContinuations: lane.automaticContinuations
+    automaticContinuations: lane.automaticContinuations,
+    reportRepairAttempts: lane.reportRepairAttempts ?? 0,
+    preflight: lane.preflight ?? null,
+    touchedFiles: Object.freeze([...(lane.touchedFiles ?? [])].slice(0, 128))
   });
 }
 
@@ -418,6 +488,131 @@ export class FleetRuntime {
     return this.modelCatalogue.models;
   }
 
+  modelCatalogInfo() {
+    const discoveredAt = this.modelCatalogue?.at ?? null;
+    return Object.freeze({
+      source: "connected-codex-runtime",
+      discoveredAt: discoveredAt === null ? null : new Date(discoveredAt).toISOString(),
+      ageMs: discoveredAt === null ? null : Math.max(0, Date.now() - discoveredAt),
+      models: Object.freeze([...(this.modelCatalogue?.models ?? [])])
+    });
+  }
+
+  async refreshModels() {
+    this.modelCatalogue = null;
+    return this.listModels();
+  }
+
+  async commandPreflight(lane, command, options = {}) {
+    let response;
+    try {
+      response = await this.broker.request("command/exec", {
+        command,
+        cwd: lane.workspacePath,
+        timeoutMs: options.timeoutMs ?? 5_000,
+        outputBytesCap: options.outputBytesCap ?? MAX_PREFLIGHT_OUTPUT,
+        sandboxPolicy: options.sandboxPolicy ?? sandboxPolicyForLane(lane),
+        ...(options.env ? { env: options.env } : {})
+      }, { timeoutMs: (options.timeoutMs ?? 5_000) + 2_000 });
+    } catch (error) {
+      if (error?.rpcCode === -32601 || /unknown (?:method|variant)|not implemented/iu.test(error?.message ?? "")) {
+        return preflightWarning(options.check ?? "process", "Codex command/exec preflight is unavailable in this runtime; admission continues without claiming the process gate was proven.");
+      }
+      return Object.freeze({
+        ok: false,
+        status: "blocked",
+        check: options.check ?? "process",
+        reason: `Preflight transport failed before any model turn: ${safePreflightText(error?.message ?? error)}`,
+        modelTurnStarted: false
+      });
+    }
+    if (response?.exitCode !== 0) return preflightFailure(options.check ?? "process", response, lane);
+    return preflightPass(options.check ?? "process", safePreflightText(response.stdout ?? "", 2_000));
+  }
+
+  async inspectPythonEnvironment(lane) {
+    const pyproject = path.join(lane.workspacePath, "pyproject.toml");
+    if (!await exists(pyproject)) return null;
+    const candidates = process.platform === "win32"
+      ? [path.join(lane.workspacePath, ".venv", "Scripts", "python.exe")]
+      : [path.join(lane.workspacePath, ".venv", "bin", "python")];
+    const interpreter = (await Promise.all(candidates.map(async (candidate) => (
+      await exists(candidate) ? candidate : null
+    )))).find(Boolean);
+    if (!interpreter) {
+      const hasUvLock = await exists(path.join(lane.workspacePath, "uv.lock"));
+      return preflightWarning(
+        "python-environment",
+        hasUvLock
+          ? "pyproject.toml and uv.lock exist but this worktree has no local .venv. Fleet will not guess that a shared/editable environment belongs to this worktree."
+          : "pyproject.toml exists but this worktree has no local .venv; Python provenance was not proven."
+      );
+    }
+    const script = [
+      "import importlib.metadata as m, json, pathlib, sys, urllib.parse, urllib.request",
+      "roots=[]",
+      "for d in m.distributions():",
+      "  try:",
+      "    raw=d.read_text('direct_url.json')",
+      "    if not raw: continue",
+      "    obj=json.loads(raw)",
+      "    if not obj.get('dir_info',{}).get('editable'): continue",
+      "    url=obj.get('url','')",
+      "    if url.startswith('file:'):",
+      "      p=urllib.request.url2pathname(urllib.parse.urlparse(url).path)",
+      "      roots.append(str(pathlib.Path(p).resolve()))",
+      "  except Exception: pass",
+      "print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'editableRoots':sorted(set(roots))}))"
+    ].join("\n");
+    const result = await this.commandPreflight(lane, [interpreter, "-c", script], {
+      check: "python-environment",
+      timeoutMs: 8_000
+    });
+    if (!result.ok || result.status === "warning") return result;
+    let payload;
+    try {
+      payload = JSON.parse(result.details);
+    } catch {
+      return preflightWarning("python-environment", "The local .venv ran, but its provenance response could not be decoded.");
+    }
+    const outside = (payload.editableRoots ?? []).filter((candidate) => (
+      typeof candidate === "string" && path.isAbsolute(candidate) && !isInsideWorkspace(lane.workspacePath, candidate)
+    ));
+    if (outside.length > 0) {
+      return Object.freeze({
+        ok: false,
+        status: "blocked",
+        check: "python-environment",
+        reason: "The worktree's local Python environment resolves one or more editable distributions outside this workspace. Tests could pass against a different worktree, so Fleet refused to spend a model turn.",
+        modelTurnStarted: false,
+        externalEditableCount: outside.length
+      });
+    }
+    return preflightPass("python-environment", "Local .venv provenance is rooted in this workspace.");
+  }
+
+  async preflightLane(lane) {
+    const checks = [];
+    if (lane.authority?.sandbox === "workspace-write") {
+      const nestedProcessScript = [
+        "const {spawnSync}=require('node:child_process');",
+        "const r=spawnSync(process.execPath,['-e','process.exit(0)'],{stdio:'ignore'});",
+        "if(r.error){console.error(r.error.code||r.error.message);process.exit(91)}",
+        "process.exit(r.status??92);"
+      ].join("");
+      checks.push(await this.commandPreflight(lane, [process.execPath, "-e", nestedProcessScript], {
+        check: "nested-process"
+      }));
+      if (checks.at(-1)?.ok === false) return Object.freeze({ ok: false, checks: Object.freeze(checks) });
+    }
+    const python = await this.inspectPythonEnvironment(lane);
+    if (python) {
+      checks.push(python);
+      if (python.ok === false) return Object.freeze({ ok: false, checks: Object.freeze(checks) });
+    }
+    return Object.freeze({ ok: true, checks: Object.freeze(checks) });
+  }
+
   async prepareSkillInputs(lane) {
     if (!needsImageSkill(lane.authority)) {
       lane.skillInputs = Object.freeze([]);
@@ -578,6 +773,7 @@ export class FleetRuntime {
       case "item/started":
       case "item/completed": {
         const item = message.params?.item;
+        recordTouchedFiles(lane, item);
         if (item?.type === "fileChange" && typeof item.id === "string" && message.method === "item/started") {
           lane.interventionItems ??= new Map();
           if (Array.isArray(item.changes) && item.changes.length <= 64 && Buffer.byteLength(JSON.stringify(item.changes)) <= 32 * 1024) {
@@ -618,7 +814,10 @@ export class FleetRuntime {
           const decision = decideLaneOutcome(
             lane.lastMessage ?? "",
             lane.automaticContinuations,
-            { authority: lane.authority }
+            {
+              authority: lane.authority,
+              reportRepairAttempts: lane.reportRepairAttempts ?? 0
+            }
           );
           const commits = decision.result
             ? this.verifyReportedCommits(lane, decision.result)
@@ -639,6 +838,7 @@ export class FleetRuntime {
                 workPerformed: result.workPerformed,
                 evidenceRefs: result.evidenceRefs,
                 verification: result.verification,
+                verificationResults: result.verificationResults,
                 artifactRefs: result.artifactRefs,
                 commitRefs: commits.verified,
                 configChanges: result.configChanges,
@@ -664,6 +864,7 @@ export class FleetRuntime {
                 workPerformed: result.workPerformed,
                 evidenceRefs: result.evidenceRefs,
                 verification: result.verification,
+                verificationResults: result.verificationResults,
                 artifactRefs: result.artifactRefs,
                 commitRefs: commits.verified,
                 configChanges: result.configChanges,
@@ -674,6 +875,8 @@ export class FleetRuntime {
               "turn.complete",
               { threadId: lane.threadId, turnId: lane.turnId }
             );
+          } else if (decision.action === "repair-report") {
+            void this.beginReportRepair(lane, decision.prompt, decision.diagnostics);
           } else if (decision.action === "continue") {
             void this.beginAutomaticContinuation(lane, decision.prompt);
           } else if (decision.action === "outcome-unknown") {
@@ -687,6 +890,7 @@ export class FleetRuntime {
                 workPerformed: decision.result?.workPerformed ?? Object.freeze([]),
                 evidenceRefs: decision.result?.evidenceRefs ?? Object.freeze([]),
                 verification: decision.result?.verification ?? Object.freeze([]),
+                verificationResults: decision.result?.verificationResults ?? Object.freeze([]),
                 artifactRefs: decision.result?.artifactRefs ?? Object.freeze([]),
                 commitRefs: commits.verified,
                 configChanges: decision.result?.configChanges ?? Object.freeze([]),
@@ -712,6 +916,7 @@ export class FleetRuntime {
                 workPerformed: decision.result?.workPerformed ?? Object.freeze([]),
                 evidenceRefs: decision.result?.evidenceRefs ?? Object.freeze([]),
                 verification: decision.result?.verification ?? Object.freeze([]),
+                verificationResults: decision.result?.verificationResults ?? Object.freeze([]),
                 artifactRefs: decision.result?.artifactRefs ?? Object.freeze([]),
                 commitRefs: commits.verified,
                 configChanges: decision.result?.configChanges ?? Object.freeze([]),
@@ -772,6 +977,7 @@ export class FleetRuntime {
       workPerformed: Object.freeze([]),
       evidenceRefs: Object.freeze([]),
       verification: Object.freeze([]),
+      verificationResults: Object.freeze([]),
       artifactRefs: Object.freeze([]),
       commitRefs: Object.freeze([]),
       configChanges: Object.freeze([]),
@@ -779,18 +985,41 @@ export class FleetRuntime {
       controllerRequest: null,
       stopReason: null,
       automaticContinuations: 0,
+      reportRepairAttempts: 0,
+      verificationPlan: contract.verificationPlan ?? null,
+      sharedContext: contract.sharedContext ?? null,
+      preflight: null,
       skillInputs: Object.freeze([])
     };
     this.lanes.set(lane.id, lane);
     this.emit(lane.id, "lane.queued", {});
 
     try {
+      lane.preflight = await this.preflightLane(lane);
+      if (lane.preflight.ok === false) {
+        const failed = lane.preflight.checks.find((check) => check.ok === false);
+        const question = failed?.reason ?? "Fleet preflight failed before the first model turn.";
+        this.updateLane(
+          lane,
+          {
+            status: "blocked",
+            phase: "preflight",
+            exitReason: question,
+            controllerRequest: Object.freeze({ kind: "runtime_blocker", question }),
+            stopReason: question
+          },
+          "lane.preflight-blocked",
+          { check: failed?.check ?? "unknown", modelTurnStarted: false }
+        );
+        return copyLane(lane);
+      }
       await this.prepareSkillInputs(lane);
       const thread = await this.broker.request("thread/start", {
         cwd: lane.workspacePath,
         model: lane.model,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
+        developerInstructions: buildDeveloperInstructions(lane.sharedContext),
         serviceName: "codex_fleet_cc",
         ephemeral: lane.ephemeral
       });
@@ -816,7 +1045,10 @@ export class FleetRuntime {
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
-        input: this.turnInput(lane, buildExecutionPrompt(prompt)),
+        input: this.turnInput(lane, buildExecutionPrompt(prompt, {
+          verificationPlan: lane.verificationPlan,
+          includePosture: false
+        })),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -833,6 +1065,72 @@ export class FleetRuntime {
         { message: lane.exitReason }
       );
       throw error;
+    }
+  }
+
+  async beginReportRepair(lane, prompt, diagnostics = null) {
+    if ((lane.reportRepairAttempts ?? 0) >= REPORT_REPAIR_LIMIT) {
+      const reason = "Fleet could not repair the lane's structured result after one report-only retry.";
+      this.updateLane(
+        lane,
+        {
+          status: "outcome_unknown",
+          phase: "outcome_unknown",
+          exitReason: reason,
+          outcomeDiagnostics: diagnostics ?? lane.outcomeDiagnostics,
+          stopReason: reason
+        },
+        "lane.outcome-unknown",
+        { threadId: lane.threadId, turnId: lane.turnId }
+      );
+      return;
+    }
+    const priorMessage = lane.lastMessage;
+    const attempt = (lane.reportRepairAttempts ?? 0) + 1;
+    this.unbindTurn(lane);
+    this.updateLane(
+      lane,
+      {
+        status: "running",
+        phase: `repairing-report ${attempt}/${REPORT_REPAIR_LIMIT}`,
+        lastMessage: priorMessage,
+        reportRepairAttempts: attempt,
+        outcomeDiagnostics: diagnostics ?? lane.outcomeDiagnostics,
+        controllerRequest: null,
+        stopReason: null
+      },
+      "lane.report-repairing",
+      { threadId: lane.threadId, attempt, mutationDisabled: true }
+    );
+    try {
+      await this.dispatchTurn(lane, {
+        threadId: lane.threadId,
+        cwd: lane.workspacePath,
+        approvalPolicy: "never",
+        sandboxPolicy: Object.freeze({
+          type: "readOnly",
+          access: Object.freeze({ type: "fullAccess" }),
+          networkAccess: false
+        }),
+        input: [{ type: "text", text: prompt, text_elements: [] }],
+        model: lane.model,
+        effort: lane.effort,
+        outputSchema: LANE_OUTCOME_SCHEMA
+      });
+    } catch (error) {
+      const reason = `Report-only recovery failed: ${redactText(error?.message ?? error)}`;
+      this.updateLane(
+        lane,
+        {
+          status: "outcome_unknown",
+          phase: "outcome_unknown",
+          exitReason: reason,
+          stopReason: reason,
+          outcomeDiagnostics: diagnostics ?? lane.outcomeDiagnostics
+        },
+        "lane.outcome-unknown",
+        { threadId: lane.threadId, attempt }
+      );
     }
   }
 
@@ -857,7 +1155,10 @@ export class FleetRuntime {
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
-        input: this.turnInput(lane, buildExecutionPrompt(prompt)),
+        input: this.turnInput(lane, buildExecutionPrompt(prompt, {
+          verificationPlan: lane.verificationPlan,
+          includePosture: false
+        })),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -894,6 +1195,7 @@ export class FleetRuntime {
       workPerformed: lane.workPerformed,
       evidenceRefs: lane.evidenceRefs,
       verification: lane.verification,
+      verificationResults: lane.verificationResults,
       artifactRefs: lane.artifactRefs,
       commitRefs: lane.commitRefs,
       configChanges: lane.configChanges,
@@ -901,6 +1203,7 @@ export class FleetRuntime {
       controllerRequest: lane.controllerRequest,
       stopReason: lane.stopReason,
       automaticContinuations: lane.automaticContinuations,
+      reportRepairAttempts: lane.reportRepairAttempts,
       updatedAt: lane.updatedAt
     };
     this.unbindTurn(lane);
@@ -915,13 +1218,15 @@ export class FleetRuntime {
         workPerformed: Object.freeze([]),
         evidenceRefs: Object.freeze([]),
         verification: Object.freeze([]),
+        verificationResults: Object.freeze([]),
         artifactRefs: Object.freeze([]),
         commitRefs: Object.freeze([]),
         configChanges: Object.freeze([]),
         outcomeDiagnostics: null,
         controllerRequest: null,
         stopReason: null,
-        automaticContinuations: 0
+        automaticContinuations: 0,
+        reportRepairAttempts: 0
       },
       "lane.continued",
       { threadId: lane.threadId }
@@ -932,7 +1237,10 @@ export class FleetRuntime {
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
-        input: this.turnInput(lane, buildExecutionPrompt(prompt)),
+        input: this.turnInput(lane, buildExecutionPrompt(prompt, {
+          verificationPlan: lane.verificationPlan,
+          includePosture: false
+        })),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -1011,6 +1319,7 @@ export class FleetRuntime {
       workPerformed: Object.freeze(record.workPerformed ?? []),
       evidenceRefs: Object.freeze(record.evidenceRefs ?? []),
       verification: Object.freeze(record.verification ?? []),
+      verificationResults: Object.freeze(record.verificationResults ?? []),
       artifactRefs: Object.freeze(record.artifactRefs ?? []),
       commitRefs: Object.freeze(record.commitRefs ?? []),
       configChanges: Object.freeze(record.configChanges ?? []),
@@ -1018,6 +1327,10 @@ export class FleetRuntime {
       controllerRequest: record.controllerRequest ?? null,
       stopReason: record.stopReason ?? null,
       automaticContinuations: 0,
+      reportRepairAttempts: 0,
+      verificationPlan: record.verificationPlan ?? null,
+      sharedContext: null,
+      preflight: record.preflight ?? null,
       skillInputs: Object.freeze([])
     };
     await this.prepareSkillInputs(lane);
@@ -1028,7 +1341,8 @@ export class FleetRuntime {
       cwd: lane.workspacePath,
       model: lane.model,
       approvalPolicy: lane.interactive === true ? "on-request" : "never",
-      sandboxPolicy: sandboxPolicyForLane(lane)
+      sandboxPolicy: sandboxPolicyForLane(lane),
+      excludeTurns: true
     });
     return this.beginContinuation(lane, assertPrompt(message, "Follow-up message"));
   }
@@ -1074,13 +1388,81 @@ export class FleetRuntime {
     try { return await promise; } finally { if (this.nativeInventoryRequest?.promise === promise) this.nativeInventoryRequest = null; }
   }
 
+  async probeContinuation(record) {
+    if (this.closed) throw new Error("Fleet runtime is closed.");
+    const threadId = assertRuntimeId(record?.threadId, "Persisted Codex thread id");
+    const previousTurnId = record?.pendingContinuation?.previousTurnId ?? record?.turnId ?? null;
+    try {
+      await this.broker.request("thread/read", { threadId, includeTurns: false });
+      const page = await this.broker.request("thread/turns/list", {
+        threadId,
+        cursor: null,
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "full"
+      });
+      const latest = Array.isArray(page?.data) ? page.data[0] : null;
+      if (!latest?.id) {
+        return Object.freeze({ state: "unknown", threadId, previousTurnId, latestTurnId: null });
+      }
+      if (latest.id === previousTurnId) {
+        return Object.freeze({
+          state: "not-started",
+          threadId,
+          previousTurnId,
+          latestTurnId: latest.id,
+          latestStatus: latest.status ?? null
+        });
+      }
+      const terminal = ["completed", "failed", "interrupted", "cancelled"].includes(latest.status);
+      return Object.freeze({
+        state: terminal ? "terminal-started" : "started",
+        threadId,
+        previousTurnId,
+        latestTurnId: latest.id,
+        latestStatus: latest.status ?? null
+      });
+    } catch (error) {
+      return Object.freeze({
+        state: "unknown",
+        threadId,
+        previousTurnId,
+        latestTurnId: null,
+        error: safePreflightText(error?.message ?? error)
+      });
+    }
+  }
+
   async readThread(threadId) {
     if (this.closed) throw new Error("Fleet runtime is closed.");
+    const validatedThreadId = assertRuntimeId(threadId, "Codex thread id");
     const response = await this.broker.request("thread/read", {
-      threadId: assertRuntimeId(threadId, "Codex thread id"),
-      includeTurns: true
+      threadId: validatedThreadId,
+      includeTurns: false
     });
-    return safeThreadSession(response?.thread);
+    let turns = [];
+    let historyMode = "paged";
+    try {
+      const page = await this.broker.request("thread/turns/list", {
+        threadId: validatedThreadId,
+        cursor: null,
+        limit: MAX_TRANSCRIPT_TURNS,
+        sortDirection: "desc",
+        itemsView: "full"
+      });
+      turns = Array.isArray(page?.data) ? [...page.data].reverse() : [];
+    } catch (error) {
+      if (error?.rpcCode === -32601 || /unknown (?:method|variant)|not implemented/iu.test(error?.message ?? "")) {
+        historyMode = "metadata-only";
+      } else {
+        throw error;
+      }
+    }
+    return Object.freeze({
+      ...safeThreadSession({ ...response?.thread, turns }),
+      historyMode,
+      historyTruncated: historyMode === "paged" && turns.length >= MAX_TRANSCRIPT_TURNS
+    });
   }
 
   async interruptLane(id) {

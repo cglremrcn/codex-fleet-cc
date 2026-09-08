@@ -166,7 +166,7 @@ test("semantic failures expose only bounded field diagnostics", () => {
   });
 });
 
-test("ambiguous mutable results become unknown instead of automatic retries", () => {
+test("ambiguous mutable results get one report-only repair before becoming unknown", () => {
   const mutationAuthorities = [
     { sandbox: "workspace-write" },
     { sandbox: "read-only", browser: { mutate: true } },
@@ -181,8 +181,11 @@ test("ambiguous mutable results become unknown instead of automatic retries", ()
 
   for (const authority of mutationAuthorities) {
     assert.equal(hasMutationAuthority(authority), true);
+    const malformed = decideLaneOutcome("not json", 0, { authority });
+    assert.equal(malformed.action, "repair-report");
+    assert.match(malformed.prompt, /Do not perform more implementation/iu);
     assert.equal(
-      decideLaneOutcome("not json", 0, { authority }).action,
+      decideLaneOutcome("not json", 0, { authority, reportRepairAttempts: 1 }).action,
       "outcome-unknown"
     );
     assert.equal(
@@ -190,6 +193,39 @@ test("ambiguous mutable results become unknown instead of automatic retries", ()
       "outcome-unknown"
     );
   }
+});
+
+test("structured verification distinguishes passed, failed, skipped, and blocked checks", () => {
+  const complete = decideLaneOutcome(payload({
+    verification: [],
+    verificationResults: [{
+      check: "unit tests",
+      status: "passed",
+      evidence: "node --test passed",
+      reason: null
+    }]
+  }), 0);
+  assert.equal(complete.action, "complete");
+
+  const failed = decideLaneOutcome(payload({
+    verification: [],
+    verificationResults: [{
+      check: "browser visual QA",
+      status: "failed",
+      evidence: "render mismatch",
+      reason: "measured size differs"
+    }]
+  }), 0);
+  assert.equal(failed.action, "continue");
+
+  const parsed = parseLaneOutcome(payload({
+    verificationResults: [
+      { check: "postgres", status: "skipped", evidence: null, reason: "database unavailable" },
+      { check: "build", status: "blocked", evidence: null, reason: "sandbox EPERM" }
+    ]
+  }));
+  assert.equal(parsed.verificationResults[0].status, "skipped");
+  assert.equal(parsed.verificationResults[1].status, "blocked");
 });
 
 test("controller-only requests take precedence over contradictory continuation outcomes", () => {
@@ -226,4 +262,22 @@ test("controller-only requests take precedence over contradictory continuation o
 test("artifact references are bounded workspace-relative paths", () => {
   assert.throws(() => parseLaneOutcome(payload({ artifactRefs: ["../secret.txt"] })), /artifact/iu);
   assert.throws(() => parseLaneOutcome(payload({ artifactRefs: ["C:\\secret.txt"] })), /artifact/iu);
+});
+
+test("detailed work evidence survives the old 512-character truncation boundary", () => {
+  const detail = "x".repeat(2048);
+  const result = parseLaneOutcome(JSON.stringify({
+    outcome: "accomplished",
+    summary: "Detailed evidence retained.",
+    workPerformed: [detail],
+    evidenceRefs: ["evidence/detail.txt"],
+    artifactRefs: [],
+    verification: ["Reviewed the detailed work record."],
+    verificationResults: [],
+    commitRefs: [],
+    configChanges: [],
+    controllerRequest: null,
+    stopReason: null
+  }));
+  assert.equal(result.workPerformed[0].length, detail.length);
 });
