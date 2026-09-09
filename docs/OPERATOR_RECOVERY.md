@@ -54,10 +54,12 @@ fleet models --refresh --workspace <path> --json
 
 Refresh is allowed only while the Fleet runtime is idle. Runtime contracts put `modelPolicy: "runtime"` at the root, never inside a lane.
 
-Fleet's top-level CLI entrypoint resolves ordinary control commands through the ownership-manifest integration runtime. This prevents an installed plugin copy from silently validating a newer integration runtime contract with an older schema. Setup and uninstall stay on the installed plugin surface because they own the version transition itself.
+Fleet's top-level CLI entrypoint resolves ordinary control commands through the ownership-manifest integration runtime when the applied runtime version differs from the installed plugin version. This prevents an older installed plugin copy from silently validating a newer integration-runtime contract with an older schema. Same-version control stays on the current installed copy; setup, uninstall, doctor, and help also stay there because those surfaces own or diagnose the version transition itself.
 
 ## Verification boundaries
 
-A Fleet preflight can prove that a nested process can start and that a worktree-local Python environment does not resolve editable packages outside the selected workspace. It cannot fabricate a PostgreSQL server, browser, external font cache, or other project prerequisite.
+Fleet distinguishes an environment limitation from a false-evidence hazard. A nested-process preflight such as Windows Node `spawn EPERM` is recorded as a non-blocking warning and injected into the lane as a controller-owned verification boundary. Safe file implementation may continue, but the lane must not claim the blocked build/worker check passed or burn repeated turns retrying it.
 
-Represent controller-owned or unavailable checks explicitly in `verificationPlan` and the returned `verificationResults`. `skipped` or `blocked` is not `passed`. For a read-only Python verifier that should not write pytest caches, prefer `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` when those flags are applicable to that repository.
+Python worktree provenance is stricter. If a worktree-local `.venv` resolves an editable package outside the selected workspace, Fleet blocks before the model turn because tests could otherwise pass against a sibling checkout. A missing local `.venv` remains explicitly unproven rather than silently borrowing a shared environment.
+
+Fleet cannot fabricate a PostgreSQL server, browser, external font cache, or other project prerequisite. Represent controller-owned or unavailable checks explicitly in `verificationPlan` and the returned `verificationResults`; `skipped` or `blocked` is not `passed`. For a read-only Python verifier that should not write pytest caches, prefer `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` when those flags are applicable to that repository.
