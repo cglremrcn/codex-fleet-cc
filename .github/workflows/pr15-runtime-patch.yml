@@ -130,7 +130,9 @@ jobs:
             assert.equal(complete.preflight.checks[0].status, "warning");
             assert.equal(complete.preflight.checks[0].blocking, false);
             assert.equal(complete.preflight.checks[0].modelTurnStarted, false);
-            assert.match(fixture.readState().lastTurnStart.prompt, /nested-process.*controller-owned verification/is);
+            const dispatchedPrompt = fixture.readState().lastTurnStart.prompt;
+            assert.match(dispatchedPrompt, /controller-owned verification/i);
+            assert.match(dispatchedPrompt, /nested-process.*EPERM/is);
             assert.equal(fixture.readState().threads.length, 1);
             assert.equal(fixture.readState().commandExecCalls, 1);
           });'''
