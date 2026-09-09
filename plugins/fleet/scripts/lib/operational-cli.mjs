@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { EXIT_CODES, runCli } from "./cli.mjs";
-import { LANE_STATUSES, isTerminalStatus } from "./domain.mjs";
+import { LANE_STATUSES } from "./domain.mjs";
 import { getFleetDataDir, resolveOwnedPath, workspaceKey } from "./paths.mjs";
 import { renderPlainStatus, selectStatusLanes, summarizeStatusLane } from "./plain-status.mjs";
 import { readWorkspaceState } from "./safe-state.mjs";
@@ -38,20 +38,20 @@ const HELP = Object.freeze({
     "Usage: fleet <command> [options]",
     "",
     "Recovery and observation:",
-    "  result --lane <id> --wait [--timeout-ms <ms>]  Wait without polling; default 10 minutes.",
-    "  watch [--timeout-ms <ms>] [--stall-ms <ms>]    Long-poll for terminal/attention/stall events.",
+    "  result --lane <id> --wait [--timeout-ms <ms>]  Wait without shell polling; default 10 minutes.",
+    "  watch [--timeout-ms <ms>] [--stall-ms <ms>]    Long-poll terminal/attention/stall events.",
     "  reconcile <id> [--assume-not-started --evidence <ref>]",
     "  resolve <id> --evidence <ref> [--outcome complete|failed|cancelled]",
     "  archive <id>                                  Hide a terminal lane from normal status.",
-    "  cancel <id>                                   Safe one-command cancellation shortcut.",
+    "  cancel <id>                                   Identity-bound one-command cancellation shortcut.",
     "",
     "Discovery and status:",
     "  models [--refresh] [--workspace <path>]        Refresh requires an idle Fleet runtime.",
     "  status [--archived|--include-archived]         Archived lanes are hidden by default.",
-    "  status --workspace <path>                      Warns when sibling worktrees own Fleet ledgers.",
+    "  status --workspace <path>                      Warns about sibling-worktree Fleet ledgers.",
     "",
     "Contracts:",
-    "  start/follow-up still accept bounded JSON via --stdin or --contract.",
+    "  start/follow-up accept bounded JSON via --stdin or --contract.",
     "  Run `fleet help start` or `fleet help follow-up` for the contract shape.",
     ""
   ].join("\n"),
@@ -69,23 +69,23 @@ const HELP = Object.freeze({
     "Contract:",
     '{"schemaVersion":1,"workspacePath":"ABSOLUTE_PATH","laneId":"LANE_ID","message":"FOLLOW_UP"}',
     "",
-    "Do not reuse a lane ID for a new admission. Unknown mutable outcomes must be reconciled first.",
+    "Unknown mutable outcomes must be reconciled before another mutable continuation.",
     ""
   ].join("\n"),
   cancel: [
     "Usage:",
     "  fleet cancel <laneId> --workspace <path> [--json]",
-    "  fleet cancel --stdin|--contract <file> [--confirm] [--json]  # low-level two-step API",
+    "  fleet cancel --stdin|--contract <file> [--confirm] [--json]  # low-level protocol",
     "",
     "The shortcut performs preview + identity-bound confirmation internally. If the target turn moves,",
-    "the confirmation digest changes and cancellation is refused. Returned touchedFiles must be reviewed.",
+    "confirmation is refused. Review the returned touchedFiles before cleanup or revert.",
     ""
   ].join("\n"),
   result: [
     "Usage: fleet result --lane <id> [--wait] [--timeout-ms <ms>] [--pretty|--summary] [--json]",
     "",
-    "`--wait` defaults to 600000 ms and uses the supervisor's event waiter rather than a sleep/poll loop.",
-    "A wait timeout is not a lane failure; the response includes timedOut:true and the live lane state.",
+    "`--wait` defaults to 600000 ms and uses the supervisor waiter instead of a shell sleep loop.",
+    "A wait timeout is not a lane failure; timedOut:true preserves the current live lane state.",
     ""
   ].join("\n"),
   watch: [
@@ -126,16 +126,35 @@ const HELP = Object.freeze({
     "                    [--status <value> ...] [--since 30m|12h|7d]",
     "                    [--archived|--include-archived]",
     "",
-    "Normal status hides archived lanes and reports queue blockers. If the selected path has no lanes but",
-    "registered sibling worktrees do, Fleet reports those ledgers instead of implying that no work exists.",
+    "Normal status hides archived lanes and reports live queue blockers when a supervisor already exists.",
+    "An empty selected ledger may include sibling-worktree routing hints instead of implying global absence.",
     ""
   ].join("\n")
 });
 
 class OperationalInputError extends Error {}
 
+function normalizeSink(value, fallback) {
+  if (typeof value === "function") return value;
+  if (Array.isArray(value)) return (text) => value.push(text);
+  return fallback;
+}
+
+function ioOptions(options = {}) {
+  return {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    platform: options.platform ?? process.platform,
+    home: options.home ?? os.homedir(),
+    stdout: normalizeSink(options.stdout, (text) => process.stdout.write(text)),
+    stderr: normalizeSink(options.stderr, (text) => process.stderr.write(text)),
+    dependencies: options.dependencies ?? {}
+  };
+}
+
 function write(io, stream, text) {
-  io[stream](`${text.endsWith("\n") ? text : `${text}\n`}`);
+  const value = String(text);
+  io[stream](value.endsWith("\n") ? value : `${value}\n`);
 }
 
 function safeId(value, label = "lane id") {
@@ -174,7 +193,7 @@ function sinceDuration(value) {
   return duration;
 }
 
-function parseOptions(tokens, spec = {}) {
+function parseOptions(tokens, spec = {}, command = "command") {
   const values = new Map();
   const booleans = new Set();
   const positionals = [];
@@ -182,6 +201,7 @@ function parseOptions(tokens, spec = {}) {
   const valueFlags = new Set(spec.values ?? []);
   const booleanFlags = new Set(spec.booleans ?? []);
   const repeatableFlags = new Set(spec.repeatable ?? []);
+
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (!token.startsWith("--")) {
@@ -216,21 +236,9 @@ function parseOptions(tokens, spec = {}) {
       index += 1;
       continue;
     }
-    throw new OperationalInputError(`Unknown operational flag: ${token}. Run fleet --help.`);
+    throw new OperationalInputError(`Flag ${token} is not valid for ${command}. Run fleet ${command} --help.`);
   }
   return { values, booleans, positionals, repeatable };
-}
-
-function ioOptions(options = {}) {
-  return {
-    cwd: options.cwd ?? process.cwd(),
-    env: options.env ?? process.env,
-    platform: options.platform ?? process.platform,
-    home: options.home ?? os.homedir(),
-    stdout: options.stdout ?? ((text) => process.stdout.write(text)),
-    stderr: options.stderr ?? ((text) => process.stderr.write(text)),
-    dependencies: options.dependencies ?? {}
-  };
 }
 
 async function contextFor(workspacePath, io) {
@@ -256,9 +264,8 @@ async function readState(root, dependencies) {
 }
 
 async function liveRequest(context, method, params, io, requestTimeoutMs = 10_000) {
-  const dependencies = io.dependencies;
-  const ensure = dependencies.ensureSupervisor ?? ensureSupervisor;
-  const request = dependencies.requestSupervisor ?? requestSupervisor;
+  const ensure = io.dependencies.ensureSupervisor ?? ensureSupervisor;
+  const request = io.dependencies.requestSupervisor ?? requestSupervisor;
   const manifest = await ensure({
     dataDir: context.dataDir,
     workspaceKey: context.key,
@@ -278,9 +285,8 @@ async function liveRequest(context, method, params, io, requestTimeoutMs = 10_00
 }
 
 async function existingSupervisorStatus(context, io) {
-  const dependencies = io.dependencies;
-  const readManifest = dependencies.readSupervisorManifest ?? readSupervisorManifest;
-  const request = dependencies.requestSupervisor ?? requestSupervisor;
+  const readManifest = io.dependencies.readSupervisorManifest ?? readSupervisorManifest;
+  const request = io.dependencies.requestSupervisor ?? requestSupervisor;
   try {
     const manifest = await readManifest({
       dataDir: context.dataDir,
@@ -310,11 +316,9 @@ function inspectBranch(workspace, dependencies) {
     windowsHide: true,
     timeout: 2_000
   });
-  if (result.status === 0) {
-    const branch = result.stdout.trim().split(/\r?\n/u)[0];
-    return branch && branch.length <= 256 ? branch : "unknown";
-  }
-  return "unknown";
+  if (result.status !== 0) return "unknown";
+  const branch = result.stdout.trim().split(/\r?\n/u)[0];
+  return branch && branch.length <= 256 ? branch : "unknown";
 }
 
 function gitCommonDir(workspace, dependencies) {
@@ -331,16 +335,20 @@ function gitCommonDir(workspace, dependencies) {
   return path.resolve(workspace, raw);
 }
 
+function comparablePath(value, platform) {
+  const resolved = path.resolve(value);
+  return platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
 async function relatedWorktreeLedgers(context, io) {
-  const dependencies = io.dependencies;
-  if (typeof dependencies.relatedWorktreeLedgers === "function") {
-    return dependencies.relatedWorktreeLedgers(context);
+  if (typeof io.dependencies.relatedWorktreeLedgers === "function") {
+    return io.dependencies.relatedWorktreeLedgers(context);
   }
-  const currentCommon = gitCommonDir(context.workspace, dependencies);
+  const currentCommon = gitCommonDir(context.workspace, io.dependencies);
   if (!currentCommon) return [];
   let projects;
   try {
-    projects = await (dependencies.listRegisteredWorkspaces ?? listRegisteredWorkspaces)(context.dataDir);
+    projects = await (io.dependencies.listRegisteredWorkspaces ?? listRegisteredWorkspaces)(context.dataDir);
   } catch {
     return [];
   }
@@ -348,13 +356,19 @@ async function relatedWorktreeLedgers(context, io) {
   for (const project of projects.projects ?? []) {
     if (!project.registered || project.workspaceKey === context.key) continue;
     try {
-      const registered = await (dependencies.resolveRegisteredWorkspace ?? resolveRegisteredWorkspace)(
+      const registered = await (io.dependencies.resolveRegisteredWorkspace ?? resolveRegisteredWorkspace)(
         context.dataDir,
         project.workspaceKey
       );
-      if (gitCommonDir(registered.workspacePath, dependencies) !== currentCommon) continue;
+      const candidateCommon = gitCommonDir(registered.workspacePath, io.dependencies);
+      if (
+        !candidateCommon
+        || comparablePath(candidateCommon, io.platform) !== comparablePath(currentCommon, io.platform)
+      ) {
+        continue;
+      }
       const root = resolveOwnedPath(context.dataDir, "workspaces", project.workspaceKey);
-      const state = await readState(root, dependencies);
+      const state = await readState(root, io.dependencies);
       const visible = state.lanes.filter((lane) => !lane.archivedAt);
       if (visible.length === 0) continue;
       related.push(Object.freeze({
@@ -369,7 +383,7 @@ async function relatedWorktreeLedgers(context, io) {
         )).length
       }));
     } catch {
-      // A stale/unreadable registration is not authority to expose or guess its path.
+      // Ignore stale/unreadable registrations; do not guess or expose paths.
     }
   }
   return related.slice(0, 32);
@@ -404,27 +418,13 @@ function renderOperationalStatus(payload) {
   return `${lines.join("\n")}\n`;
 }
 
-function outputPayload(io, payload, flags = {}) {
-  if (flags.json) {
-    write(io, "stdout", JSON.stringify(payload));
-    return;
-  }
-  if (flags.pretty) {
-    write(io, "stdout", JSON.stringify(payload, null, 2));
-    return;
-  }
-  write(io, "stdout", JSON.stringify(payload));
-}
-
 async function runStatus(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace", "--limit", "--since"],
     booleans: ["--json", "--all", "--summary", "--archived", "--include-archived"],
     repeatable: ["--status"]
-  });
-  if (parsed.positionals.length > 0) {
-    throw new OperationalInputError("status does not accept positional input.");
-  }
+  }, "status");
+  if (parsed.positionals.length > 0) throw new OperationalInputError("status does not accept positional input.");
   if (parsed.booleans.has("--all") && parsed.values.has("--limit")) {
     throw new OperationalInputError("Use either --all or --limit, not both.");
   }
@@ -433,20 +433,19 @@ async function runStatus(tokens, io) {
   }
   const statuses = parsed.repeatable.get("--status") ?? [];
   const invalid = statuses.filter((status) => !STATUS_SET.has(status));
-  if (invalid.length > 0) {
-    throw new OperationalInputError(`Invalid --status value: ${invalid.join(", ")}.`);
-  }
+  if (invalid.length > 0) throw new OperationalInputError(`Invalid --status value: ${invalid.join(", ")}.`);
+
   const context = await contextFor(parsed.values.get("--workspace") ?? io.cwd, io);
   const state = await readState(context.root, io.dependencies);
   const live = await existingSupervisorStatus(context, io);
-  const stateLanes = Array.isArray(live?.lanes) ? live.lanes : state.lanes;
-  const archivedCount = stateLanes.filter((lane) => Boolean(lane.archivedAt)).length;
+  const allLanes = Array.isArray(live?.lanes) ? live.lanes : state.lanes;
+  const archivedCount = allLanes.filter((lane) => Boolean(lane.archivedAt)).length;
   const archiveMode = parsed.booleans.has("--archived")
     ? "only"
     : parsed.booleans.has("--include-archived")
       ? "include"
       : "hide";
-  const source = stateLanes.filter((lane) => (
+  const source = allLanes.filter((lane) => (
     archiveMode === "include"
     || (archiveMode === "only" ? Boolean(lane.archivedAt) : !lane.archivedAt)
   ));
@@ -458,9 +457,7 @@ async function runStatus(tokens, io) {
         ? undefined
         : 32;
   const now = typeof io.dependencies.now === "function" ? io.dependencies.now() : Date.now();
-  const sinceMs = parsed.values.has("--since")
-    ? now - sinceDuration(parsed.values.get("--since"))
-    : null;
+  const sinceMs = parsed.values.has("--since") ? now - sinceDuration(parsed.values.get("--since")) : null;
   const selection = selectStatusLanes(source, { statuses, sinceMs, limit });
   const probe = io.dependencies.probeExistingSupervisor ?? probeExistingSupervisor;
   const runtime = await probe({
@@ -469,9 +466,7 @@ async function runStatus(tokens, io) {
     platform: io.platform,
     timeoutMs: 2_000
   }).catch(() => ({ health: "unavailable", protocol: "unknown", active: 0 }));
-  const related = selection.lanes.length === 0
-    ? await relatedWorktreeLedgers(context, io)
-    : [];
+  const related = selection.lanes.length === 0 ? await relatedWorktreeLedgers(context, io) : [];
   const lanes = parsed.booleans.has("--summary")
     ? selection.lanes.map((lane) => {
       const summary = summarizeStatusLane(lane);
@@ -484,7 +479,7 @@ async function runStatus(tokens, io) {
   const payload = {
     schemaVersion: 1,
     workspaceKey: context.key,
-    workspace: { name: path.basename(context.workspace), branch: await inspectBranch(context.workspace, io.dependencies) },
+    workspace: { name: path.basename(context.workspace), branch: inspectBranch(context.workspace, io.dependencies) },
     runtime,
     updatedAt: state.updatedAt,
     lanes,
@@ -505,33 +500,28 @@ async function runStatus(tokens, io) {
       }
     } : {})
   };
+
   if (parsed.booleans.has("--json")) write(io, "stdout", JSON.stringify(payload));
   else write(io, "stdout", renderOperationalStatus(payload));
   return selection.hasOutcomeUnknown ? EXIT_CODES.outcomeUnknown : EXIT_CODES.success;
 }
 
-async function runModels(tokens, io) {
+async function runModelsRefresh(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace"],
-    booleans: ["--json", "--refresh"]
-  });
+    booleans: ["--json"]
+  }, "models");
   if (parsed.positionals.length > 0) throw new OperationalInputError("models does not accept positional input.");
-  if (!parsed.booleans.has("--refresh")) {
-    return runCli(["models", ...tokens], {
-      ...io,
-      dependencies: io.dependencies
-    });
-  }
   const context = await contextFor(parsed.values.get("--workspace") ?? io.cwd, io);
   const payload = await liveRequest(context, "models", { refresh: true }, io, 30_000);
-  if (parsed.booleans.has("--json")) write(io, "stdout", JSON.stringify(payload));
-  else {
+  if (parsed.booleans.has("--json")) {
+    write(io, "stdout", JSON.stringify(payload));
+  } else {
     const age = payload.ageMs === null || payload.ageMs === undefined ? "unknown" : `${payload.ageMs}ms`;
-    const lines = [
+    write(io, "stdout", [
       `Fleet model catalogue refreshed (${payload.models?.length ?? 0} models; age ${age}).`,
       ...(payload.models ?? []).map((entry) => `${entry.model}: ${(entry.efforts ?? []).join(", ")}`)
-    ];
-    write(io, "stdout", lines.join("\n"));
+    ].join("\n"));
   }
   return EXIT_CODES.success;
 }
@@ -540,7 +530,7 @@ async function runResultWait(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace", "--lane", "--timeout-ms"],
     booleans: ["--json", "--pretty", "--summary", "--wait"]
-  });
+  }, "result");
   if (parsed.positionals.length > 0) throw new OperationalInputError("result does not accept positional input.");
   if (parsed.booleans.has("--pretty") && parsed.booleans.has("--summary")) {
     throw new OperationalInputError("Use either --pretty or --summary, not both.");
@@ -550,47 +540,49 @@ async function runResultWait(tokens, io) {
     ? integer(parsed.values.get("--timeout-ms"), "--timeout-ms", 100, MAX_WAIT_MS)
     : DEFAULT_RESULT_WAIT_MS;
   const context = await contextFor(parsed.values.get("--workspace") ?? io.cwd, io);
-  const payload = await liveRequest(
+  const waited = await liveRequest(
     context,
     "waitForLane",
     { laneId, timeoutMs },
     io,
     Math.min(timeoutMs + 10_000, MAX_WAIT_MS + 10_000)
   );
+  const payload = Object.freeze({
+    ...waited,
+    lanes: waited.lane ? [waited.lane] : []
+  });
+
   if (parsed.booleans.has("--json")) {
     write(io, "stdout", JSON.stringify(payload));
   } else if (parsed.booleans.has("--pretty")) {
     write(io, "stdout", JSON.stringify(payload, null, 2));
   } else if (parsed.booleans.has("--summary")) {
-    if (payload.timedOut) {
-      const blocker = renderQueueBlocker(payload.lane?.queueBlocker);
+    if (waited.timedOut) {
+      const blocker = renderQueueBlocker(waited.lane?.queueBlocker);
       write(
         io,
         "stdout",
-        `Lane ${laneId} is still ${payload.lane?.status ?? "non-terminal"} after ${payload.elapsedMs}ms; `
+        `Lane ${laneId} is still ${waited.lane?.status ?? "non-terminal"} after ${waited.elapsedMs}ms; `
           + `the wait timed out, the lane did not fail.${blocker ? ` ${blocker}` : ""}`
       );
     } else {
       write(
         io,
         "stdout",
-        `Lane ${laneId}: ${payload.lane?.status ?? "unknown"}. `
-          + `${String(payload.lane?.lastMessage ?? payload.lane?.exitReason ?? "")}`
+        `Lane ${laneId}: ${waited.lane?.status ?? "unknown"}. ${String(waited.lane?.lastMessage ?? waited.lane?.exitReason ?? "")}`
       );
     }
   } else {
-    outputPayload(io, payload);
+    write(io, "stdout", JSON.stringify(payload));
   }
-  return payload.lane?.status === "outcome_unknown"
-    ? EXIT_CODES.outcomeUnknown
-    : EXIT_CODES.success;
+  return waited.lane?.status === "outcome_unknown" ? EXIT_CODES.outcomeUnknown : EXIT_CODES.success;
 }
 
 async function runWatch(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace", "--timeout-ms", "--stall-ms"],
     booleans: ["--json", "--pretty"]
-  });
+  }, "watch");
   if (parsed.positionals.length > 0) throw new OperationalInputError("watch does not accept positional input.");
   const timeoutMs = parsed.values.has("--timeout-ms")
     ? integer(parsed.values.get("--timeout-ms"), "--timeout-ms", 1, MAX_WATCH_MS)
@@ -608,32 +600,21 @@ async function runWatch(tokens, io) {
   );
   if (parsed.booleans.has("--json")) write(io, "stdout", JSON.stringify(payload));
   else if (parsed.booleans.has("--pretty")) write(io, "stdout", JSON.stringify(payload, null, 2));
-  else if (payload.changed) {
-    write(io, "stdout", `Fleet event ${payload.event.kind} on ${payload.event.laneId}: ${JSON.stringify(payload.event)}`);
-  } else {
-    write(io, "stdout", `Fleet watch ended without a change (${payload.reason ?? "timeout"}) after ${payload.elapsedMs ?? 0}ms.`);
-  }
-  return payload.event?.status === "outcome_unknown"
-    ? EXIT_CODES.outcomeUnknown
-    : EXIT_CODES.success;
+  else if (payload.changed) write(io, "stdout", `Fleet event ${payload.event.kind} on ${payload.event.laneId}: ${JSON.stringify(payload.event)}`);
+  else write(io, "stdout", `Fleet watch ended without a change (${payload.reason ?? "timeout"}) after ${payload.elapsedMs ?? 0}ms.`);
+  return payload.event?.status === "outcome_unknown" ? EXIT_CODES.outcomeUnknown : EXIT_CODES.success;
 }
 
 async function runReconcile(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace", "--evidence"],
     booleans: ["--json", "--pretty", "--assume-not-started"]
-  });
-  if (parsed.positionals.length !== 1) {
-    throw new OperationalInputError("reconcile requires exactly one lane id.");
-  }
+  }, "reconcile");
+  if (parsed.positionals.length !== 1) throw new OperationalInputError("reconcile requires exactly one lane id.");
   const laneId = safeId(parsed.positionals[0]);
   const assumeNotStarted = parsed.booleans.has("--assume-not-started");
-  const evidenceRef = parsed.values.has("--evidence")
-    ? safeRef(parsed.values.get("--evidence"))
-    : undefined;
-  if (assumeNotStarted && !evidenceRef) {
-    throw new OperationalInputError("--assume-not-started requires --evidence <ref>.");
-  }
+  const evidenceRef = parsed.values.has("--evidence") ? safeRef(parsed.values.get("--evidence")) : undefined;
+  if (assumeNotStarted && !evidenceRef) throw new OperationalInputError("--assume-not-started requires --evidence <ref>.");
   if (!assumeNotStarted && evidenceRef) {
     throw new OperationalInputError("--evidence is only accepted with --assume-not-started for continuation reconciliation.");
   }
@@ -655,7 +636,7 @@ async function runResolve(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace", "--evidence", "--outcome"],
     booleans: ["--json", "--pretty"]
-  });
+  }, "resolve");
   if (parsed.positionals.length !== 1) throw new OperationalInputError("resolve requires exactly one lane id.");
   const laneId = safeId(parsed.positionals[0]);
   const evidenceRef = safeRef(parsed.values.get("--evidence"));
@@ -675,7 +656,7 @@ async function runArchive(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace"],
     booleans: ["--json", "--pretty"]
-  });
+  }, "archive");
   if (parsed.positionals.length !== 1) throw new OperationalInputError("archive requires exactly one lane id.");
   const laneId = safeId(parsed.positionals[0]);
   const context = await contextFor(parsed.values.get("--workspace") ?? io.cwd, io);
@@ -690,7 +671,7 @@ async function runCancelShortcut(tokens, io) {
   const parsed = parseOptions(tokens, {
     values: ["--workspace"],
     booleans: ["--json", "--pretty"]
-  });
+  }, "cancel");
   if (parsed.positionals.length !== 1) throw new OperationalInputError("cancel shortcut requires exactly one lane id.");
   const laneId = safeId(parsed.positionals[0]);
   const context = await contextFor(parsed.values.get("--workspace") ?? io.cwd, io);
@@ -732,6 +713,11 @@ function helpFor(argv) {
   return null;
 }
 
+function stripRefresh(tokens) {
+  const index = tokens.indexOf("--refresh");
+  return index === -1 ? tokens : [...tokens.slice(0, index), ...tokens.slice(index + 1)];
+}
+
 export async function runOperationalCli(argv, options = {}) {
   const io = ioOptions(options);
   try {
@@ -742,14 +728,18 @@ export async function runOperationalCli(argv, options = {}) {
     }
     const [command, ...tokens] = argv;
     if (command === "status") return await runStatus(tokens, io);
-    if (command === "models" && tokens.includes("--refresh")) return await runModels(tokens, io);
+    if (command === "models" && tokens.includes("--refresh")) return await runModelsRefresh(stripRefresh(tokens), io);
     if (command === "result" && tokens.includes("--wait")) return await runResultWait(tokens, io);
     if (command === "watch") return await runWatch(tokens, io);
     if (command === "reconcile") return await runReconcile(tokens, io);
     if (command === "resolve") return await runResolve(tokens, io);
     if (command === "archive") return await runArchive(tokens, io);
-    if (command === "cancel" && !tokens.includes("--stdin") && !tokens.includes("--contract")
-      && tokens.some((token) => !token.startsWith("--"))) {
+    if (
+      command === "cancel"
+      && !tokens.includes("--stdin")
+      && !tokens.includes("--contract")
+      && tokens.some((token) => !token.startsWith("--"))
+    ) {
       return await runCancelShortcut(tokens, io);
     }
     return await runCli(argv, options);
