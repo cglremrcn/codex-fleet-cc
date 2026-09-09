@@ -9,7 +9,7 @@ import { runOperationalCli } from "./operational-cli.mjs";
 
 const MAX_OWNERSHIP_BYTES = 64 * 1024;
 const LOCAL_SCRIPTS_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LOCAL_ONLY_COMMANDS = new Set(["setup", "uninstall"]);
+const LOCAL_ONLY_COMMANDS = new Set(["setup", "uninstall", "doctor", "help", "--help", "-h"]);
 
 function ownedRoot(env, platform, home) {
   if (env.CLAUDE_PLUGIN_DATA) return path.resolve(env.CLAUDE_PLUGIN_DATA);
@@ -57,13 +57,17 @@ async function moduleRunner(modulePath, importer) {
   throw new Error("Fleet runtime CLI module does not expose a supported runner.");
 }
 
+function requiresInstalledPluginSurface(argv) {
+  const command = argv[0] ?? null;
+  return LOCAL_ONLY_COMMANDS.has(command) || argv.includes("--help") || argv.includes("-h");
+}
+
 export async function resolveFleetCli(argv, options = {}) {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const home = options.home ?? os.homedir();
   const importer = options.importer ?? ((specifier) => import(specifier));
-  const command = argv[0] ?? null;
-  if (LOCAL_ONLY_COMMANDS.has(command)) {
+  if (requiresInstalledPluginSurface(argv)) {
     return Object.freeze({
       source: "installed-plugin",
       scriptsRoot: LOCAL_SCRIPTS_ROOT,
