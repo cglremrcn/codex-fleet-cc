@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createAppServerBroker,
+  jsonlLineBudget,
   summarizeProtocolMessage
 } from "../plugins/fleet/scripts/app-server-broker.mjs";
 import { startFakeCodex } from "./fixtures/fake-codex-app-server.mjs";
@@ -214,4 +215,11 @@ test("broker preserves exact argv for sandboxed command execution", async (t) =>
   } finally {
     await broker.close();
   }
+});
+
+test("broker frame budget defaults above the legacy 1 MiB cap and remains bounded/configurable", () => {
+  assert.equal(jsonlLineBudget({}), 8 * 1024 * 1024);
+  assert.equal(jsonlLineBudget({ FLEET_MAX_JSONL_FRAME_BYTES: String(16 * 1024 * 1024) }), 16 * 1024 * 1024);
+  assert.throws(() => jsonlLineBudget({ FLEET_MAX_JSONL_FRAME_BYTES: "999" }), /between/iu);
+  assert.throws(() => jsonlLineBudget({ FLEET_MAX_JSONL_FRAME_BYTES: "not-bytes" }), /integer/iu);
 });

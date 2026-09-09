@@ -17,7 +17,9 @@ import { terminateProcessTree } from "./lib/upstream/process.mjs";
 
 export const BROKER_PROTOCOL_VERSION = 1;
 
-const MAX_JSONL_LINE_BYTES = 1024 * 1024;
+const DEFAULT_MAX_JSONL_LINE_BYTES = 8 * 1024 * 1024;
+const MIN_JSONL_LINE_BYTES = 1024 * 1024;
+const MAX_JSONL_LINE_BYTES = 32 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_GRACEFUL_CLOSE_MS = 1_000;
@@ -25,6 +27,21 @@ const DEFAULT_STOP_RECONCILIATION_MS = 250;
 const WINDOWS_UNSAFE_BATCH_PATH = /[%!^&|<>\"]/;
 const OWNERSHIP_REMEDIATION =
   "Re-run doctor; inspect the process through normal OS or app controls.";
+
+export function jsonlLineBudget(env = process.env) {
+  const source = env.FLEET_MAX_JSONL_FRAME_BYTES;
+  if (source === undefined || source === "") return DEFAULT_MAX_JSONL_LINE_BYTES;
+  if (!/^\d+$/u.test(source)) {
+    throw new TypeError("FLEET_MAX_JSONL_FRAME_BYTES must be an integer byte count.");
+  }
+  const value = Number(source);
+  if (!Number.isSafeInteger(value) || value < MIN_JSONL_LINE_BYTES || value > MAX_JSONL_LINE_BYTES) {
+    throw new RangeError(
+      `FLEET_MAX_JSONL_FRAME_BYTES must be between ${MIN_JSONL_LINE_BYTES} and ${MAX_JSONL_LINE_BYTES}.`
+    );
+  }
+  return value;
+}
 
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
@@ -243,6 +260,7 @@ class AppServerBroker {
     this.eventHandler = null;
     this.exitError = null;
     this.protocolVersion = BROKER_PROTOCOL_VERSION;
+    this.maxJsonlLineBytes = jsonlLineBudget(options.env ?? process.env);
     this.captureOwnedProcess = options.captureOwnedProcess ?? captureOwnedProcess;
     this.stopOwnedProcessTree = options.stopOwnedProcessTree ?? stopOwnedProcessTree;
   }
@@ -392,8 +410,12 @@ class AppServerBroker {
     if (!line.trim()) {
       return;
     }
-    if (Buffer.byteLength(line, "utf8") > MAX_JSONL_LINE_BYTES) {
-      this.handleExit(new Error("Codex app-server emitted an oversized JSONL message."));
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    if (lineBytes > this.maxJsonlLineBytes) {
+      this.handleExit(new Error(
+        `Codex app-server emitted an oversized JSONL frame (${lineBytes} bytes; Fleet budget ${this.maxJsonlLineBytes}). `
+        + "Persisted thread continuation should use metadata-only resume and paged history; do not blindly retry the mutation."
+      ));
       return;
     }
 
