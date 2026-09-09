@@ -9,7 +9,10 @@ import { runOperationalCli } from "./operational-cli.mjs";
 
 const MAX_OWNERSHIP_BYTES = 64 * 1024;
 const LOCAL_SCRIPTS_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const LOCAL_PLUGIN_MANIFEST = new URL("../../.claude-plugin/plugin.json", import.meta.url);
 const LOCAL_ONLY_COMMANDS = new Set(["setup", "uninstall", "doctor", "help", "--help", "-h"]);
+const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
+let localVersionPromise = null;
 
 function ownedRoot(env, platform, home) {
   if (env.CLAUDE_PLUGIN_DATA) return path.resolve(env.CLAUDE_PLUGIN_DATA);
@@ -23,6 +26,19 @@ function inside(root, candidate) {
     && !path.isAbsolute(relative);
 }
 
+async function readLocalVersion() {
+  if (!localVersionPromise) {
+    localVersionPromise = fs.readFile(LOCAL_PLUGIN_MANIFEST, "utf8").then((source) => {
+      const value = JSON.parse(source);
+      if (typeof value?.version !== "string" || !VERSION_PATTERN.test(value.version)) {
+        throw new Error("Installed Fleet plugin version metadata is invalid.");
+      }
+      return value.version;
+    });
+  }
+  return localVersionPromise;
+}
+
 async function readAppliedRuntime(root) {
   const ownershipPath = path.join(root, "ownership.json");
   try {
@@ -33,7 +49,7 @@ async function readAppliedRuntime(root) {
       value?.schemaVersion !== 1
       || value?.status !== "applied"
       || typeof value.version !== "string"
-      || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(value.version)
+      || !VERSION_PATTERN.test(value.version)
       || typeof value.runtimeTargetDir !== "string"
       || !path.isAbsolute(value.runtimeTargetDir)
     ) {
@@ -62,27 +78,32 @@ function requiresInstalledPluginSurface(argv) {
   return LOCAL_ONLY_COMMANDS.has(command) || argv.includes("--help") || argv.includes("-h");
 }
 
+function localResult() {
+  return Object.freeze({
+    source: "installed-plugin",
+    scriptsRoot: LOCAL_SCRIPTS_ROOT,
+    runner: runOperationalCli
+  });
+}
+
 export async function resolveFleetCli(argv, options = {}) {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const home = options.home ?? os.homedir();
   const importer = options.importer ?? ((specifier) => import(specifier));
-  if (requiresInstalledPluginSurface(argv)) {
-    return Object.freeze({
-      source: "installed-plugin",
-      scriptsRoot: LOCAL_SCRIPTS_ROOT,
-      runner: runOperationalCli
-    });
-  }
+  if (requiresInstalledPluginSurface(argv)) return localResult();
+
   const root = ownedRoot(env, platform, home);
   const applied = await (options.readAppliedRuntime ?? readAppliedRuntime)(root);
-  if (!applied || path.resolve(applied.runtimeTargetDir) === LOCAL_SCRIPTS_ROOT) {
-    return Object.freeze({
-      source: "installed-plugin",
-      scriptsRoot: LOCAL_SCRIPTS_ROOT,
-      runner: runOperationalCli
-    });
+  if (!applied || path.resolve(applied.runtimeTargetDir) === LOCAL_SCRIPTS_ROOT) return localResult();
+
+  const localVersion = options.localVersion ?? await (options.readLocalVersion ?? readLocalVersion)();
+  if (applied.version === localVersion) {
+    // Same-version source should use the current installed plugin copy. This preserves new wrapper
+    // behavior during development and avoids routing tests/control calls through a stale copied tree.
+    return localResult();
   }
+
   const operationalPath = path.join(applied.runtimeTargetDir, "lib", "operational-cli.mjs");
   const legacyPath = path.join(applied.runtimeTargetDir, "lib", "cli.mjs");
   const target = await fs.access(operationalPath).then(() => operationalPath).catch(async () => {
