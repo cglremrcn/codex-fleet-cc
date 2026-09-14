@@ -591,16 +591,22 @@ test("58-lane navigation keeps the selected ID inside the viewport across refres
   assert.equal(controller.state().selectedIndex, 0);
 });
 
-test("slow snapshot refresh retains the last good frame without blocking navigation", async () => {
+test("slow snapshot refresh retains the last good frame without blocking navigation", async (t) => {
   const writes = [];
+  let reads = 0;
+  let resolveRead;
   const controller = createConsoleController({
     snapshot: snapshot(),
-    readSnapshot: async () => new Promise(() => undefined),
+    readSnapshot: () => {
+      reads += 1;
+      return new Promise((resolve) => { resolveRead = resolve; });
+    },
     refreshTimeoutMs: 20,
     write: (value) => writes.push(value),
     terminal: { columns: 100, rows: 24 },
     preferences: { color: false, unicode: true }
   });
+  t.after(() => controller.dispose());
 
   await controller.render();
   await controller.dispatch({ type: "tick" });
@@ -610,5 +616,16 @@ test("slow snapshot refresh retains the last good frame without blocking navigat
 
   assert.match(writes.at(-1), /OBSERVATION STALE/iu);
   assert.match(writes.at(-1), /lane-b/iu);
+  // The UI deadline is not cancellation of the underlying read. Keep the guard
+  // until that read settles so fallback ticks cannot accumulate remote requests.
+  assert.equal(controller.state().refreshInFlight, true);
+  for (let index = 0; index < 8; index += 1) {
+    await controller.dispatch({ type: "tick" });
+  }
+  assert.equal(reads, 1);
+  resolveRead(snapshot());
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(controller.state().refreshInFlight, false);
+  assert.equal(controller.state().observation, "fresh");
+  assert.equal(controller.state().selectedLaneId, "lane-b");
 });

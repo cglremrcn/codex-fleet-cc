@@ -1,8 +1,10 @@
-/** KITE v2: deterministic state projection. No timers, model calls, random progress or I/O. */
+/** KITE v3: deterministic state projection. No timers, model calls, random progress or I/O. */
 const ANIMATED = new Set(["running", "starting", "queued", "complete"]);
 const ATTENTION = new Set(["blocked", "failed", "interrupted", "outcome_unknown"]);
 const COPY = Object.freeze({
-  idle: ["IDLE", "No retained agents in this view. Nothing is secretly running.", "muted"],
+  idle: ["IDLE", "No retained agents in this view. Other workspaces or filtered agents may still be active.", "muted"],
+  loading: ["LOADING VIEW", "Reading this view. Its contents and activity are not confirmed yet.", "muted"],
+  filtered: ["NO MATCHES", "No agents match the current filter. Clear filters before concluding that this fleet is empty.", "muted"],
   observed: ["OBSERVING", "This Codex session is read-only here. Its owning client retains control.", "muted"],
   queued: ["QUEUED", "Waiting for scheduler capacity. A visible agent is not necessarily executing.", "muted"],
   starting: ["STARTING", "The task is admitted; runtime identity is being established.", "running"],
@@ -20,6 +22,7 @@ const COPY = Object.freeze({
   stale: ["OBSERVATION STALE", "The latest observation could not be confirmed. This is the last known state, not live proof.", "danger"]
 });
 const count = (value) => Number.isSafeInteger(value) && value > 0 ? Math.min(4096, value) : 0;
+const requests = (lane) => Math.max(count(lane?.pendingRequests), Math.min(4096, count(lane?.pendingApprovalCount) + count(lane?.pendingQuestionCount)));
 
 export function deriveKiteSignal(view = {}) {
   const lanes = Array.isArray(view.lanes) ? view.lanes : [];
@@ -28,15 +31,23 @@ export function deriveKiteSignal(view = {}) {
     agents: lanes.length,
     active: lanes.filter((lane) => ["running", "starting"].includes(lane.status)).length,
     queued: lanes.filter((lane) => lane.status === "queued").length,
-    attention: lanes.filter((lane) => ATTENTION.has(lane.status) || lane.controllerRequest || count(lane.pendingRequests)).length,
-    requests: lanes.reduce((n, lane) => n + count(lane.pendingRequests), 0)
+    attention: lanes.filter((lane) => ATTENTION.has(lane.status) || lane.controllerRequest || requests(lane)).length,
+    requests: lanes.reduce((n, lane) => n + requests(lane), 0)
   };
-  let state = selected?.status ?? (totals.active ? "running" : totals.attention ? "attention" : totals.queued ? "queued" : lanes.length ? "observed" : "idle");
-  if (selected?.pendingApprovalCount > 0) state = "approval";
-  else if (selected?.pendingQuestionCount > 0) state = "question";
-  else if (selected?.pendingRequests > 0) state = "attention";
+  // When a group is selected, unresolved outcomes outrank background activity.
+  // A selected real lane keeps its own state; totals still expose other alerts.
+  const fleetState = lanes.some((lane) => lane.status === "outcome_unknown") ? "outcome_unknown"
+    : lanes.some((lane) => count(lane.pendingApprovalCount)) ? "approval"
+      : lanes.some((lane) => count(lane.pendingQuestionCount)) ? "question"
+        : totals.attention ? "attention" : totals.active ? "running" : totals.queued ? "queued"
+          : lanes.length ? "observed" : view.filterQuery ? "filtered" : "idle";
+  let state = selected?.status ?? fleetState;
+  if (count(selected?.pendingApprovalCount)) state = "approval";
+  else if (count(selected?.pendingQuestionCount)) state = "question";
+  else if (requests(selected)) state = "attention";
   if (selected?.status === "outcome_unknown") state = "outcome_unknown";
-  if (view.observation === "stale" || view.observation === "loading") state = "stale";
+  if (view.observation === "stale") state = "stale";
+  else if (view.observation === "loading") state = "loading";
   if (!COPY[state]) state = "attention";
   const [label, description, tone] = COPY[state];
   return Object.freeze({ state, label, description, tone, animated: ANIMATED.has(state),
@@ -54,7 +65,7 @@ function features(signal, preferences) {
   const frame = kiteIsAnimated(signal, preferences) && Number.isSafeInteger(preferences.frame)
     ? Math.abs(preferences.frame) % 8 : 0;
   const u = {
-    idle: ["·", "·", "─", "○"], observed: ["◎", "◎", "─", "◉"],
+    idle: ["·", "·", "─", "○"], loading: ["·", "·", "─", "◌"], filtered: ["·", "·", "─", "○"], observed: ["◎", "◎", "─", "◉"],
     queued: ["·", "·", "⌄", "○"], starting: ["•", "•", "⌄", "◌"],
     running: [frame === 6 ? "─" : "●", frame === 6 ? "─" : "●", "▿", "◆"],
     complete: ["•", "•", frame % 2 ? "⌁" : "─", frame % 2 ? "◈" : "◇"],
@@ -64,7 +75,7 @@ function features(signal, preferences) {
     cancelled: ["·", "·", "─", "–"], interrupted: ["─", "─", "│", "‖"],
     outcome_unknown: ["?", "?", "·", "?"], stale: ["·", "·", "?", "~"]
   };
-  const a = { idle: [".", ".", "-", "o"], observed: ["o", "o", "-", "O"],
+  const a = { idle: [".", ".", "-", "o"], loading: [".", ".", "-", "L"], filtered: [".", ".", "-", "o"], observed: ["o", "o", "-", "O"],
     queued: [".", ".", "v", "Q"], starting: ["o", "o", "v", "S"],
     running: [frame === 6 ? "-" : "o", frame === 6 ? "-" : "o", "v", "R"],
     complete: [".", ".", frame % 2 ? "~" : "-", frame % 2 ? "+" : "C"],
@@ -79,7 +90,7 @@ function features(signal, preferences) {
 export function renderKiteBadge(signal, preferences = {}) {
   if (preferences.mascot === false) return "";
   const { face: [left, right, , core], unicode } = features(signal, preferences);
-  return unicode ? `╭▰ ${left} ${right} ▰╮${core}` : `[= ${left} ${right} =]${core}`;
+  return unicode ? `KITE ╭${left} ${right}╮${core}` : `KITE [${left} ${right}]${core}`;
 }
 
 /** Fixed seven-row, 27-column terminal avatar. ASCII fallback contains no Unicode. */
@@ -91,20 +102,20 @@ export function renderKiteAvatar(signal, preferences = {}) {
   const gap = 17 - wing * 2;
   const lines = unicode ? [
     `${" ".repeat(wing)}${orbit}${" ".repeat(gap)}${orbit}`,
-    "╲       ╭───╮       ╱",
-    `╭━━━╾▰  ${left} ${right}  ▰╼━━━╮`,
-    `╰━╮     ${mouth}     ╭━╯`,
-    `  ╲   ╭─${core}─╮   ╱`,
-    "   ╰━━╯   ╰━━╯",
-    "      ╲ │ ╱"
+    "       ╭───────╮       ",
+    `╭━━━━━━┤ ${left}   ${right} ├━━━━━━╮`,
+    `╰━━╮   │   ${mouth}   │   ╭━━╯`,
+    `   ╰━━━┤   ${core}   ├━━━╯   `,
+    "       ╰───┬───╯       ",
+    "          ╲│╱          "
   ] : [
     `${" ".repeat(wing)}${orbit}${" ".repeat(gap)}${orbit}`,
-    "\\       .---.       /",
-    `[====  ${left} ${right}  ====]`,
-    `\\        ${mouth}        /`,
-    `  \\   [-${core}-]   /`,
-    "   '=='   '=='",
-    "      \\ | /"
+    "       .-------.       ",
+    `[======| ${left}   ${right} |======]`,
+    `\\==.   |   ${mouth}   |   .==/`,
+    `   '===|   ${core}   |==='   `,
+    "       '---+---'       ",
+    "          \\|/          "
   ];
   return lines.map((line) => line.padStart(Math.floor((27 - line.length) / 2) + line.length).padEnd(27));
 }
