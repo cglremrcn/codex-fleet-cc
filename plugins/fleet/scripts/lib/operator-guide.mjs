@@ -44,7 +44,7 @@ export function operatorFooter(view = {}, columns = 80) {
   const cancel = lane && !readOnly && ["queued", "starting", "running"].includes(lane.status) ? "  X: Cancel" : "";
   const enter = action ? `Enter: ${action}` : ": Commands";
   if (columns >= 144) return `${enter}${cancel}  : Commands  /: Search lanes  Tab: Detail → Evidence → Authority  I: Inbox  K: KITE  ?: Help  Ctrl+G: Return`;
-  if (columns >= 64) return `${enter}${cancel}  : Commands  /: Filter  Ctrl+G: Return`;
+  if (columns >= 67) return `${enter}${cancel}  : Commands  /: Filter  Ctrl+G: Return`;
   if (columns >= 44) return `${action ? `Enter: ${action}` : ": Commands"}  ?: Help  Ctrl+G: Back`;
   return `${action ? readOnly ? "Enter Read" : "Enter Open" : "? Help"}  : Menu  Ctrl+G Back`;
 }
