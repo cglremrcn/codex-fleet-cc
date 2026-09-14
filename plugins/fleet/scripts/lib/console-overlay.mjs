@@ -1,3 +1,4 @@
+import { GROUP_LABELS, operatorHelpLines } from "./operator-guide.mjs";
 import { deriveKiteSignal, renderKiteAvatar } from "./kite-companion.mjs";
 import { displayWidth, stripAnsi } from "./tui-render.mjs";
 
@@ -15,7 +16,11 @@ export const OPERATOR_COMMANDS = Object.freeze([
   { id: "saveView", title: "Save this view", description: "Name this scope, filter, ordering and fold state" },
   { id: "toggleMascot", title: "Show / hide KITE", description: "Toggle the local mascot without hiding task status" },
   { id: "toggleMotion", title: "Pause / resume motion", description: "Reduced-motion preference always takes precedence" },
-  { id: "clear", title: "Clear filters and folds", description: "Reveal all agents in this scope" }
+  { id: "clear", title: "Clear filters and folds", description: "Reveal all agents in this scope" },
+  { id: "help", title: "Help: understand Fleet", description: "W changes where to look; G changes grouping. Controls, ownership and recovery explained." },
+  ...Object.entries(GROUP_LABELS).map(([mode, label]) => Object.freeze({
+    id: `group:${mode}`, title: `Group by: ${label}`, description: "Arrange the current view only; never starts agents or changes authority"
+  }))
 ]);
 
 function clipped(value, columns) {
@@ -39,6 +44,7 @@ export function paletteItems(query, savedViews = [], extraCommands = []) {
 export function renderOperatorOverlay(overlay, terminal, options = {}) {
   const columns = Math.max(1, terminal.columns ?? 80), rows = Math.max(1, terminal.rows ?? 24);
   if (overlay.kind === "kite") return renderCompanion(overlay, terminal, options);
+  if (overlay.kind === "help") return renderHelp(overlay, terminal, options);
   const lines = [overlay.kind === "saveView" ? "SAVE VIEW · local preferences" : "FLEET COMMAND CENTER · local commands", ""];
   lines.push(`> ${overlay.query ?? ""}_`, "");
   if (overlay.kind === "saveView") {
@@ -90,4 +96,33 @@ function renderCompanion(overlay, terminal, options) {
   while (lines.length < rows - 1) lines.push("");
   lines[rows - 1] = "↑↓ Select · Enter Run · Esc Close · Local controls; no model call";
   return lines.slice(0, rows).map((text) => clipped(text, columns)).join("\n");
+}
+
+function helpRows(view, columns) {
+  const content = [];
+  for (const paragraph of operatorHelpLines(view).slice(1)) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/u)) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (displayWidth(candidate) > columns && line) { content.push(line); line = word; }
+      else line = candidate;
+    }
+    content.push(line);
+  }
+  return content;
+}
+
+export function operatorHelpScrollLimit(view, terminal) {
+  return Math.max(0, helpRows(view, Math.max(1, terminal.columns ?? 80)).length - Math.max(0, (terminal.rows ?? 24) - 2));
+}
+
+function renderHelp(overlay, terminal, options) {
+  const columns = Math.max(1, terminal.columns ?? 80), rows = Math.max(1, terminal.rows ?? 24);
+  const content = helpRows(options.view, columns);
+  const capacity = Math.max(0, rows - 2);
+  const offset = Math.min(Math.max(0, overlay.index ?? 0), Math.max(0, content.length - capacity));
+  const lines = ["FLEET CONTROLS / OPERATOR GUIDE", ...content.slice(offset, offset + capacity)];
+  while (lines.length < rows - 1) lines.push("");
+  lines[rows - 1] = `Esc: Close | Up/Down: Scroll | ${offset + 1}/${content.length}`;
+  return lines.slice(0, rows).map((line) => clipped(line, columns)).join("\n");
 }

@@ -1,8 +1,8 @@
-FLEET//OPS  codex-fleet-cc@main                                                           [= o o =]R
+FLEET//OPS  codex-fleet-cc@main                                                          KITE [o o]R
 01 LIVE  01 VERIFIED  01 ATTENTION  RUNTIME READY  VIEW DETAIL  KITE LIVE |
+VIEW: Current workspace [W] | GROUP BY: No grouping [G]
 > SIGNAL 02/04  console-build · RUNNING · renderer =================================================
 LANES  4                              | [DETAIL]
-----------------------------------------------------------------------------------------------------
   01 C COMPLETE        Inspect the C… | Build the responsive operator console
      runtime-audit · gpt-5.6-sol/high |
 > 02 R RUNNING         Build the res… | ID console-build
@@ -25,4 +25,4 @@ LANES  4                              | [DETAIL]
                                       |
                                       |
 ----------------------------------------------------------------------------------------------------
-Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Filter  X: Cancel  Ctrl+…
+Enter: Open agent  X: Cancel  : Commands  /: Filter  Ctrl+G: Return
