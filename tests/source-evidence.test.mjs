@@ -88,6 +88,29 @@ test("Git environment overrides cannot redirect the selected source", async t =>
   finally { if (previous === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = previous; }
 });
 
+
+test("source isolation ignores broken global/system Git configuration on every platform", async t => {
+  const { workspace, temp } = await fixture(t);
+  const before = await captureSource(workspace);
+  const badConfig = path.join(temp, "broken-git-config");
+  await fs.writeFile(badConfig, "[unterminated\n");
+  const keys = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "git_work_tree"];
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  process.env.GIT_CONFIG_GLOBAL = badConfig;
+  process.env.GIT_CONFIG_SYSTEM = badConfig;
+  process.env.GIT_CONFIG_COUNT = "1"; // Missing injected key/value must not leak into capture.
+  process.env.git_work_tree = path.join(temp, "not-the-worktree");
+  try {
+    assert.throws(() => git(workspace, "rev-parse", "--show-toplevel"), "the fixture's inherited Git configuration must actually fail");
+    assert.deepEqual(await captureSource(workspace), before);
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("checkpoint and receipt survive restart without storing prompts, and repeated capture is idempotent", async t => {
   const { workspace, stateRoot, ledger, cp, attest, lanes } = await readyLedger(t);
   assert.equal((await ledger.checkpoint({ laneId: "worker", requiredChecks: ["unit"] })).checkpointId, cp.checkpointId);

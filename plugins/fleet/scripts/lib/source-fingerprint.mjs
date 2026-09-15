@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs, { constants } from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ControlError, digest } from "./control-contract.mjs";
@@ -72,8 +71,11 @@ export async function hashWorkspaceFile(root, relative, { maxBytes = DEFAULTS.ma
 function gitEnvironment() {
   const env = { ...process.env };
   // The selected repository, not inherited Git overrides, owns the observation.
-  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
-  return { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0" };
+  for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("GIT_")) delete env[key];
+  // This is Git's documented null-config spelling, also supported by Git for
+  // Windows. Node's os.devNull uses a Windows device-namespace path that Git
+  // rejects as an invalid configuration filename; it is not interchangeable.
+  return { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
 }
 
 export async function captureSource(workspacePath, options = {}) {
