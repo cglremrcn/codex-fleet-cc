@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { admissionContractDigest, assertBoundVerifier, isDigest, isMutableLane } from "./execution-evidence.mjs";
+import { ControlError, digest } from "./control-contract.mjs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
@@ -46,6 +48,9 @@ function positiveInteger(value, fallback, label, allowZero = false) {
 function normalizeLimits(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new TypeError("Scheduler limits must be an object.");
+  }
+  if (input.maxWritersPerCheckout !== undefined && input.maxWritersPerCheckout !== 1) {
+    throw new TypeError("limits.maxWritersPerCheckout must be 1; checkout labels do not isolate writers.");
   }
   return Object.freeze({
     maxActive: positiveInteger(
@@ -239,6 +244,11 @@ function publicRecord(item, status = item.status) {
     priority: item.priority,
     status,
     interactive: item.contract?.interactive === true || item.interactive === true,
+    contractDigest: item.contractDigest ?? null,
+    executionRevision: item.executionRevision ?? 0,
+    instructionDigest: item.instructionDigest ?? item.contractDigest ?? null,
+    verificationCheckpoint: item.verificationCheckpoint ?? null,
+    verificationPlan: item.verificationPlan ?? null,
     pendingRequests: item.pendingRequests ?? 0,
     pendingQuestionCount: item.pendingQuestionCount ?? 0,
     pendingApprovalCount: item.pendingApprovalCount ?? 0,
@@ -305,6 +315,11 @@ function hydratePersistedRecord(record, sequence, clock) {
     model: validated.model,
     effort: validated.effort,
     interactive: record.interactive === true,
+    contractDigest: isDigest(record.contractDigest) ? record.contractDigest : null,
+    executionRevision: Number.isSafeInteger(record.executionRevision) && record.executionRevision >= 0 ? record.executionRevision : 0,
+    instructionDigest: isDigest(record.instructionDigest) ? record.instructionDigest : record.contractDigest ?? null,
+    verificationCheckpoint: isDigest(record.verificationCheckpoint) ? record.verificationCheckpoint : null,
+    verificationPlan: record.verificationPlan ?? null,
     pendingRequests: 0,
     pendingQuestionCount: 0,
     pendingApprovalCount: 0,
@@ -397,7 +412,8 @@ class FleetScheduler {
     workspacePath,
     workspaceObservation,
     observeWorkspace,
-    initialRecords
+    initialRecords,
+    beforeDispatch
   }) {
     assertDependency(
       runtime,
@@ -406,6 +422,8 @@ class FleetScheduler {
     );
     assertDependency(store, ["write"], "store");
     assertDependency(clock, ["now", "sleep"], "clock");
+    this.beforeDispatch = beforeDispatch;
+    this.admissionPauses = 0;
     this.runtime = runtime;
     this.store = store;
     this.limits = normalizeLimits(limits);
@@ -462,6 +480,7 @@ class FleetScheduler {
       throw new TypeError("Scheduled lane contract must be an object.");
     }
     const authority = normalizeAuthority(contract.authority);
+    assertBoundVerifier({ ...contract, authority });
     const lane = createLane({ ...contract, authority });
     const checkoutKey = boundedIdentifier(
       contract.checkoutKey ?? contract.workspaceKey,
@@ -477,7 +496,12 @@ class FleetScheduler {
 
     const enqueuedAt = new Date(this.clock.now()).toISOString();
     return {
-      contract: { ...contract, authority },
+      contract: structuredClone({ ...contract, authority }),
+      contractDigest: admissionContractDigest({ ...contract, authority }),
+      executionRevision: 0,
+      instructionDigest: admissionContractDigest({ ...contract, authority }),
+      verificationCheckpoint: contract.verificationCheckpoint ?? null,
+      verificationPlan: contract.verificationPlan ? structuredClone(contract.verificationPlan) : null,
       id: lane.id,
       role: lane.role,
       label: lane.label,
@@ -603,6 +627,10 @@ class FleetScheduler {
   }
 
   writerAvailable(item) {
+    if (this.admissionPauses > 0) return false;
+    const occupying = [...this.active.values(), ...this.continuationReservations.values()];
+    if (item.verificationCheckpoint && occupying.some(isMutableLane)) return false;
+    if (isMutableLane(item) && occupying.some((other) => other.verificationCheckpoint)) return false;
     const reservedWriters = [...this.continuationReservations.values()].filter((reserved) =>
       reserved.authority.sandbox === "workspace-write"
       && this.writerKey(reserved) === this.writerKey(item)
@@ -628,6 +656,13 @@ class FleetScheduler {
   queueBlocker(item) {
     if (item.status !== "queued") return null;
     const queuedForMs = Math.max(0, this.clock.now() - Date.parse(item.enqueuedAt));
+    const verifierHolders = [...this.active.values(), ...this.continuationReservations.values()]
+      .filter((other) => (item.verificationCheckpoint && isMutableLane(other)) || (isMutableLane(item) && other.verificationCheckpoint));
+    if (verifierHolders.length) return Object.freeze({ kind: "verification-source-barrier", queuedForMs,
+      heldBy: Object.freeze(verifierHolders.map((lane) => Object.freeze({ laneId: lane.id, kind: "source-barrier" }))),
+      message: "Checkpoint verification and mutable work cannot overlap in this physical workspace." });
+    if (this.admissionPauses > 0) return Object.freeze({ kind: "source-observation-barrier", queuedForMs, heldBy: Object.freeze([]),
+      message: "A bounded source/evidence transaction is in progress. No new turn will start until it finishes." });
     if (item.authority.sandbox === "workspace-write" && !this.writerAvailable(item)) {
       const holders = this.writerHolders(item);
       const reserved = holders.reservations.map((id) => {
@@ -682,6 +717,7 @@ class FleetScheduler {
   }
 
   selectNextIndex() {
+    if (this.admissionPauses > 0) return -1;
     const ordered = this.queue
       .map((item, index) => ({ item, index }))
       .sort((left, right) => sortQueue(left.item, right.item));
@@ -767,6 +803,10 @@ class FleetScheduler {
       }
 
       try {
+        if (item.verificationCheckpoint && typeof this.beforeDispatch !== "function") {
+          throw new ControlError("VERIFIER_GUARD_UNAVAILABLE", "Checkpoint-bound verification requires the supervisor source guard.");
+        }
+        await this.beforeDispatch?.(item.contract, this.snapshot());
         const started = await this.runtime.startLane(item.contract);
         item.status = started.status ?? "running";
         item.phase = started.phase ?? item.status;
@@ -798,6 +838,7 @@ class FleetScheduler {
         item.resolve(publicRecord(item));
       } catch (error) {
         item.startPending = false;
+        if (error instanceof ControlError) { item.exitReason = error.message; item.stopReason = error.message; }
         const current = this.runtime.inspectLane(item.id);
         const acceptanceUnknown = error?.requestAcceptance === "unknown"
           || current?.status === "outcome_unknown";
@@ -838,12 +879,18 @@ class FleetScheduler {
     this.history.set(item.id, item);
   }
 
-  async continue(id, message) {
+  async continue(id, message, expected = null) {
+    if (this.admissionPauses > 0) throw new ControlError("SOURCE_BUSY", "A source evidence transaction is in progress.");
     const validatedMessage = assertLaneMessage(message);
     if (!this.workspacePath) {
       throw new Error("Scheduler workspace path is required for a persisted follow-up.");
     }
     const item = this.history.get(id);
+    if (item?.verificationCheckpoint) throw new ControlError("VERIFIER_REQUIRES_FRESH_LANE", "Checkpoint verifiers cannot be continued or steered. Admit a fresh verifier for the current checkpoint.");
+    if (expected && (expected.expectedThreadId !== item?.threadId || expected.expectedTurnId !== item?.turnId
+      || expected.expectedExecutionRevision !== item?.executionRevision)) {
+      throw new ControlError("CONTROL_TARGET_CHANGED", "The continuation target has changed. Read the current lane before preparing another instruction.");
+    }
     const resumable = item?.status === "complete"
       || (item?.status === "blocked" && item.phase === "needs-controller");
     if (!item || !resumable || !item.threadId) {
@@ -860,6 +907,9 @@ class FleetScheduler {
     if (this.occupiedSlots() >= this.limits.maxActive) {
       throw new Error(`Lane ${id} cannot continue while the fleet is at active capacity.`);
     }
+    if ((item.executionRevision ?? 0) >= Number.MAX_SAFE_INTEGER) throw new ControlError("CONTROL_REVISION_EXHAUSTED", "Execution revision exhausted; do not reuse this lane.");
+    item.executionRevision = (item.executionRevision ?? 0) + 1;
+    item.instructionDigest = digest({ prior: item.instructionDigest ?? item.contractDigest ?? null, message: validatedMessage }, "fleet-instruction-chain-v1");
     const resumeRecord = { ...item };
     const runtimeAlreadyOwnsLane = this.runtime.inspectLane(id) !== null;
     item.pendingContinuation = Object.freeze({
@@ -1142,7 +1192,9 @@ class FleetScheduler {
     };
 
     for (;;) {
+      if (this.observationWaitsClosed) throw new ControlError("CONTROL_CLOSED", "Supervisor observation ended; no completion was inferred.");
       await this.reconcile();
+      if (this.observationWaitsClosed) throw new ControlError("CONTROL_CLOSED", "Supervisor observation ended; no completion was inferred.");
       const snapshot = this.snapshot();
       const event = eventFor(snapshot);
       if (event) {
@@ -1174,6 +1226,11 @@ class FleetScheduler {
     }
   }
 
+  closeObservationWaits() {
+    this.observationWaitsClosed = true;
+    this.notifyChange();
+  }
+
   async waitForLane(id, options = {}) {
     const timeoutMs = options.timeoutMs ?? 600_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3_600_000) {
@@ -1181,7 +1238,9 @@ class FleetScheduler {
     }
     const startedAt = this.clock.now();
     for (;;) {
+      if (this.observationWaitsClosed) throw new ControlError("CONTROL_CLOSED", "Supervisor observation ended; no completion was inferred.");
       await this.reconcile();
+      if (this.observationWaitsClosed) throw new ControlError("CONTROL_CLOSED", "Supervisor observation ended; no completion was inferred.");
       const item = this.findRecord(id);
       if (!item) throw new Error(`Lane was not found: ${id}.`);
       if (TERMINAL_STATUSES.has(item.status)) {
@@ -1211,12 +1270,18 @@ class FleetScheduler {
   }
 
   async message(id, message) {
+    if (this.admissionPauses > 0) throw new ControlError("SOURCE_BUSY", "A source evidence transaction is in progress.");
+    if (this.findRecord(id)?.verificationCheckpoint) throw new ControlError("VERIFIER_REQUIRES_FRESH_LANE", "Checkpoint verifiers cannot be continued or steered. Admit a fresh verifier for the current checkpoint.");
     const validatedMessage = assertLaneMessage(message);
     const active = this.active.get(id);
     if (active && active.threadId && active.turnId) {
       if (typeof this.runtime.steerLane !== "function") {
         throw new Error("Runtime steering is unavailable.");
       }
+      if ((active.executionRevision ?? 0) >= Number.MAX_SAFE_INTEGER) throw new ControlError("CONTROL_REVISION_EXHAUSTED", "Execution revision exhausted; do not reuse this lane.");
+      active.executionRevision = (active.executionRevision ?? 0) + 1;
+      active.instructionDigest = digest({ prior: active.instructionDigest ?? active.contractDigest ?? null, message: validatedMessage }, "fleet-instruction-chain-v1");
+      await this.persist();
       const steered = await this.runtime.steerLane(id, validatedMessage, {
         threadId: active.threadId,
         turnId: active.turnId
@@ -1402,6 +1467,16 @@ class FleetScheduler {
     });
   }
 
+  /** Stop new dispatch while a short source/evidence read is in progress. */
+  async withAdmissionPause(operation) {
+    this.admissionPauses += 1;
+    try { return await operation(); }
+    finally {
+      this.admissionPauses -= 1;
+      void this.drain().catch(() => undefined); // Individual admissions retain their failure results.
+    }
+  }
+
   async persist() {
     const snapshot = this.snapshot();
     const fingerprint = JSON.stringify(snapshot);
@@ -1430,6 +1505,7 @@ export function createScheduler(options = {}) {
     workspacePath: options.workspacePath,
     workspaceObservation: options.workspaceObservation,
     observeWorkspace: options.observeWorkspace,
-    initialRecords: options.initialRecords
+    initialRecords: options.initialRecords,
+    beforeDispatch: options.beforeDispatch
   });
 }

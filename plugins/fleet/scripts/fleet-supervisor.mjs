@@ -1,5 +1,10 @@
 #!/usr/bin/env node
+import { createFrontierPlans } from "./lib/frontier-planner.mjs";
 
+import { createEvidenceLedger } from "./lib/evidence-ledger.mjs";
+import { assertSourceQuiet } from "./lib/execution-evidence.mjs";
+import { ControlError } from "./lib/control-contract.mjs";
+import { createMachineControl } from "./lib/control-service.mjs";
 import { paginateInventory } from "./lib/fleet-inventory.mjs";
 import { registerWorkspace } from "./lib/workspace-registry.mjs";
 
@@ -147,6 +152,8 @@ export function createControlPlane(options) {
   let reconcileTimer = null;
   let reconciling = null;
   let recoveringPersisted = null;
+  let sourceTransactionActive = false;
+  let admissionRequests = 0;
 
   async function ensureRuntime() {
     if (runtime) return runtime;
@@ -171,7 +178,8 @@ export function createControlPlane(options) {
         limits,
         workspacePath: options.workspacePath,
         workspaceObservation: state.workspaceObservation,
-        initialRecords: state.lanes
+        initialRecords: state.lanes,
+        beforeDispatch: (contract, current) => evidence.validateVerifier(contract, current)
       });
       return scheduler;
     })().finally(() => {
@@ -269,14 +277,107 @@ export function createControlPlane(options) {
     return ensureRuntime();
   }
 
-  return Object.freeze({
+  async function inspectSnapshot() {
+    if (schedulerInitialization) await schedulerInitialization;
+    return scheduler ? scheduler.snapshot() : snapshot();
+  }
+
+  async function withSourceTransaction(operation) {
+    if (sourceTransactionActive || admissionRequests > 0) {
+      throw new ControlError("SOURCE_BUSY", "A source transaction or admission is already in progress. Observe before retrying.");
+    }
+    sourceTransactionActive = true;
+    const run = async () => { assertSourceQuiet(await inspectSnapshot()); return operation(); };
+    try { return scheduler ? await scheduler.withAdmissionPause(run) : await run(); }
+    finally { sourceTransactionActive = false; }
+  }
+
+  async function admitContract(params, recheck = null) {
+        options.onActivity?.();
+        const contract = validateStartContract(params, {
+          expectedWorkspacePath: options.workspacePath,
+          deferModelValidation: true
+        });
+        if (contract.modelPolicy === "runtime") {
+          const connected = await ensureRuntime();
+          validateStartContract(params, {
+            expectedWorkspacePath: options.workspacePath,
+            modelCatalog: await connected.listModels()
+          });
+        }
+        await registerWorkspace(options.dataDir, options.workspacePath);
+        const owner = await ensureScheduler(contract.limits);
+        owner.assertAvailable(contract.lanes.map((lane) => lane.id));
+        const reserve = async () => {
+          if (recheck) await recheck();
+          owner.assertAvailable(contract.lanes.map((lane) => lane.id));
+          const admissions = contract.lanes.map((lane) => owner.enqueue({
+            ...lane,
+            ...(contract.sharedContext ? { sharedContext: contract.sharedContext } : {}),
+            admissionSource: "fleet-supervisor",
+            workspacePath: options.workspacePath,
+            workspaceKey: options.workspaceKey,
+            checkoutKey: lane.checkoutKey ?? options.workspaceKey
+          }));
+          // Attach rejection handlers immediately, including before the source pause is released.
+          const completion = Promise.all(admissions).then((lanes) => ({
+            schemaVersion: 1, background: true, lanes, admissionIds: lanes.map((lane) => lane.admissionId)
+          }));
+          completion.catch(() => undefined);
+          monitorActive();
+          return { completion };
+        };
+        return recheck ? owner.withAdmissionPause(reserve) : reserve();
+  }
+
+  const evidence = createEvidenceLedger({ workspacePath: options.workspacePath, workspaceKey: options.workspaceKey,
+    stateRoot: root, snapshot: inspectSnapshot, transaction: withSourceTransaction });
+
+  const plans = createFrontierPlans({ workspacePath: options.workspacePath, evidence,
+    snapshot: inspectSnapshot, transaction: withSourceTransaction, admit: admitContract });
+  const machine = createMachineControl({
+    workspacePath: options.workspacePath, workspaceKey: options.workspaceKey, snapshot: inspectSnapshot, evidence, plans,
+    callLegacy: (method, params) => controlPlane.handle(method, params)
+  });
+  const controlPlane = Object.freeze({
     async isIdle() {
+      if (sourceTransactionActive || admissionRequests > 0 || machine.hasWorkLease()) return false;
       const current = await snapshot();
       return current.queued.length === 0
         && current.active.length === 0
         && (current.continuationReservations?.length ?? 0) === 0;
     },
     async handle(method, params) {
+      const admission = ["start", "followUp", "message"].includes(method);
+      const sourceSensitive = admission || ["resolve", "archive", "reconcileContinuation"].includes(method)
+        || (method === "cancel" && params?.confirmationToken);
+      if (sourceSensitive && sourceTransactionActive) throw new ControlError("SOURCE_BUSY", "A source evidence transaction is in progress.");
+      if (admission) admissionRequests += 1;
+      try { return await dispatch(method, params); }
+      finally { if (admission) admissionRequests -= 1; }
+    },
+    async restoreIdlePolicy() {
+      if (await this.isIdle()) {
+        options.onIdle?.();
+      } else {
+        monitorActive();
+      }
+    },
+    closeObservationWaits() { machine.closeObservationWaits(); scheduler?.closeObservationWaits(); },
+    async close() {
+      machine.dispose(); scheduler?.closeObservationWaits();
+      if (reconcileTimer) clearInterval(reconcileTimer);
+      reconcileTimer = null;
+      await schedulerInitialization?.catch(() => undefined);
+      await runtimeInitialization?.catch(() => undefined);
+      await reconcile().catch(() => undefined);
+      await runtime?.close();
+      runtime = null;
+      scheduler = null;
+    }
+  });
+  async function dispatch(method, params) {
+      if (method === "control") return machine.handle(params);
       if (method === "ping") {
         const current = await snapshot();
         return { ready: true, active: current.active.length };
@@ -332,43 +433,13 @@ export function createControlPlane(options) {
         return { ...session, canAcceptDirectInput: false, observationOnly: true };
       }
       if (method === "start") {
-        options.onActivity?.();
-        const contract = validateStartContract(params, {
-          expectedWorkspacePath: options.workspacePath,
-          deferModelValidation: true
-        });
-        if (contract.modelPolicy === "runtime") {
-          const connected = await ensureRuntime();
-          validateStartContract(params, {
-            expectedWorkspacePath: options.workspacePath,
-            modelCatalog: await connected.listModels()
-          });
-        }
-        await registerWorkspace(options.dataDir, options.workspacePath);
-        const owner = await ensureScheduler(contract.limits);
-        owner.assertAvailable(contract.lanes.map((lane) => lane.id));
-        const admissions = contract.lanes.map((lane) => owner.enqueue({
-          ...lane,
-          ...(contract.sharedContext ? { sharedContext: contract.sharedContext } : {}),
-          admissionSource: "fleet-supervisor",
-          workspacePath: options.workspacePath,
-          workspaceKey: options.workspaceKey,
-          checkoutKey: lane.checkoutKey ?? options.workspaceKey
-        }));
-        monitorActive();
-        const lanes = await Promise.all(admissions);
-        return {
-          schemaVersion: 1,
-          background: true,
-          lanes,
-          admissionIds: lanes.map((lane) => lane.admissionId)
-        };
+        return (await admitContract(params)).completion;
       }
       if (method === "followUp") {
         options.onActivity?.();
         const laneId = assertSafeId(params.laneId, "Follow-up lane id");
         const owner = await ensureScheduler();
-        const lane = await owner.continue(laneId, assertMessage(params.message));
+        const lane = await owner.continue(laneId, assertMessage(params.message), params.expectedExecutionRevision === undefined ? null : params);
         monitorActive();
         return lane;
       }
@@ -465,25 +536,8 @@ export function createControlPlane(options) {
         };
       }
       throw new Error(`Unknown Fleet supervisor method: ${method}.`);
-    },
-    async restoreIdlePolicy() {
-      if (await this.isIdle()) {
-        options.onIdle?.();
-      } else {
-        monitorActive();
-      }
-    },
-    async close() {
-      if (reconcileTimer) clearInterval(reconcileTimer);
-      reconcileTimer = null;
-      await schedulerInitialization?.catch(() => undefined);
-      await runtimeInitialization?.catch(() => undefined);
-      await reconcile().catch(() => undefined);
-      await runtime?.close();
-      runtime = null;
-      scheduler = null;
-    }
-  });
+  }
+  return controlPlane;
 }
 
 function parseArguments(argv) {
@@ -589,7 +643,12 @@ export async function runSupervisor(options = {}) {
 
   async function close(closeOptions = {}) {
     if (closeOptions.idleActivityVersion !== undefined) {
-      if (!await control.isIdle()) return stopped;
+      if (!await control.isIdle()) {
+        // Prepared plans/observers may be the only live lease; no scheduler event
+        // will arrive to re-arm this timer when their bounded lifetime expires.
+        if (!shutdownGuard.isClosing()) scheduleIdleShutdown();
+        return stopped;
+      }
       if (!shutdownGuard.tryIdleClose(closeOptions.idleActivityVersion)) {
         if (!shutdownGuard.isClosing()) scheduleIdleShutdown();
         return stopped;
@@ -598,6 +657,7 @@ export async function runSupervisor(options = {}) {
       return stopped;
     }
     cancelIdleShutdown();
+    control.closeObservationWaits();
     await shutdownGuard.waitForDrained();
     await control.close().catch(() => undefined);
     process.chdir(path.dirname(process.execPath));
