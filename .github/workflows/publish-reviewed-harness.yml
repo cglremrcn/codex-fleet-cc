@@ -1,0 +1,30 @@
+name: Publish reviewed harness source
+on:
+  push:
+    branches: [review/harness-publish-20260915]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Restore the exact locally reviewed commits on a new product branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .review-transfer/part-*.b64 | base64 --decode > /tmp/fleet-product.xz
+          echo '2bb1dd4ca9eba1532318ba48ad2090faba84543aa67a2a0dbe57b99a6397cd73  /tmp/fleet-product.xz' | sha256sum -c -
+          xz --decompress --stdout /tmp/fleet-product.xz > /tmp/fleet-product.mbox
+          git checkout --detach b3d0a32d34e16a06498243f4d54b46a2bbf42dce
+          git config user.name 'Fleet Engineering'
+          git config user.email 'fleet-review@users.noreply.github.com'
+          git -c commit.gpgSign=false am --committer-date-is-author-date /tmp/fleet-product.mbox
+          test "$(git rev-parse HEAD)" = cf4c396267b8975db1391667af6aee9398a6c06c
+          test "$(git rev-parse HEAD^{tree})" = 251a61ea661c320cf80036365eb46b7d56f49aff
+          git diff --check b3d0a32d34e16a06498243f4d54b46a2bbf42dce..HEAD
+          test -z "$(git ls-tree -r --name-only HEAD .review-transfer .github/workflows/publish-reviewed-harness.yml)"
+          git push origin HEAD:refs/heads/research/evidence-control-plane-20260915
