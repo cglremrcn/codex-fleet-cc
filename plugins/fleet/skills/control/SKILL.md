@@ -1,6 +1,6 @@
 ---
 name: control
-description: Manage Fleet through its versioned JSON control plane: discover schemas, observe changes, wait, plan bounded tasks, and check source-bound verification receipts. Use for Fleet coordination, not direct Codex launches, user approvals, setup, or deployment.
+description: "Manage Fleet through its versioned JSON control plane: discover schemas, observe changes, wait, plan bounded tasks, and check source-bound verification receipts. Use for Fleet coordination, not direct Codex launches, user approvals, setup, or deployment."
 ---
 
 # Fleet machine control

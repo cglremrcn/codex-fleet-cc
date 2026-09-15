@@ -36,3 +36,28 @@ test("256 deterministic DAG fixtures obey dependencies, capacity and reserve bef
     if(selected.selected.some(n=>lanes.find(l=>l.id===n.id).authority.sandbox==="workspace-write")) assert.equal(selected.selected.length,1);
   }
 });
+
+
+test("portable skill descriptions use quoted scalars with lossless LF and CRLF metadata", async () => {
+  // Keep these published descriptions in the JSON-string subset of YAML. This
+  // prevents a colon+space in prose from becoming YAML mapping syntax. The
+  // pinned host CLI's strict plugin validation remains the full parser gate.
+  for (const file of ["plugins/fleet/skills/control/SKILL.md", ".agents/skills/fleet-control/SKILL.md"]) {
+    const source = await fs.readFile(file, "utf8");
+    for (const newline of ["\n", "\r\n"]) {
+      const text = source.replace(/\r?\n/gu, newline);
+      const metadata = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(text)?.[1];
+      assert.ok(metadata, `${file}: metadata must start at the first line`);
+      const lines = metadata.split(/\r?\n/u);
+      const descriptions = lines.filter((line) => line.startsWith("description: "));
+      assert.equal(descriptions.length, 1, `${file}: one description required`);
+      const scalar = descriptions[0].slice("description: ".length);
+      assert.ok(scalar.startsWith('"'), `${file}: description must be quoted`);
+      const value = JSON.parse(scalar);
+      assert.equal(typeof value, "string");
+      assert.ok(value.length > 20 && value.length < 1024);
+      assert.match(value, /Fleet/u);
+      assert.match(lines.find((line) => line.startsWith("name: ")), /^name: [a-z][a-z0-9-]*$/u);
+    }
+  }
+});

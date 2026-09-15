@@ -1,6 +1,6 @@
 ---
 name: fleet-control
-description: Coordinate an existing Fleet installation from Codex or another agent using discovered JSON schemas, delta observations, bounded plans and source-bound receipts. Not for spawning nested fleets from worker tasks or granting permissions.
+description: "Coordinate an existing Fleet installation from Codex or another agent using discovered JSON schemas, delta observations, bounded plans and source-bound receipts. Not for spawning nested fleets from worker tasks or granting permissions."
 ---
 
 # Fleet control for repository agents
