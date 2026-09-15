@@ -1,0 +1,38 @@
+name: Isolated harness source export
+on:
+  push:
+    branches: [review/harness-export-20260915]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: b3d0a32d34e16a06498243f4d54b46a2bbf42dce
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22.23.1
+      - name: Export public source and pinned local test prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          mkdir -p /tmp/fleet-export/node/bin
+          git bundle create /tmp/fleet-export/fleet.bundle HEAD
+          tar -czf /tmp/fleet-export/dependencies.tar.gz node_modules
+          cp "$(command -v node)" /tmp/fleet-export/node/bin/node
+          tar -czf /tmp/fleet-export/node.tar.gz -C /tmp/fleet-export node
+          rm -rf /tmp/fleet-export/node
+          cd /tmp/fleet-export
+          sha256sum fleet.bundle dependencies.tar.gz node.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: harness-source-b3d0a32
+          path: /tmp/fleet-export/*
+          if-no-files-found: error
+          retention-days: 2
