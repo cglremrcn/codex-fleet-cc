@@ -1,0 +1,30 @@
+name: Stage reviewed Windows source fix
+on:
+  push:
+    branches: [review/stage-source-fix-20260915]
+permissions:
+  contents: write
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Reconstruct the exact reviewed commit on an isolated staging ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .review-transfer/windows-fix.b64 > /tmp/source-fix.xz
+          echo '5998be2ea06e7fd07f7a4c83f3d31ab9b1f7b669017b5dbc66673e0cc87befa1  /tmp/source-fix.xz' | sha256sum -c -
+          xz -dc /tmp/source-fix.xz > /tmp/source-fix.mbox
+          git checkout --detach cf4c396267b8975db1391667af6aee9398a6c06c
+          git config user.name 'Fleet Engineering'
+          git config user.email 'fleet-review@users.noreply.github.com'
+          git -c commit.gpgSign=false am --committer-date-is-author-date /tmp/source-fix.mbox
+          test "$(git rev-parse HEAD)" = 3b9e62aaddb778b98287c7ce14163bb770248044
+          test "$(git rev-parse HEAD^{tree})" = 50fb620c274c4323992e39bd19d7b64b2befe630
+          git diff --check cf4c396267b8975db1391667af6aee9398a6c06c..HEAD
+          test -z "$(git ls-tree -r --name-only HEAD .review-transfer .github/workflows/stage-windows-source-fix.yml)"
+          git push origin HEAD:refs/heads/review/harness-windows-fix-20260915
