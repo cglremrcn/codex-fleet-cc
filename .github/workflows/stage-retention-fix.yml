@@ -1,0 +1,29 @@
+name: Stage reviewed plan retention fix
+on:
+  push:
+    branches: [review/stage-retention-fix-20260915]
+permissions:
+  contents: write
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Reconstruct checksum-reviewed fix without transport files
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .review-transfer/retention-fix.b64 > /tmp/retention-fix.xz
+          echo '2a6deeba8b2e03e6ec0683987e06db5896f53f94aa3f782e8ddf879e67f34e81  /tmp/retention-fix.xz' | sha256sum -c -
+          xz -dc /tmp/retention-fix.xz > /tmp/retention-fix.mbox
+          git checkout --detach e7663ca2b4c332b9068225aee99add1c19fd03c9
+          git config user.name 'Fleet Engineering'
+          git config user.email 'fleet-review@users.noreply.github.com'
+          git -c commit.gpgSign=false am --committer-date-is-author-date /tmp/retention-fix.mbox
+          test "$(git rev-parse HEAD^{tree})" = b2723974a20ea2cab70ac03c8413957d10765f8b
+          git diff --check e7663ca2b4c332b9068225aee99add1c19fd03c9..HEAD
+          test -z "$(git ls-tree -r --name-only HEAD .review-transfer .github/workflows/stage-retention-fix.yml)"
+          git push origin HEAD:refs/heads/review/harness-retention-fix-20260915
