@@ -1,0 +1,36 @@
+name: Disposable source Git diagnostic
+on:
+  push:
+    branches: [review/source-git-diagnostic-20260915]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.0
+      - name: Compare Git configuration isolation spellings on a disposable repository
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import fs from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+          const root=fs.mkdtempSync(path.join(os.tmpdir(),'fleet-config-diagnostic-'));
+          const run=(args,env)=>execFileSync('git',args,{cwd:root,env,encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:5000,windowsHide:true});
+          try {
+            run(['init']);
+            const clean=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.toUpperCase().startsWith('GIT_')));
+            for(const [label,config] of [['node-devNull',os.devNull],['git-posix-null','/dev/null'],['windows-NUL','NUL'],['empty-config','']]) {
+              try {run(['-c','core.fsmonitor=false','-c','core.untrackedCache=false','rev-parse','--show-toplevel'],{...clean,GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:config,GIT_TERMINAL_PROMPT:'0'}); console.log(JSON.stringify({label,ok:true}));}
+              catch(error) {const text=String(error.stderr??'').replaceAll(root,'<fixture>'); console.log(JSON.stringify({label,ok:false,status:error.status,code:error.code,stderr:text.slice(0,600)}));}
+            }
+          } finally {fs.rmSync(root,{recursive:true,force:true,maxRetries:3});}
+          JS
