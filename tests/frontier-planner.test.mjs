@@ -125,3 +125,63 @@ test("expired plans and post-boundary failure never start the same intent twice"
     assert.equal(calls, 1);
   } finally { plans.dispose(); }
 });
+
+function serializedPlanFixture(t, readContext) {
+  let queue = Promise.resolve();
+  const plans = createFrontierPlans({
+    workspacePath: "/workspace", now: () => 1000, snapshot: async () => snapshot,
+    evidence: { currentContext: readContext, verifyReceipt: async () => ({ current: true }) },
+    transaction(operation) {
+      const current = queue.then(operation);
+      queue = current.catch(() => undefined);
+      return current;
+    },
+    admit: async () => assert.fail("Preparation must not dispatch work")
+  });
+  t.after(() => plans.dispose());
+  return plans;
+}
+
+test("concurrent preparations cannot exceed the retained plan count after waiting for a transaction", async t => {
+  const gate = deferred();
+  const plans = serializedPlanFixture(t, async () => {
+    await gate.promise;
+    return { snapshot, source: { digest: "a".repeat(64) } };
+  });
+  const outcomes = Promise.allSettled(Array.from({ length: 24 }, () => plans.prepare(params("/workspace"))));
+  gate.resolve();
+  const results = await outcomes;
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 8);
+  assert.equal(results.filter(result => result.status === "rejected").length, 16);
+  for (const result of results) if (result.status === "rejected") assert.equal(result.reason.code, "PLAN_LIMIT");
+  assert.equal(plans.stats().retained, 8);
+  assert.ok(plans.stats().retainedBytes <= 512 * 1024);
+});
+
+test("disposal rejects preparations waiting for their transaction without starting source reads", async t => {
+  let reads = 0;
+  const plans = serializedPlanFixture(t, async () => {
+    reads++;
+    return { snapshot, source: { digest: "a".repeat(64) } };
+  });
+  const pending = plans.prepare(params("/workspace"));
+  plans.dispose();
+  await assert.rejects(pending, { code: "CONTROL_CLOSED" });
+  assert.equal(reads, 0);
+  assert.equal(plans.stats().retained, 0);
+});
+
+test("a preparation already reading source cannot publish a token after disposal", async t => {
+  const gate = deferred(), entered = deferred();
+  const plans = serializedPlanFixture(t, async () => {
+    entered.resolve();
+    await gate.promise;
+    return { snapshot, source: { digest: "a".repeat(64) } };
+  });
+  const pending = plans.prepare(params("/workspace"));
+  await entered.promise;
+  plans.dispose();
+  gate.resolve();
+  await assert.rejects(pending, { code: "CONTROL_CLOSED" });
+  assert.equal(plans.stats().retained, 0);
+});

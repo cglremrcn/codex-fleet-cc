@@ -73,6 +73,11 @@ export function createFrontierPlans({ workspacePath, evidence, snapshot, transac
   function prune() {
     for (const [token, plan] of plans) if (plan.expiresAt <= now() && plan.state !== "admitting") plans.delete(token);
   }
+  function ensurePlanCapacity() {
+    prune();
+    if (disposed) throw new ControlError("CONTROL_CLOSED", "Plan service is closed.");
+    if (plans.size >= MAX_PLANS) throw new ControlError("PLAN_LIMIT", "Too many retained plans; apply or let a prepared plan expire before preparing more.");
+  }
   async function dependencies(params, context) {
     const candidates = new Set(params.graph.map((node) => node.id));
     const verified = new Set();
@@ -85,13 +90,14 @@ export function createFrontierPlans({ workspacePath, evidence, snapshot, transac
   }
   return Object.freeze({
     async prepare(params) {
-      validateControlOperation("prepare", params); prune();
-      if (disposed) throw new ControlError("CONTROL_CLOSED", "Plan service is closed.");
-      if (plans.size >= MAX_PLANS) throw new ControlError("PLAN_LIMIT", "Too many retained plans; apply or let a prepared plan expire before preparing more.");
+      validateControlOperation("prepare", params); ensurePlanCapacity();
       const contract = validateStartContract(params.contract, { expectedWorkspacePath: workspacePath, deferModelValidation: true });
       // Clone once before awaiting, so in-process callers cannot change a prepared intent.
       const input = structuredClone(params);
       return transaction(async () => {
+        // Other callers or shutdown may have changed state while this callback
+        // waited for the transaction. Recheck before expensive source reads.
+        ensurePlanCapacity();
         const context = await evidence.currentContext(), valid = await dependencies(input, context);
         const frontier = chooseFrontier({ ...input, lanes: contract.lanes, snapshot: context.snapshot, validDependencies: valid, now: now(), limits: contract.limits });
         if (!frontier.selected.length) return { ...frontier, planToken: null, next: "Resolve deferred reasons; no inference was started." };
@@ -105,6 +111,9 @@ export function createFrontierPlans({ workspacePath, evidence, snapshot, transac
         const stateDigest = identity(context.snapshot, effectiveLimits);
         if (identity(await snapshot(), effectiveLimits) !== stateDigest) throw new ControlError("PLAN_STALE", "Fleet changed during preparation; observe and prepare again.");
         const record = { state: "prepared", expiresAt: now() + PLAN_TTL_MS, input, wave, frontier, effectiveLimits, stateDigest, sourceDigest: context.source.digest, promise: null };
+        // Source/dependency reads also yield. Never resurrect a closed service
+        // or exceed retention when an asynchronous preparation finishes late.
+        ensurePlanCapacity();
         const bytes = Buffer.byteLength(JSON.stringify(record));
         if (bytes + [...plans.values()].reduce((sum, plan) => sum + plan.bytes, 0) > MAX_BYTES) throw new ControlError("PLAN_LIMIT", "Prepared context exceeds the bounded plan memory budget.");
         const token = crypto.randomBytes(32).toString("hex"); plans.set(token, { ...record, bytes });
