@@ -1,3 +1,4 @@
+import { runControlCli } from "./control-cli.mjs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +38,10 @@ const HELP = Object.freeze({
     "",
     "Usage: fleet <command> [options]",
     "",
+    "Machine control:",
+    "  control describe [operation] --json           Discover one exact schema at a time.",
+    "  control --stdin --json                         Versioned bounded controller requests and replies.",
+    "",
     "Recovery and observation:",
     "  result --lane <id> --wait [--timeout-ms <ms>]  Wait without shell polling; default 10 minutes.",
     "  watch [--timeout-ms <ms>] [--stall-ms <ms>]    Long-poll terminal/attention/stall events.",
@@ -55,6 +60,7 @@ const HELP = Object.freeze({
     "  Run `fleet help start` or `fleet help follow-up` for the contract shape.",
     ""
   ].join("\n"),
+  control: "Usage: fleet control describe [operation] --json OR fleet control --stdin --json. Call describe for versioned schemas and safety boundaries.",
   start: [
     "Usage: fleet start --stdin|--contract <file> [--json]",
     "",
@@ -727,6 +733,7 @@ export async function runOperationalCli(argv, options = {}) {
       return EXIT_CODES.success;
     }
     const [command, ...tokens] = argv;
+    if (command === "control") return await runControlCli(tokens, options);
     if (command === "status") return await runStatus(tokens, io);
     if (command === "models" && tokens.includes("--refresh")) return await runModelsRefresh(stripRefresh(tokens), io);
     if (command === "result" && tokens.includes("--wait")) return await runResultWait(tokens, io);
