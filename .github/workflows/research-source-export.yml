@@ -1,0 +1,36 @@
+name: Research source export
+on:
+  push:
+    branches: [review/source-export-20260915]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: b3d0a32d34e16a06498243f4d54b46a2bbf42dce
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22.23.1
+      - name: Export source and exact offline test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          mkdir -p /tmp/research-source
+          git bundle create /tmp/research-source/fleet.bundle HEAD
+          tar -czf /tmp/research-source/dependencies.tar.gz node_modules
+          cp "$(command -v node)" /tmp/research-source/node
+          cd /tmp/research-source
+          sha256sum fleet.bundle dependencies.tar.gz node > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: fleet-research-source-b3d0a32
+          path: /tmp/research-source/*
+          retention-days: 2
+          if-no-files-found: error
