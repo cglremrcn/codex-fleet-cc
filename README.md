@@ -24,6 +24,15 @@ does not show Fleet lanes, and Fleet status does not create or control Claude ba
 > live-account canary are separate gates. The GitHub personal marketplace is available; the project
 > is not yet published to a central marketplace catalog.
 
+## Machine-control integration (review source)
+
+Claude Code, Codex and other trusted local controllers can use the versioned JSON
+control plane and dependency-free Node client: lazy operation schemas, delta
+observations, bounded result sections, source-bound reported verification and
+replay-safe prepared waves. See [Machine control](docs/MACHINE_CONTROL.md) and the
+[research and acceptance review](docs/reviews/2026-09-15-evidence-control-plane.md).
+This does not upgrade an installed runtime or claim a global quality ranking.
+
 ## See the fleet without leaving Claude Code
 
 Press `Ctrl+G` to open the operator console in the same terminal. Select a lane, inspect its real
