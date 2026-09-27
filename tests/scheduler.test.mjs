@@ -42,6 +42,7 @@ function recordingRuntime() {
   const resumes = [];
   const resumeRecords = [];
   const interrupts = [];
+  let probeResult = { state: "unknown" };
   let active = 0;
   let peak = 0;
   const writerCounts = new Map();
@@ -113,6 +114,12 @@ function recordingRuntime() {
     },
     replaceThread(id, threadId) {
       lanes.get(id).threadId = threadId;
+    },
+    async probeContinuation() {
+      return { ...probeResult };
+    },
+    setProbeResult(value) {
+      probeResult = { ...value };
     },
     maxConcurrent() {
       return peak;
@@ -564,6 +571,73 @@ test("an acceptance-unknown continuation preserves the terminal record and recon
     scheduler.continue("uncertain-follow-up", "Never repeat without reconciliation."),
     /requires reconciliation/iu
   );
+});
+
+test("queued writers explain and recover a proven-not-started continuation reservation", async () => {
+  const runtime = recordingRuntime();
+  runtime.resumeLane = async () => {
+    const error = new Error("turn/start response was lost");
+    error.requestAcceptance = "unknown";
+    throw error;
+  };
+  const clock = deterministicClock();
+  const scheduler = createScheduler({
+    runtime,
+    store: memoryStore(),
+    limits: { maxActive: 1, maxWritersPerCheckout: 1, staggerMs: 0 },
+    clock,
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{
+      ...writer("uncertain-writer", "shared"),
+      status: "complete", phase: "complete",
+      threadId: "thread-uncertain-writer", turnId: "turn-original",
+      enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z", finishedAt: "2026-08-19T10:00:02.000Z"
+    }]
+  });
+  await assert.rejects(scheduler.continue("uncertain-writer", "Continue exactly once."), /response was lost/iu);
+
+  const queued = scheduler.enqueue(writer("next-writer", "shared"));
+  await nextTurn();
+  const waiting = scheduler.snapshot().queued.find((lane) => lane.id === "next-writer");
+  assert.equal(waiting.queueBlocker.kind, "writer-reservation");
+  assert.equal(waiting.queueBlocker.heldBy[0].laneId, "uncertain-writer");
+
+  runtime.setProbeResult({ state: "not-started", latestTurnId: "turn-original" });
+  await scheduler.reconcile();
+  const admitted = await queued;
+  assert.equal(admitted.id, "next-writer");
+  assert.equal(scheduler.snapshot().continuationReservations.length, 0);
+});
+
+test("ambiguous continuation reservations require evidence before an operator can release the writer lock", async () => {
+  const runtime = recordingRuntime();
+  runtime.resumeLane = async () => {
+    const error = new Error("follow-up delivery unknown");
+    error.requestAcceptance = "unknown";
+    throw error;
+  };
+  const scheduler = createScheduler({
+    runtime, store: memoryStore(), limits: { staggerMs: 0 }, clock: deterministicClock(),
+    workspacePath: "C:\\workspace\\persisted",
+    initialRecords: [{ ...writer("ambiguous", "shared"), status: "complete", phase: "complete",
+      threadId: "thread-ambiguous", turnId: "turn-original", enqueuedAt: "2026-08-19T10:00:00.000Z",
+      startedAt: "2026-08-19T10:00:01.000Z", finishedAt: "2026-08-19T10:00:02.000Z" }]
+  });
+  await assert.rejects(scheduler.continue("ambiguous", "Continue once."));
+  runtime.setProbeResult({ state: "unknown" });
+  const unresolved = await scheduler.reconcileContinuation("ambiguous");
+  assert.equal(unresolved.resolved, false);
+  assert.equal(scheduler.snapshot().continuationReservations.length, 1);
+  await assert.rejects(
+    scheduler.reconcileContinuation("ambiguous", { assumeNotStarted: true }),
+    /evidence reference/iu
+  );
+  const resolved = await scheduler.reconcileContinuation("ambiguous", {
+    assumeNotStarted: true, evidenceRef: "operator:thread-history-no-new-turn"
+  });
+  assert.equal(resolved.resolution, "not-started");
+  assert.equal(scheduler.snapshot().continuationReservations.length, 0);
 });
 
 test("an acceptance-unknown initial turn is persisted as unknown instead of failed", async () => {

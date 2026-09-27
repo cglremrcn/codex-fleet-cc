@@ -65,6 +65,17 @@ test("absent, unsafe and partial usage is unknown, never invented zero", () => {
   assert.equal(usageFromNotification({ total: { inputTokens: 1, outputTokens: 1, totalTokens: Number.MAX_SAFE_INTEGER + 1 } }), null);
 });
 
+test("usage exposes fresh input and cache hit only when cache telemetry exists", () => {
+  assert.deepEqual(
+    normalizeTokenUsage({ input: 12_280_000, cachedInput: 11_820_000, output: 73_900 }),
+    { input: 12_280_000, output: 73_900, cachedInput: 11_820_000, freshInput: 460_000, cacheHitPercent: 96.25 }
+  );
+  assert.deepEqual(
+    normalizeTokenUsage({ input: 1_842, output: 612 }),
+    { input: 1_842, output: 612, freshInput: 1_842 }
+  );
+});
+
 test("reported usage survives runtime resume and is not sent back as a turn parameter", async () => {
   const b = broker(); const runtime = new FleetRuntime(b);
   await runtime.resumeLane({ ...contract(), status: "complete", threadId: "thread-a", turnId: "previous",

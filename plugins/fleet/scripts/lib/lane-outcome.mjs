@@ -11,6 +11,11 @@ const EXECUTION_POSTURE_LINES = Object.freeze([
   "On Windows PowerShell 5.1, do not use `&&`; run each command separately and inspect each exit result.",
   "Persist intermediate findings and evidence before long-running test suites so an interruption does not erase them.",
   "If the sandbox blocks a build or dev-server command, report the exact blocked command and request controller verification; do not claim the check passed.",
+  "A verification gate must measure behavior or an explicit contract; do not pin incidental source text unless the contract requires that exact text.",
+  "When running a mutation check, prove that the mutation was actually applied before interpreting the gate result. On Windows, use a workspace-visible scratch path rather than assuming /tmp is shared across runtimes.",
+  "Do not satisfy one gate by moving data or behavior into another gate's blind spot. Report the tradeoff instead.",
+  "Treat the final report as a claim about the artifact. If report text looks anomalous, verify the actual files/evidence before changing the artifact to match the report.",
+  "Visual or rendered-behavior claims require browser or visual evidence. If that capability is unavailable, report the check as skipped or blocked; never infer a pass from source text alone.",
   "Never widen authority. If genuinely required authority or input is missing, report it in the structured outcome so the controller can decide."
 ]);
 
@@ -48,6 +53,7 @@ const REQUIRED_ROOT_FIELDS = new Set([
 const OPTIONAL_ROOT_DEFAULTS = Object.freeze({
   artifactRefs: Object.freeze([]),
   verification: Object.freeze([]),
+  verificationResults: Object.freeze([]),
   commitRefs: Object.freeze([]),
   configChanges: Object.freeze([]),
   controllerRequest: null,
@@ -69,7 +75,7 @@ export const LANE_OUTCOME_SCHEMA = Object.freeze({
     workPerformed: {
       type: "array",
       maxItems: 32,
-      items: { type: "string", minLength: 1, maxLength: 512 }
+      items: { type: "string", minLength: 1, maxLength: 4_096 }
     },
     evidenceRefs: {
       type: "array",
@@ -84,7 +90,32 @@ export const LANE_OUTCOME_SCHEMA = Object.freeze({
     verification: {
       type: "array",
       maxItems: 32,
-      items: { type: "string", minLength: 1, maxLength: 512 }
+      items: { type: "string", minLength: 1, maxLength: 4_096 }
+    },
+    verificationResults: {
+      type: "array",
+      maxItems: 32,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["check", "status", "evidence", "reason"],
+        properties: {
+          check: { type: "string", minLength: 1, maxLength: 512 },
+          status: { type: "string", enum: ["passed", "failed", "skipped", "blocked"] },
+          evidence: {
+            anyOf: [
+              { type: "null" },
+              { type: "string", minLength: 1, maxLength: 2_000 }
+            ]
+          },
+          reason: {
+            anyOf: [
+              { type: "null" },
+              { type: "string", minLength: 1, maxLength: 2_000 }
+            ]
+          }
+        }
+      }
     },
     commitRefs: {
       type: "array",
@@ -133,8 +164,36 @@ function boundedList(value, label, maximumItems) {
     throw new TypeError(`${label} must be an array with at most ${maximumItems} items.`);
   }
   return Object.freeze(value.map((item, index) => (
-    boundedText(item, `${label}[${index}]`, 512)
+    boundedText(item, `${label}[${index}]`, ["verification", "workPerformed"].includes(label) ? 4_096 : 512)
   )));
+}
+
+function verificationResultList(value) {
+  if (!Array.isArray(value) || value.length > 32) {
+    throw new TypeError("verificationResults must be an array with at most 32 items.");
+  }
+  return Object.freeze(value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError(`verificationResults[${index}] must be an object.`);
+    }
+    const keys = Object.keys(item);
+    if (keys.some((key) => !["check", "status", "evidence", "reason"].includes(key))) {
+      throw new TypeError(`verificationResults[${index}] contains unsupported fields.`);
+    }
+    if (!["passed", "failed", "skipped", "blocked"].includes(item.status)) {
+      throw new TypeError(`verificationResults[${index}].status is unsupported.`);
+    }
+    return Object.freeze({
+      check: boundedText(item.check, `verificationResults[${index}].check`, 512),
+      status: item.status,
+      evidence: item.evidence === null
+        ? null
+        : boundedText(item.evidence, `verificationResults[${index}].evidence`, 2_000),
+      reason: item.reason === null
+        ? null
+        : boundedText(item.reason, `verificationResults[${index}].reason`, 2_000)
+    });
+  }));
 }
 
 function workspacePathList(value, label) {
@@ -251,6 +310,11 @@ export function parseLaneOutcome(source) {
       "verification",
       32
     ),
+    verificationResults: verificationResultList(
+      value.verificationResults === undefined
+        ? OPTIONAL_ROOT_DEFAULTS.verificationResults
+        : value.verificationResults
+    ),
     commitRefs: commitList(
       value.commitRefs === undefined ? OPTIONAL_ROOT_DEFAULTS.commitRefs : value.commitRefs
     ),
@@ -318,6 +382,19 @@ function unknownOutcome(reason, result = null, diagnostics = null) {
   });
 }
 
+function reportRepair(diagnostics) {
+  return Object.freeze({
+    action: "repair-report",
+    prompt: [
+      "Your previous final Fleet report was rejected by the structured outcome schema.",
+      "Do not perform more implementation, mutation, browsing, network access, or verification work.",
+      "Use only the work and evidence already present in this thread and return one corrected structured outcome.",
+      "Do not invent evidence or mark skipped/blocked checks as passed."
+    ].join(" "),
+    diagnostics
+  });
+}
+
 export function decideLaneOutcome(source, attempts = 0, options = {}) {
   const mutationRisk = hasMutationAuthority(options.authority);
   let result;
@@ -325,6 +402,9 @@ export function decideLaneOutcome(source, attempts = 0, options = {}) {
     result = parseLaneOutcome(source);
   } catch (error) {
     if (mutationRisk) {
+      if ((options.reportRepairAttempts ?? 0) < 1) {
+        return reportRepair(diagnosticForError(error));
+      }
       return unknownOutcome(
         `Mutable lane returned an invalid result; effects require reconciliation: ${error.message}`,
         null,
@@ -348,10 +428,13 @@ export function decideLaneOutcome(source, attempts = 0, options = {}) {
   }
 
   if (result.outcome === "accomplished") {
+    const passedChecks = result.verificationResults.filter((item) => item.status === "passed");
+    const failedChecks = result.verificationResults.filter((item) => item.status === "failed");
     if (
       result.workPerformed.length > 0
       && result.evidenceRefs.length > 0
-      && result.verification.length > 0
+      && (result.verification.length > 0 || passedChecks.length > 0)
+      && failedChecks.length === 0
     ) {
       return Object.freeze({ action: "complete", result });
     }
@@ -394,11 +477,37 @@ export function decideLaneOutcome(source, attempts = 0, options = {}) {
   });
 }
 
-export function buildExecutionPrompt(prompt) {
+export function buildExecutionPrompt(prompt, options = {}) {
+  const plan = options.verificationPlan;
+  const lines = [prompt];
+  if (plan) {
+    lines.push("", "Fleet verification plan:");
+    if (plan.start.length > 0) {
+      lines.push("Start checks (only these may block implementation before work begins):");
+      lines.push(...plan.start.map((line) => `- ${line}`));
+    }
+    if (plan.completion.length > 0) {
+      lines.push("Completion checks (run after implementation; report sandbox/environment blockers, do not reinterpret them as start gates):");
+      lines.push(...plan.completion.map((line) => `- ${line}`));
+    }
+    if (plan.controller.length > 0) {
+      lines.push("Controller-owned checks (do not run or claim these inside the lane):");
+      lines.push(...plan.controller.map((line) => `- ${line}`));
+    }
+  }
+  if (options.includePosture !== false) {
+    lines.push("", "Fleet execution posture:");
+    lines.push(...executionPostureLines().map((line) => `- ${line}`));
+  }
+  return lines.join("\n");
+}
+
+export function buildDeveloperInstructions(sharedContext = null) {
   return [
-    prompt,
-    "",
     "Fleet execution posture:",
-    ...executionPostureLines().map((line) => `- ${line}`)
+    ...executionPostureLines().map((line) => `- ${line}`),
+    ...(sharedContext
+      ? ["", "Workspace shared context (stable across sibling lanes):", sharedContext]
+      : [])
   ].join("\n");
 }

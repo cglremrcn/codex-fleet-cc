@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -119,6 +120,70 @@ test("workspace-write live authority reaches thread and turn sandbox policies", 
 
   assert.deepEqual(fixture.readState().lastThreadStart.sandboxPolicy, expected);
   assert.deepEqual(fixture.readState().lastTurnStart.sandboxPolicy, expected);
+});
+
+test("writer preflight blocks nested-process EPERM before any model turn", async (t) => {
+  const fixture = startFakeCodex(t, "command-exec-eperm");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  fixture.registerCleanup(runtime);
+
+  const lane = await runtime.startLane(readOnlyContract(fixture, "lane-preflight-eperm", {
+    authority: {
+      sandbox: "workspace-write",
+      network: "off",
+      process: { start: true, stopOwned: true }
+    }
+  }));
+
+  assert.equal(lane.status, "blocked");
+  assert.equal(lane.phase, "preflight");
+  assert.equal(lane.preflight.ok, false);
+  assert.equal(lane.preflight.checks[0].modelTurnStarted, false);
+  assert.match(lane.controllerRequest.question, /preflight failed/iu);
+  assert.equal(fixture.readState().threads.length, 0);
+  assert.equal(fixture.readState().commandExecCalls, 1);
+});
+
+test("worktree Python provenance blocks editable packages rooted in another worktree before inference", async (t) => {
+  const fixture = startFakeCodex(t, "python-editable-outside");
+  fs.writeFileSync(path.join(fixture.workspace, "pyproject.toml"), "[project]\nname='fixture'\nversion='0.0.0'\n");
+  const interpreter = process.platform === "win32"
+    ? path.join(fixture.workspace, ".venv", "Scripts", "python.exe")
+    : path.join(fixture.workspace, ".venv", "bin", "python");
+  fs.mkdirSync(path.dirname(interpreter), { recursive: true });
+  fs.writeFileSync(interpreter, "fixture");
+
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  fixture.registerCleanup(runtime);
+
+  const lane = await runtime.startLane(readOnlyContract(fixture, "lane-python-provenance"));
+  assert.equal(lane.status, "blocked");
+  assert.equal(lane.phase, "preflight");
+  assert.equal(lane.preflight.ok, false);
+  assert.equal(lane.preflight.checks.at(-1).check, "python-environment");
+  assert.match(lane.controllerRequest.question, /different worktree/iu);
+  assert.equal(fixture.readState().threads.length, 0);
+});
+
+test("unsupported command preflight is a warning and does not pretend the gate was proven", async (t) => {
+  const fixture = startFakeCodex(t, "command-exec-unsupported");
+  const runtime = await createRuntime({ codexCommand: fixture.command, dataDir: fixture.dataDir, env: fixture.env });
+  fixture.registerCleanup(runtime);
+
+  const started = await runtime.startLane(readOnlyContract(fixture, "lane-preflight-warning", {
+    authority: { sandbox: "workspace-write", network: "off", process: { start: true, stopOwned: true } }
+  }));
+  await waitFor(() => runtime.inspectLane(started.id)?.status === "complete", "warning-preflight lane completion");
+  assert.equal(runtime.inspectLane(started.id).preflight.checks[0].status, "warning");
+  assert.equal(fixture.readState().threads.length, 1);
 });
 
 test("image-authorized lanes discover and inject the enabled imagegen skill", async (t) => {
@@ -371,7 +436,7 @@ test("a genuine authority request blocks for the controller without widening sco
   assert.equal(fixture.readState().threads[0].turns.length, 1);
 });
 
-test("malformed output from a mutable lane becomes outcome unknown without another turn", async (t) => {
+test("malformed output from a mutable lane gets one read-only report repair before outcome unknown", async (t) => {
   const fixture = startFakeCodex(t, "invalid-lane-outcome");
   const runtime = await createRuntime({
     codexCommand: fixture.command,
@@ -396,13 +461,46 @@ test("malformed output from a mutable lane becomes outcome unknown without anoth
 
   assert.equal(unknown.phase, "outcome_unknown");
   assert.equal(unknown.automaticContinuations, 0);
+  assert.equal(unknown.reportRepairAttempts, 1);
   assert.deepEqual(unknown.outcomeDiagnostics, {
     code: "invalid_lane_outcome",
     missing: [],
     unknown: [],
     invalid: ["json"]
   });
-  assert.equal(fixture.readState().threads[0].turns.length, 1);
+  assert.equal(fixture.readState().threads[0].turns.length, 2);
+  assert.equal(fixture.readState().lastTurnStart.sandboxPolicy.type, "readOnly");
+  assert.equal(fixture.readState().lastTurnStart.sandboxPolicy.networkAccess, false);
+});
+
+test("a mutable lane with only a broken final report can repair it without repeating implementation", async (t) => {
+  const fixture = startFakeCodex(t, "invalid-lane-outcome-then-repair");
+  const runtime = await createRuntime({
+    codexCommand: fixture.command,
+    dataDir: fixture.dataDir,
+    env: fixture.env
+  });
+  fixture.registerCleanup(runtime);
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-report-repair", {
+    authority: {
+      sandbox: "workspace-write",
+      network: "off",
+      process: { start: true, stopOwned: true }
+    }
+  }));
+  const complete = await waitFor(
+    () => runtime.inspectLane("lane-report-repair")?.status === "complete"
+      ? runtime.inspectLane("lane-report-repair")
+      : null,
+    "repaired structured outcome"
+  );
+
+  assert.equal(complete.reportRepairAttempts, 1);
+  assert.equal(fixture.readState().threads[0].turns.length, 2);
+  assert.match(fixture.readState().lastTurnStart.prompt, /previous final Fleet report was rejected/iu);
+  assert.equal(fixture.readState().lastTurnStart.sandboxPolicy.type, "readOnly");
+  assert.equal(fixture.readState().lastTurnStart.sandboxPolicy.networkAccess, false);
 });
 
 test("an accepted initial turn with a lost response becomes outcome unknown", async (t) => {
@@ -580,6 +678,21 @@ test("a completed lane can continue on its existing Codex thread", async (t) => 
   assert.match(fixture.readState().lastTurnStart.prompt, /remaining edge case/i);
 });
 
+test("runtime records bounded workspace-relative touched files for cancellation and audit", async (t) => {
+  const fixture = startFakeCodex(t, "with-file-change");
+  const runtime = await createRuntime({ codexCommand: fixture.command, dataDir: fixture.dataDir, env: fixture.env });
+  fixture.registerCleanup(runtime);
+
+  await runtime.startLane(readOnlyContract(fixture, "lane-touched-files", {
+    authority: { sandbox: "workspace-write", network: "off", process: { start: true, stopOwned: true } }
+  }));
+  const lane = await waitFor(
+    () => runtime.inspectLane("lane-touched-files")?.status === "complete" ? runtime.inspectLane("lane-touched-files") : null,
+    "file-change lane completion"
+  );
+  assert.deepEqual(lane.touchedFiles, ["src/changed.mjs", "tests/changed.test.mjs"]);
+});
+
 test("runtime reads a sanitized same-thread transcript without reasoning content", async (t) => {
   const fixture = startFakeCodex(t, "with-reasoning");
   const runtime = await createRuntime({
@@ -599,6 +712,7 @@ test("runtime reads a sanitized same-thread transcript without reasoning content
   assert.equal(session.threadId, started.threadId);
   assert.equal(session.source, "appServer");
   assert.equal(session.canAcceptDirectInput, true);
+  assert.equal(session.historyMode, "paged");
   assert.equal(session.messages.some((message) => message.kind === "user"), true);
   assert.equal(session.messages.some((message) => message.kind === "assistant"), true);
   assert.equal(session.messages.some((message) => /reasoning/iu.test(message.text)), false);
@@ -704,6 +818,7 @@ test("a fresh runtime resumes a persisted completed lane", async (t) => {
 
   assert.equal(resumed.threadId, started.threadId);
   assert.equal(fixture.appServerStarts(), 2);
+  assert.equal(fixture.readState().lastThreadResume.excludeTurns, true);
   assert.match(fixture.readState().lastTurnStart.prompt, /second bounded surface/i);
 });
 

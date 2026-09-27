@@ -9,6 +9,16 @@ export function normalizeTokenUsage(value) {
   for (const field of Object.keys(FIELDS)) {
     if (Number.isSafeInteger(value[field]) && value[field] >= 0) result[field] = value[field];
   }
+  if (Number.isSafeInteger(result.input)) {
+    const hasCached = Number.isSafeInteger(result.cachedInput);
+    const cached = hasCached ? Math.min(result.input, result.cachedInput) : 0;
+    result.freshInput = Math.max(0, result.input - cached);
+    if (hasCached) {
+      result.cacheHitPercent = result.input === 0
+        ? 0
+        : Math.round((cached / result.input) * 10_000) / 100;
+    }
+  }
   return Object.keys(result).length ? Object.freeze(result) : null;
 }
 

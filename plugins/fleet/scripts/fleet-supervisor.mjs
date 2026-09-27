@@ -252,10 +252,29 @@ export function createControlPlane(options) {
     return flattenSnapshot(current).find((lane) => lane.id === laneId) ?? null;
   }
 
+  async function restartRuntimeIfIdle() {
+    const current = await snapshot();
+    if (
+      current.queued.length > 0
+      || current.active.length > 0
+      || (current.continuationReservations?.length ?? 0) > 0
+    ) {
+      throw new Error("Codex runtime refresh is blocked while lanes or continuation reservations are active.");
+    }
+    await runtime?.close();
+    runtime = null;
+    runtimeInitialization = null;
+    scheduler = null;
+    schedulerInitialization = null;
+    return ensureRuntime();
+  }
+
   return Object.freeze({
     async isIdle() {
       const current = await snapshot();
-      return current.queued.length === 0 && current.active.length === 0;
+      return current.queued.length === 0
+        && current.active.length === 0
+        && (current.continuationReservations?.length ?? 0) === 0;
     },
     async handle(method, params) {
       if (method === "ping") {
@@ -291,8 +310,16 @@ export function createControlPlane(options) {
         return lane;
       }
       if (method === "models") {
-        const connected = await ensureRuntime();
-        return { schemaVersion: 1, source: "connected-codex-runtime", models: await connected.listModels() };
+        const connected = params.refresh === true
+          ? await restartRuntimeIfIdle()
+          : await ensureRuntime();
+        const models = await connected.listModels();
+        return {
+          schemaVersion: 1,
+          ...(connected.modelCatalogInfo?.() ?? { source: "connected-codex-runtime", models }),
+          models,
+          refreshed: params.refresh === true
+        };
       }
       if (method === "nativeInventory") {
         const connected = await ensureRuntime();
@@ -322,6 +349,7 @@ export function createControlPlane(options) {
         owner.assertAvailable(contract.lanes.map((lane) => lane.id));
         const admissions = contract.lanes.map((lane) => owner.enqueue({
           ...lane,
+          ...(contract.sharedContext ? { sharedContext: contract.sharedContext } : {}),
           admissionSource: "fleet-supervisor",
           workspacePath: options.workspacePath,
           workspaceKey: options.workspaceKey,
@@ -357,6 +385,44 @@ export function createControlPlane(options) {
         const owner = await ensureScheduler();
         return owner.readSession(laneId);
       }
+      if (method === "watchForEvent") {
+        const owner = await ensureScheduler();
+        return owner.waitForEvent({
+          timeoutMs: params.timeoutMs,
+          stallMs: params.stallMs
+        });
+      }
+      if (method === "waitForLane") {
+        const laneId = assertSafeId(params.laneId, "Wait lane id");
+        const owner = await ensureScheduler();
+        return owner.waitForLane(laneId, { timeoutMs: params.timeoutMs });
+      }
+      if (method === "reconcileContinuation") {
+        options.onActivity?.();
+        const laneId = assertSafeId(params.laneId, "Continuation reconciliation lane id");
+        const owner = await ensureScheduler();
+        const result = await owner.reconcileContinuation(laneId, {
+          assumeNotStarted: params.assumeNotStarted === true,
+          evidenceRef: params.evidenceRef
+        });
+        monitorActive();
+        return result;
+      }
+      if (method === "resolve") {
+        options.onActivity?.();
+        const laneId = assertSafeId(params.laneId, "Resolve lane id");
+        const owner = await ensureScheduler();
+        return owner.recordReconciliation(laneId, {
+          evidenceRef: params.evidenceRef,
+          outcome: params.outcome
+        });
+      }
+      if (method === "archive") {
+        options.onActivity?.();
+        const laneId = assertSafeId(params.laneId, "Archive lane id");
+        const owner = await ensureScheduler();
+        return owner.archive(laneId);
+      }
       if (method === "cancel") {
         options.onActivity?.();
         const laneId = assertSafeId(params.laneId, "Cancellation lane id");
@@ -373,22 +439,30 @@ export function createControlPlane(options) {
             laneId,
             expectedThreadId: lane.threadId ?? null,
             expectedTurnId: lane.turnId ?? null,
+            touchedFiles: Array.isArray(lane.touchedFiles) ? lane.touchedFiles : [],
             confirmationToken: expected
           };
         }
         if (
-          params.expectedThreadId !== (lane.threadId ?? null)
-          || params.expectedTurnId !== (lane.turnId ?? null)
+          (!params.shortcut && (
+            params.expectedThreadId !== (lane.threadId ?? null)
+            || params.expectedTurnId !== (lane.turnId ?? null)
+          ))
           || !secureDigestMatches(expected, params.confirmationToken)
         ) {
           throw new Error("Cancellation confirmation or target identity changed.");
         }
-        await owner.cancel(laneId, {
+        const cancelled = await owner.cancel(laneId, {
           threadId: lane.threadId ?? null,
           turnId: lane.turnId ?? null
         });
         monitorActive();
-        return { schemaVersion: 1, accepted: true, laneId };
+        return {
+          schemaVersion: 1,
+          accepted: true,
+          laneId,
+          touchedFiles: Array.isArray(cancelled?.touchedFiles) ? cancelled.touchedFiles : []
+        };
       }
       throw new Error(`Unknown Fleet supervisor method: ${method}.`);
     },

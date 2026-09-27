@@ -270,7 +270,7 @@ function structuredReviewPayload(prompt) {
 }
 
 function structuredLanePayload(turnCount) {
-  if (BEHAVIOR === "invalid-lane-outcome") {
+  if (BEHAVIOR === "invalid-lane-outcome" || (BEHAVIOR === "invalid-lane-outcome-then-repair" && turnCount === 1)) {
     return "not valid json";
   }
   if (
@@ -481,6 +481,19 @@ rl.on("line", (line) => {
           id: message.id,
           result: { thread: buildThread(thread, message.params.includeTurns === true) }
         });
+        break;
+      }
+
+      case "thread/turns/list": {
+        if (BEHAVIOR === "turn-pagination-unsupported") {
+          send({ id: message.id, error: { code: -32601, message: "Unsupported method: thread/turns/list" } });
+          break;
+        }
+        const thread = ensureThread(state, message.params.threadId);
+        const limit = Number.isInteger(message.params.limit) ? message.params.limit : 50;
+        let turns = (thread.turns || []).map((turn) => ({ ...turn, items: (turn.items || []).map((item) => ({ ...item })) }));
+        if (message.params.sortDirection !== "asc") turns.reverse();
+        send({ id: message.id, result: { data: turns.slice(0, limit), nextCursor: null, backwardsCursor: null } });
         break;
       }
 
@@ -748,6 +761,9 @@ rl.on("line", (line) => {
         }
 
         const items = [
+          ...(BEHAVIOR === "with-file-change"
+            ? [{ completed: { type: "fileChange", id: "file_" + turnId, status: "completed", changes: [{ path: "src/changed.mjs", kind: "update" }, { path: "tests/changed.test.mjs", kind: "add" }] } }]
+            : []),
           ...(BEHAVIOR === "with-reasoning"
             ? [
                 {
@@ -798,8 +814,17 @@ rl.on("line", (line) => {
 
       case "command/exec": {
         state.lastCommandExec = message.params;
+        state.commandExecCalls = (state.commandExecCalls || 0) + 1;
         saveState(state);
-        send({ id: message.id, result: { exitCode: 0, stdout: "probe-ok", stderr: "" } });
+        if (BEHAVIOR === "command-exec-unsupported") {
+          send({ id: message.id, error: { code: -32601, message: "Unsupported method: command/exec" } });
+        } else if (BEHAVIOR === "command-exec-eperm") {
+          send({ id: message.id, result: { exitCode: 91, stdout: "", stderr: "EPERM" } });
+        } else if (BEHAVIOR === "python-editable-outside" && String(message.params.command?.[0] || "").includes(".venv")) {
+          send({ id: message.id, result: { exitCode: 0, stdout: JSON.stringify({ executable: message.params.command[0], prefix: path.dirname(message.params.command[0]), editableRoots: [path.resolve(message.params.cwd, "..", "other-worktree")] }), stderr: "" } });
+        } else {
+          send({ id: message.id, result: { exitCode: 0, stdout: "probe-ok", stderr: "" } });
+        }
         break;
       }
 
