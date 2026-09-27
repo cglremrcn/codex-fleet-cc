@@ -46,7 +46,7 @@ export function jsonlLineBudget(env = process.env) {
 const CLIENT_INFO = Object.freeze({
   title: "Codex Fleet",
   name: "Claude Code",
-  version: "0.3.0"
+  version: "0.4.0"
 });
 
 const CAPABILITIES = Object.freeze({

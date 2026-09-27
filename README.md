@@ -24,14 +24,16 @@ does not show Fleet lanes, and Fleet status does not create or control Claude ba
 > live-account canary are separate gates. The GitHub personal marketplace is available; the project
 > is not yet published to a central marketplace catalog.
 
-## Machine-control integration (review source)
+## Machine-control integration
 
 Claude Code, Codex and other trusted local controllers can use the versioned JSON
 control plane and dependency-free Node client: lazy operation schemas, delta
 observations, bounded result sections, source-bound reported verification and
 replay-safe prepared waves. See [Machine control](docs/MACHINE_CONTROL.md) and the
 [research and acceptance review](docs/reviews/2026-09-15-evidence-control-plane.md).
-This does not upgrade an installed runtime or claim a global quality ranking.
+The 0.4.0 release includes this control plane. Update both the installed plugin and the owned
+runtime to use it; see the [September integration review](docs/reviews/2026-09-27-pr-integration-review.md)
+for verification evidence and remaining live-workload boundaries.
 
 ## See the fleet without leaving Claude Code
 
@@ -43,9 +45,10 @@ session to the dashboard; `q` or `Esc` returns to Claude Code.
 
 This recording is generated from the current production terminal renderer with deterministic synthetic
 lanes. It shows the actual source UI, not a live account or workload. The version is read from package
-metadata when regenerating the assets. The current Fleet source release is v0.3.0. Installation
-requires the matching owned-runtime upgrade; retaining v0.2.1 would leave the old terminal runtime
-classified as current. The new shared inbox still needs an installed live-account canary. A [static dashboard image](docs/assets/fleet-console-dashboard.png)
+metadata when regenerating the assets. The current Fleet source release is v0.4.0. Installation
+requires the matching owned-runtime upgrade; confirm v0.4.0 in the Fleet masthead after updating.
+The shared inbox still needs an installed live-account canary. A
+[static dashboard image](docs/assets/fleet-console-dashboard.png)
 is also available.
 
 ## What the console includes
