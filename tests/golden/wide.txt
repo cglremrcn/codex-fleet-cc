@@ -1,8 +1,8 @@
-FLEET//OPS  codex-fleet-cc@main  01 LIVE  01 VERIFIED  01 ATTENTION                                                                                   ╭▰ ● ● ▰╮◆
+FLEET//OPS  codex-fleet-cc@main  01 LIVE  01 VERIFIED  01 ATTENTION                                                                                  KITE ╭● ●╮◆
 RUNTIME READY · PROTOCOL COMPATIBLE · ACTIVE LIMIT 3 · KITE LIVE ◐
+VIEW: Current workspace [W] | GROUP BY: No grouping [G]
 ▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANES  4                                        │ [DETAIL] / console-build                                                 │ AUTHORITY
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   01 ◇ COMPLETE        Inspect the Codex runti… │ Build the responsive operator console                                    │ SANDBOX WORKSPACE-WRITE
      runtime-audit · gpt-5.6-sol/high           │                                                                          │ NETWORK OFF
 ▌ 02 ◆ RUNNING         Build the responsive op… │ ID console-build                                                         │
@@ -25,4 +25,4 @@ LANES  4                                        │ [DETAIL] / console-build    
                                                 │                                                                          │
                                                 │                                                                          │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return
+Enter: Open agent  X: Cancel  : Commands  /: Search lanes  Tab: Detail → Evidence → Authority  I: Inbox  K: KITE  ?: Help  Ctrl+G: Return

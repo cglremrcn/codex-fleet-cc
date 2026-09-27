@@ -1,4 +1,5 @@
-FLEET//OPS  codex-fleet-cc                                    ╭▰ ● ● ▰╮◆
+FLEET//OPS  codex-fleet-cc                                   KITE ╭● ●╮◆
+VIEW: Current workspace [W] | GROUP BY: No grouping [G]
 ▶ SIGNAL 02/04  console-build · RUNNING · renderer ━━━━━━━━━━━━━━━━━━━━
 VIEW DETAIL · console-build
 ────────────────────────────────────────────────────────────────────────
@@ -24,4 +25,4 @@ No safe events recorded
 
 
 ────────────────────────────────────────────────────────────────────────
-Enter: Open agent  X: Cancel  G: Groups  I: Inbox · K: KITE  /: Filter …
+Enter: Open agent  X: Cancel  : Commands  /: Filter  Ctrl+G: Return

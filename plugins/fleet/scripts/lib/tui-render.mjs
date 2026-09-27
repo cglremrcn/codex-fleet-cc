@@ -1,3 +1,4 @@
+import { GROUP_LABELS, emptyViewLines, operatorFooter, viewContextLine } from "./operator-guide.mjs";
 import { deriveKiteSignal, kiteIsAnimated, renderKiteAvatar, renderKiteBadge } from "./kite-companion.mjs";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { STATUS_PRESENTATION, createTheme } from "./theme.mjs";
@@ -164,7 +165,7 @@ function normalizeLane(value, index) {
     project: typeof value?.project === "string" ? boundedText(value.project, "", 120) : null,
     source: typeof value?.source === "string" ? boundedText(value.source, "", 64) : null,
     parentThreadId: typeof value?.parentThreadId === "string" ? boundedText(value.parentThreadId, "", 256) : null,
-    controlAvailable: value?.controlAvailable !== false,
+    controlAvailable: value?.controlAvailable !== false && status !== "observed",
     pendingRequests: Number.isSafeInteger(value?.pendingRequests) ? Math.max(0, value.pendingRequests) : 0,
     pendingQuestionCount: Number.isSafeInteger(value?.pendingQuestionCount) ? Math.max(0, value.pendingQuestionCount) : 0,
     pendingApprovalCount: Number.isSafeInteger(value?.pendingApprovalCount) ? Math.max(0, value.pendingApprovalCount) : 0,
@@ -255,11 +256,15 @@ export function buildViewModel(snapshot, selection, panel = "detail", viewport =
     status,
     lanes.filter((lane) => lane.status === status).length
   ]));
-  totals.active = totals.queued + totals.running + totals.starting;
-  totals.attention = totals.blocked + totals.failed + totals.interrupted + totals.outcome_unknown;
+  totals.active = totals.running + totals.starting;
+  totals.attention = lanes.filter((lane) => ["blocked", "failed", "interrupted", "outcome_unknown"].includes(lane.status)
+    || lane.controllerRequest || lane.pendingRequests > 0 || lane.pendingApprovalCount > 0 || lane.pendingQuestionCount > 0).length;
 
   return deepFreeze({
     scope: source.scope ?? "workspace",
+    groupMode: Object.hasOwn(GROUP_LABELS, source.groupMode) ? source.groupMode : "flat",
+    filterQuery: boundedText(source.filterQuery, "", 256),
+    totalLaneCount: Number.isSafeInteger(source.totalLaneCount) ? Math.max(lanes.length, source.totalLaneCount) : lanes.length,
     warnings: Array.isArray(source.warnings) ? source.warnings.length : 0,
     truncated: source.truncated === true,
     workspace: {
@@ -314,7 +319,7 @@ function usageText(usage) {
 }
 
 function laneLines(view, width, useUnicode) {
-  if (view.lanes.length === 0) return ["No lanes yet", "Start a bounded lane from Claude Code."];
+  if (view.lanes.length === 0) return emptyViewLines(view).flatMap((line) => wrap(line, width));
   const lines = [];
   view.visibleLanes.forEach((lane, visibleIndex) => {
     const index = view.viewportOffset + visibleIndex;
@@ -323,13 +328,13 @@ function laneLines(view, width, useUnicode) {
     if (lane.kind === "group") {
       const fold = useUnicode ? (lane.collapsed ? "▸" : "▾") : (lane.collapsed ? ">" : "v");
       lines.push(truncate(`${marker} ${"  ".repeat(lane.depth)}${fold} ${lane.label} [${lane.count}]`, width));
-      lines.push(truncate(`     ${lane.active} live · ${lane.attention} attention · Enter/Space ${lane.collapsed ? "expand" : "collapse"}`, width));
+      lines.push(truncate(`     ${lane.active} queued/active · ${lane.attention} attention · Enter/Space ${lane.collapsed ? "expand" : "collapse"}`, width));
       return;
     }
     const number = String(index + 1).padStart(2, "0");
     const status = pad(statusText(lane.status, useUnicode), 17);
     lines.push(truncate(`${marker} ${number} ${status} ${"  ".repeat(lane.depth ?? 0)}${lane.label}`, width));
-    const metadata = `${lane.controlId ?? lane.id} · ${lane.model}/${lane.effort}${lane.controlAvailable ? "" : " · READ ONLY"}`;
+    const metadata = `${lane.controlAvailable ? "" : "READ ONLY · "}${lane.controlId ?? lane.id} · ${lane.model}/${lane.effort}`;
     lines.push(truncate(`     ${metadata}`, width));
   });
   return lines;
@@ -455,7 +460,7 @@ function controlsLines(width) {
     "W            Workspace / all projects / Codex sessions",
     "A            Attention-first ordering",
     "F            Pin / unpin selected agent",
-    "↑/↓ or J/K   Select lane",
+    "↑/↓ or j/k   Select lane",
     "Enter or M   Open live Codex session",
     "Tab          Cycle dashboard panels",
     "/            Filter lanes",
@@ -486,6 +491,7 @@ function joinPanels(panelGroups, widths, height, border) {
 
 function summary(view) {
   const parts = [`${String(view.totals.active).padStart(2, "0")} LIVE`];
+  if (view.totals.queued > 0) parts.push(`${String(view.totals.queued).padStart(2, "0")} QUEUED`);
   if (view.totals.verified > 0) {
     parts.push(`${String(view.totals.verified).padStart(2, "0")} VERIFIED`);
   }
@@ -562,24 +568,20 @@ function sectionHeader(labels, widths, border) {
     .trimEnd();
 }
 
-function divider(widths, border) {
-  return widths.map((width) => border.horizontal.repeat(width))
-    .join(`${border.horizontal}${border.horizontal}${border.horizontal}`);
-}
-
 function panelLabel(label, panel, selectedPanel) {
   return panel === selectedPanel ? `[${label}]` : label;
 }
 
 function groupDetailLines(group, width) {
   return [`TASK GROUP ${group.label}`, `${group.count} matching agents`,
-    `${group.active} live · ${group.attention} need attention`,
+    `${group.active} queued/active · ${group.attention} need attention`,
     group.collapsed ? "Collapsed" : "Expanded", "Enter/Space: toggle this group",
     "[: collapse all · ]: expand all", "G: change grouping mode",
     "Headers cannot launch, message or cancel agents."].flatMap((line) => wrap(line, width));
 }
 
 function panelBody(view, panel, width, useUnicode) {
+  if (view.lanes.length === 0) return emptyViewLines(view).flatMap((line) => wrap(line, width));
   if (view.selectedGroup && panel !== "lanes" && panel !== "controls") return groupDetailLines(view.selectedGroup, width);
   switch (panel) {
     case "detail": return detailLines(view.selectedLane, width);
@@ -597,20 +599,20 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
   const authorityWidth = Math.max(30, Math.floor(available * 0.23));
   const detailWidth = available - laneWidth - authorityWidth;
   const widths = [laneWidth, detailWidth, authorityWidth];
-  const bodyHeight = Math.max(4, terminal.rows - 7);
+  const bodyHeight = Math.max(1, terminal.rows - 7);
   const middlePanel = view.panel === "evidence" ? "evidence" : "detail";
   const middleLabel = middlePanel === "detail"
     ? `${panelLabel("DETAIL", "detail", view.panel)} / ${view.selectedLane?.id ?? (view.selectedGroup ? "GROUP" : "NONE")}`
     : panelLabel(middlePanel.toUpperCase(), middlePanel, view.panel);
   return [
     ...wideMasthead(view, terminal.columns, preferences),
+    viewContextLine(view, terminal.columns),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
       lanePanelLabel(view),
       middleLabel,
       panelLabel("AUTHORITY", "authority", view.panel)
     ], widths, border),
-    divider(widths, border),
     ...joinPanels([
       laneLines(view, laneWidth, useUnicode),
       panelBody(view, middlePanel, detailWidth, useUnicode),
@@ -618,7 +620,7 @@ function renderWide(view, terminal, border, useUnicode, preferences) {
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Search lanes  X: Cancel  Tab: Detail → Evidence → Authority  Ctrl+G: Return",
+      operatorFooter(view, terminal.columns),
       terminal.columns
     )
   ];
@@ -629,7 +631,7 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
   const laneWidth = Math.max(32, Math.floor((terminal.columns - separatorWidth) * 0.39));
   const detailWidth = terminal.columns - separatorWidth - laneWidth;
   const widths = [laneWidth, detailWidth];
-  const bodyHeight = Math.max(4, terminal.rows - 7);
+  const bodyHeight = Math.max(1, terminal.rows - 7);
   const rightPanel = view.panel;
   const rightTitle = rightPanel.toUpperCase();
   const rightLines = panelBody(view, rightPanel, detailWidth, useUnicode);
@@ -644,25 +646,26 @@ function renderCompact(view, terminal, border, useUnicode, preferences) {
     ),
     `${inventoryNotice}${summary(view)}  ${runtime}  VIEW ${view.panel.toUpperCase()}  KITE ${motionLabel(preferences, view)}`
       + (view.observation === "fresh" ? "" : `  OBSERVATION ${view.observation.toUpperCase()}`),
+    viewContextLine(view, terminal.columns),
     signalLine(view, terminal.columns, border, useUnicode),
     sectionHeader([
       lanePanelLabel(view),
       panelLabel(rightTitle, rightPanel, view.panel)
     ], widths, border),
-    divider(widths, border),
     ...joinPanels([
       laneLines(view, laneWidth, useUnicode),
       rightLines
     ], widths, bodyHeight, border),
     border.horizontal.repeat(terminal.columns),
     truncate(
-      "Enter: Open agent  : Commands  W: Scope  G: Groups  I: Inbox · K: KITE  /: Filter  X: Cancel  Ctrl+G: Return",
+      operatorFooter(view, terminal.columns),
       terminal.columns
     )
   ];
 }
 
 function panelLines(view, width, useUnicode) {
+  if (view.lanes.length === 0) return emptyViewLines(view).flatMap((line) => wrap(line, width));
   if (view.selectedGroup && view.panel !== "lanes" && view.panel !== "controls") return groupDetailLines(view.selectedGroup, width);
   switch (view.panel) {
     case "detail": return detailLines(view.selectedLane, width);
@@ -676,17 +679,18 @@ function panelLines(view, width, useUnicode) {
 function renderNarrow(view, terminal, border, useUnicode, preferences) {
   const title = `${view.truncated || view.warnings ? `PARTIAL ${view.warnings} warnings · ` : ""}VIEW ${view.panel.toUpperCase()} · ${view.selectedLane?.id ?? "NO LANE"}`
     + (view.observation === "fresh" ? "" : ` · OBSERVATION ${view.observation.toUpperCase()}`);
-  const bodyHeight = Math.max(3, terminal.rows - 7);
+  const bodyHeight = Math.max(1, terminal.rows - 7);
   const mark = renderCompactMark(view, preferences);
   return [
     placeRight(`FLEET//OPS  ${versionLabel(preferences)}${view.workspace.name}`, mark, terminal.columns),
+    viewContextLine(view, terminal.columns),
     signalLine(view, terminal.columns, border, useUnicode),
     title,
     border.horizontal.repeat(terminal.columns),
     ...fitPanel(panelLines(view, terminal.columns, useUnicode), bodyHeight, terminal.columns)
       .map((line) => line.trimEnd()),
     border.horizontal.repeat(terminal.columns),
-    truncate("Enter: Open agent  X: Cancel  G: Groups  I: Inbox · K: KITE  /: Filter  Ctrl+G: Return", terminal.columns)
+    truncate(operatorFooter(view, terminal.columns), terminal.columns)
   ];
 }
 
@@ -734,7 +738,7 @@ function renderCodexSession(view, terminal, border, preferences) {
     ?? view.selectedLane;
   const messages = Array.isArray(session.messages) ? session.messages : [];
   const active = ["queued", "running"].includes(lane?.status);
-  const mode = session.observationOnly || lane?.controlAvailable === false ? "OBSERVE ONLY" : active ? "LIVE STEER" : "FOLLOW-UP";
+  const mode = view.scope === "native" || session.observationOnly || lane?.controlAvailable === false ? "OBSERVE ONLY" : active ? "LIVE STEER" : "FOLLOW-UP";
   const activityCount = messages.filter((message) => message?.kind === "activity").length;
   const visibleMessages = session.activityExpanded === true
     ? messages
@@ -766,7 +770,7 @@ function renderCodexSession(view, terminal, border, preferences) {
   }
   if (transcript.length === 0) transcript.push("No thread messages are available yet.");
 
-  const bodyHeight = Math.max(1, terminal.rows - 9);
+  const bodyHeight = Math.max(1, terminal.rows - (terminal.rows < 12 ? 4 : 9));
   const requestedScroll = Math.max(0, Number.isInteger(session.scroll) ? session.scroll : 0);
   const maximumScroll = Math.max(0, transcript.length - 1);
   const scroll = Math.min(requestedScroll, maximumScroll);
@@ -779,6 +783,15 @@ function renderCodexSession(view, terminal, border, preferences) {
   const activityState = session.activityExpanded === true ? "EXPANDED" : "COLLAPSED";
   const composer = mode === "OBSERVE ONLY" ? "OBSERVATION ONLY · No message or mutation will be sent from this view."
     : `COMPOSE [${mode}] › ${composerValue || "Type a message or / for Fleet commands"}`;
+  if (terminal.rows < 12) {
+    return [
+      truncate(`FLEET SESSION / ${session.laneId}`, terminal.columns),
+      truncate(`${mode} · ${lane?.status ?? "unknown"} · ${position}`, terminal.columns),
+      ...body,
+      truncate(composer, terminal.columns),
+      truncate(mode === "OBSERVE ONLY" ? "Ctrl+G/Q/Esc: Back" : "Ctrl+G: Back | Enter: Send", terminal.columns)
+    ];
+  }
   return [
     truncate(`FLEET//CODEX SESSION  ${session.laneId}`, terminal.columns),
     truncate(
@@ -814,10 +827,11 @@ export function renderScreen(viewModel, terminalInput, preferences = {}) {
   const useUnicode = preferences.unicode !== false;
   const border = BORDERS[useUnicode ? "unicode" : "ascii"];
   const theme = createTheme(preferences);
-  if (preferences.screenReader === true) {
+  if (preferences.screenReader === true && !preferences.session) {
     const linear = [
       `Fleet workspace ${view.workspace.name}, branch ${view.workspace.branch}.`,
-      `${view.lanes.length} lanes; ${view.totals.active} active; ${view.totals.verified} verified.`,
+      viewContextLine(view, terminal.columns),
+      `${view.lanes.length} lanes; ${view.totals.active} active; ${view.totals.queued} queued; ${view.totals.verified} verified.`,
       ...view.lanes.map((lane, index) => (
         `Lane ${index + 1} of ${view.lanes.length}: ${lane.id}, ${lane.status}, ${lane.label}.`
       ))

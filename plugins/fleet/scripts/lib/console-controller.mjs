@@ -1,13 +1,14 @@
+import { GROUP_LABELS, VIEW_LABELS } from "./operator-guide.mjs";
 import { createInboxView, INBOX_COMMAND } from "./inbox-view.mjs";
-import { deriveKiteSignal, kiteIsAnimated } from "./kite-companion.mjs";
+import { deriveKiteSignal, kiteIsAnimated, renderKiteBadge } from "./kite-companion.mjs";
 import { normalizeConsoleView, sortConsoleLanes } from "./console-preferences.mjs";
-import { companionItems, paletteItems, renderOperatorOverlay } from "./console-overlay.mjs";
+import { companionItems, operatorHelpScrollLimit, paletteItems, renderOperatorOverlay } from "./console-overlay.mjs";
 import { StringDecoder } from "node:string_decoder";
 import { buildLaneNavigation, GROUP_MODES } from "./lane-navigation.mjs";
 
 import { authorizeAction } from "./authority.mjs";
 import { createInputDecoder, reduceInput } from "./tui-input.mjs";
-import { buildViewModel, renderScreen } from "./tui-render.mjs";
+import { buildViewModel, displayWidth, renderScreen } from "./tui-render.mjs";
 import { withTerminalSession } from "./tui-session.mjs";
 
 const PANELS = Object.freeze(["detail", "evidence", "authority"]);
@@ -97,7 +98,7 @@ export function createConsoleController(options = {}) {
     : SNAPSHOT_REFRESH_TIMEOUT_MS;
   let snapshot = normalizeSnapshot(options.snapshot, options.cwd);
   let terminal = safeTerminal(options.terminal);
-  const initialCapacity = Math.max(1, Math.floor(Math.max(4, terminal.rows - 7) / 2));
+  const initialCapacity = Math.max(1, Math.floor(Math.max(1, terminal.rows - 7) / 2));
   const restored = normalizeConsoleView(options.savedViewState?.current);
   let savedViews = [...(options.savedViewState?.savedViews ?? [])];
   let preferencesDirty = false;
@@ -133,6 +134,7 @@ export function createConsoleController(options = {}) {
   let previousScreen = null;
   let firstRender = true;
   let refreshGeneration = 0;
+  const snapshotReads = new Map();
   let collapsedGroups = new Set(restored.collapsedGroups);
   let navigationCache = null;
   let sessionGeneration = 0;
@@ -153,7 +155,10 @@ export function createConsoleController(options = {}) {
     return navigationCache.value;
   }
 
-  function visibleSnapshot() { return { ...snapshot, scope: ui.scope, lanes: navigation().lanes }; }
+  function visibleSnapshot() {
+    return { ...snapshot, scope: ui.scope, groupMode: ui.groupMode,
+      filterQuery: ui.filterQuery, totalLaneCount: snapshot.lanes.length, lanes: navigation().lanes };
+  }
   function selectedRow() { return navigation().rows[ui.selectedIndex] ?? null; }
 
   function toggleGroup() {
@@ -174,7 +179,7 @@ export function createConsoleController(options = {}) {
     ui.totalLaneCount = snapshot.lanes.length;
     ui.visibleLaneCapacity = Math.max(
       1,
-      Math.floor(Math.max(4, terminal.rows - 7) / 2)
+      Math.floor(Math.max(1, terminal.rows - 7) / 2)
     );
     if (lanes.length === 0) {
       ui.selectedIndex = 0;
@@ -249,8 +254,12 @@ export function createConsoleController(options = {}) {
     }
   }
 
+  function observationOnly(lane) {
+    return ui.scope === "native" || lane?.controlAvailable === false || lane?.status === "observed";
+  }
+
   async function runRuntimeAction(method, lane, ...args) {
-    if (lane?.controlAvailable === false && method !== "session") {
+    if (observationOnly(lane) && method !== "session") {
       setNotice("OBSERVATION ONLY · Control remains with the owning Codex client");
       return false;
     }
@@ -300,7 +309,7 @@ export function createConsoleController(options = {}) {
       // The deadline marks stale UI, not an invalid response. A late success is
       // still useful while the same session generation remains open.
       if (!current()) return;
-      ui.session = { ...session, laneId, loading: false, error: null,
+      ui.session = { ...session, laneId, observationOnly: observationOnly(lane) || session?.observationOnly === true, loading: false, error: null,
         scroll: ui.session.scroll ?? 0, activityExpanded: ui.session.activityExpanded === true };
     }, (error) => {
       if (current()) ui.session = { ...ui.session, loading: false, error: boundedStatus(error?.message ?? "Session read failed.", 160) };
@@ -325,7 +334,8 @@ export function createConsoleController(options = {}) {
     ui.session = {
       laneId: lane.id,
       threadId: lane.threadId ?? null,
-      source: "fleet",
+      source: lane.source ?? "fleet",
+      observationOnly: observationOnly(lane),
       canAcceptDirectInput: Boolean(lane.threadId),
       messages: [],
       loading: true,
@@ -336,7 +346,7 @@ export function createConsoleController(options = {}) {
     // The authoritative thread identity may only be available from thread/read.
     // Keep the composer available while that session metadata is loading so a
     // freshly persisted terminal lane behaves exactly like an existing one.
-    ui.composer = lane.controlAvailable === false ? null : { laneId: lane.id, value: "" };
+    ui.composer = observationOnly(lane) ? null : { laneId: lane.id, value: "" };
     await renderCurrent();
     await refreshSession();
   }
@@ -401,54 +411,73 @@ export function createConsoleController(options = {}) {
   }
 
   function selectMouseRow(event) {
-    if (ui.mascot && event.row === 1 && event.column >= Math.max(1, terminal.columns - 14)) {
+    if (event.button !== 0 || ui.session || ui.filterEditing || terminal.columns < 32 || terminal.rows < 8) return;
+    const badgeWidth = displayWidth(renderKiteBadge(deriveKiteSignal({ lanes: snapshot.lanes, selectedLane: selectedLane() }), { ...preferences, mascot: ui.mascot }));
+    if (ui.mascot && preferences.screenReader !== true && badgeWidth > 0
+      && event.row === 1 && event.column >= terminal.columns - badgeWidth + 1 && event.column <= terminal.columns) {
       ui.overlay = { kind: "kite", query: "", index: 0 }; ui.confirmation = null;
       return;
     }
-    const firstLaneRow = 6;
-    const visibleIndex = Math.floor((event.row - firstLaneRow) / 2);
+    // Only the rendered lane column is actionable. Detail, footer and clipped
+    // rows cannot silently change a cancellation or follow-up target.
+    if (terminal.columns < 80) return;
+    const laneWidth = terminal.columns >= 120
+      ? Math.max(34, Math.floor((terminal.columns - 6) * 0.31))
+      : Math.max(32, Math.floor((terminal.columns - 3) * 0.39));
+    if (event.column < 1 || event.column > laneWidth || event.row < 6 || event.row > terminal.rows - 2) return;
+    const visibleIndex = Math.floor((event.row - 6) / 2);
     const index = ui.viewportOffset + visibleIndex;
-    if (event.row >= firstLaneRow && visibleIndex >= 0 && index < ui.laneCount) {
+    if (visibleIndex < ui.visibleLaneCapacity && index < ui.laneCount) {
       ui.selectedIndex = index;
       ui.selectedLaneId = navigation().rows[index]?.id ?? null;
+      ui.confirmation = null;
       ui.notice = null;
     }
   }
 
   function startSnapshotRefresh(force = false) {
-    if (typeof readSnapshot !== "function" || ui.refreshInFlight) return;
-    ui.refreshInFlight = true;
-    const generation = ++refreshGeneration;
-    let timer = null;
-    let read;
-    try {
-      read = readSnapshot({ scope: ui.scope, force });
-    } catch {
-      read = Promise.reject(new Error("state-read-failed"));
+    if (disposed || typeof readSnapshot !== "function") return;
+    const scope = ui.scope;
+    const pending = snapshotReads.get(scope);
+    if (pending) {
+      // Revisiting a scope joins its existing read, never another model/runtime
+      // request. One callback and deadline per scope even under rapid W cycling.
+      pending.generation = refreshGeneration;
+      ui.refreshInFlight = true;
+      if (pending.timedOut) ui.observation = "stale";
+      return;
     }
-    const outcome = Promise.race([
-      Promise.resolve(read).then(
-        (value) => ({ state: "fresh", value }),
-        () => ({ state: "stale" })
-      ),
-      new Promise((resolve) => {
-        timer = setTimeout(() => resolve({ state: "stale" }), refreshTimeoutMs);
-      })
-    ]);
-    outcome.then((result) => {
-      if (generation !== refreshGeneration) return;
-      if (timer !== null) clearTimeout(timer);
-      if (result.state === "fresh") {
-        snapshot = normalizeSnapshot(result.value, options.cwd);
-        ui.observation = "fresh";
-        clampSelection();
-      } else {
+    ui.refreshInFlight = true;
+    const read = { generation: refreshGeneration, timer: null, timedOut: false, abort: new AbortController() };
+    snapshotReads.set(scope, read);
+    const current = () => !disposed && scope === ui.scope && read.generation === refreshGeneration;
+    read.timer = setTimeout(() => {
+      read.timedOut = true;
+      if (current()) { ui.observation = "stale"; void renderCurrent().catch(() => undefined); }
+    }, refreshTimeoutMs);
+    read.timer.unref?.();
+    let operation;
+    try { operation = readSnapshot({ scope, force, signal: read.abort.signal }); }
+    catch (error) { operation = Promise.reject(error); }
+    Promise.resolve(operation).then((value) => {
+      if (!current()) return;
+      if (!value || typeof value !== "object" || !Array.isArray(value.lanes)) {
         ui.observation = "stale";
+        return;
       }
+      snapshot = normalizeSnapshot(value, options.cwd);
+      ui.observation = "fresh";
+      clampSelection();
+    }, () => {
+      if (current()) ui.observation = "stale";
     }).finally(() => {
-      if (generation !== refreshGeneration) return;
-      ui.refreshInFlight = false;
-      renderCurrent().catch(() => undefined);
+      clearTimeout(read.timer);
+      if (snapshotReads.get(scope) === read) snapshotReads.delete(scope);
+      if (current()) { ui.refreshInFlight = false; void renderCurrent().catch(() => undefined); }
+    }).catch(() => {
+      // Rendering/normalization failures must not create an unhandled rejection
+      // or turn a failed observation into a successful empty inventory.
+      if (current()) ui.observation = "stale";
     });
   }
 
@@ -463,6 +492,7 @@ export function createConsoleController(options = {}) {
   }
 
   function changeScope(scope) {
+    if (!Object.hasOwn(VIEW_LABELS, scope)) { setNotice("Unknown view; use : Commands."); return; }
     // Invalidate late reads before swapping scope; never act on rows from a previous scope.
     refreshGeneration += 1;
     invalidateSessionRead();
@@ -471,14 +501,19 @@ export function createConsoleController(options = {}) {
     ui.scope = scope;
     ui.selectedIndex = 0; ui.selectedLaneId = null; ui.viewportOffset = 0;
     ui.session = null; ui.composer = null; ui.confirmation = null;
+    ui.filterEditing = false; ui.filterQuery = ""; collapsedGroups = new Set();
     ui.groupMode = scope === "projects" ? "project" : scope === "native" ? "parent" : "flat";
-    ui.observation = "stale";
+    ui.observation = "loading";
     startSnapshotRefresh(true);
   }
 
   async function runOperatorCommand(id) {
     ui.overlay = null;
     if (id === "inbox") { ui.confirmation = null; inbox.open(selectedLane()); }
+    else if (id === "help") ui.overlay = { kind: "help", query: "", index: 0 };
+    else if (id.startsWith("group:") && GROUP_MODES.includes(id.slice(6))) {
+      ui.groupMode = id.slice(6); ui.confirmation = null;
+    }
     else if (id === "kite") ui.overlay = { kind: "kite", query: "", index: 0 };
     else if (id.startsWith("scope:")) changeScope(id.slice(6));
     else if (id === "refresh") startSnapshotRefresh(true);
@@ -504,11 +539,23 @@ export function createConsoleController(options = {}) {
       await options.onOperatorCommand(id, selectedLane());
     }
     preferencesDirty = true;
-    if (!ui.overlay) setNotice(`VIEW ${ui.scope.toUpperCase()} · ${ui.sort.toUpperCase()} · : Commands`);
+    if (!ui.overlay) setNotice(`VIEW ${VIEW_LABELS[ui.scope]?.title ?? ui.scope} · GROUP ${GROUP_LABELS[ui.groupMode] ?? ui.groupMode} · : Commands`);
   }
 
   async function dispatchOverlay(event) {
     const overlay = ui.overlay;
+    if (overlay.kind === "help") {
+      if (event.type === "resize") terminal = safeTerminal(event);
+      const maximum = operatorHelpScrollLimit(visibleSnapshot(), terminal);
+      overlay.index = Math.min(maximum, Math.max(0, overlay.index));
+      if (["quit", "closeSession", "clearFilter", "discardMessage"].includes(event.type)) ui.overlay = null;
+      else if (event.type === "move") overlay.index = Math.max(0, Math.min(maximum, overlay.index + event.delta));
+      else if (event.type === "page") overlay.index = Math.max(0, Math.min(maximum, overlay.index + event.delta * Math.max(1, terminal.rows - 3)));
+      else if (event.type === "home") overlay.index = 0;
+      else if (event.type === "end") overlay.index = maximum;
+      else if (event.type === "resize") terminal = safeTerminal(event);
+      return;
+    }
     const items = () => overlay.kind === "kite" ? companionItems({ extraCommands }) : paletteItems(overlay.query, savedViews, extraCommands);
     if (["quit", "closeSession", "clearFilter", "discardMessage"].includes(event.type)) ui.overlay = null;
     else if (event.type === "text" && overlay.kind !== "kite") { overlay.query = `${overlay.query}${event.value}`.slice(0, overlay.kind === "saveView" ? 48 : 256); overlay.index = 0; overlay.error = null; }
@@ -604,13 +651,12 @@ export function createConsoleController(options = {}) {
       ui.viewportOffset = 0;
       setNotice("FILTER CLEARED");
     } else if (event.type === "help") {
-      setNotice(
-        "FLEET CONTROLS · ↑↓ select · PgUp/PgDn page · Home/End jump · Enter open agent · Tab change view · / search · G groups · Space fold · [/] all · X cancel · Ctrl+G return"
-      );
+      ui.overlay = { kind: "help", query: "", index: 0 };
+      ui.confirmation = null;
     } else if (event.type === "groupMode" && !ui.session && !ui.filterEditing) {
       ui.groupMode = GROUP_MODES[(GROUP_MODES.indexOf(ui.groupMode) + 1) % GROUP_MODES.length];
       ui.confirmation = null;
-      setNotice(`GROUP ${ui.groupMode.toUpperCase()} · G cycle · Space fold · [ collapse all · ] expand all`);
+      setNotice(`GROUP BY ${GROUP_LABELS[ui.groupMode] ?? ui.groupMode} · display only · : choose by name · G cycle`);
     } else if (event.type === "toggleGroup" && !ui.session && !ui.filterEditing) {
       toggleGroup();
     } else if (["collapseGroups", "expandGroups"].includes(event.type) && !ui.session && !ui.filterEditing) {
@@ -676,7 +722,9 @@ export function createConsoleController(options = {}) {
       closeSession();
     } else if (event.type === "cancel") {
       const lane = selectedLane();
-      if (lane && !CANCELLABLE_STATUSES.has(lane.status)) {
+      if (lane && observationOnly(lane)) {
+        setNotice("OBSERVATION ONLY · Control remains with the owning Codex client");
+      } else if (lane && !CANCELLABLE_STATUSES.has(lane.status)) {
         setNotice(`${String(lane.status).toUpperCase()} LANE · NOTHING TO CANCEL`);
       } else if (lane) {
         ui.confirmation = {
@@ -733,7 +781,11 @@ export function createConsoleController(options = {}) {
 
   return Object.freeze({
     dispatch,
-    dispose() { disposed = true; inbox.dispose(); refreshGeneration += 1; invalidateSessionRead(); },
+    dispose() {
+      disposed = true; inbox.dispose(); refreshGeneration += 1; invalidateSessionRead();
+      for (const read of snapshotReads.values()) { clearTimeout(read.timer); read.abort.abort(); }
+      snapshotReads.clear();
+    },
     render: renderCurrent,
     saveState,
     viewState: () => ({ schemaVersion: 1, current: captureView(), savedViews: structuredClone(savedViews) }),
