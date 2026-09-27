@@ -142,7 +142,9 @@ test("supervisor advances a batch larger than capacity without an external statu
       control.handle("start", { schemaVersion: 1, workspacePath, lanes,
         limits: { maxActive: 1, staggerMs: 0 } }),
       new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("Batch admission stalled")), 1000);
+        // Hosted Windows/Node 22 can exceed one second under the full serial suite. This is a
+        // bounded liveness assertion, not a throughput budget; the behavioral check remains exact.
+        timer = setTimeout(() => reject(new Error("Batch admission stalled")), 5_000);
       })
     ]);
     assert.equal(f.records.size, 2);

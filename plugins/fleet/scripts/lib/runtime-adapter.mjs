@@ -138,6 +138,32 @@ function preflightWarning(check, details) {
   return Object.freeze({ ok: true, status: "warning", check, details, modelTurnStarted: false });
 }
 
+function preflightAdvisory(result) {
+  return Object.freeze({
+    ok: true,
+    status: "warning",
+    check: result.check,
+    details: result.reason ?? result.details ?? "Environment capability was not proven.",
+    blocking: false,
+    modelTurnStarted: false
+  });
+}
+
+function promptWithPreflightAdvisories(prompt, preflight) {
+  const warnings = (preflight?.checks ?? []).filter((check) => check?.status === "warning");
+  if (warnings.length === 0) return prompt;
+  const details = warnings
+    .map((check) => `- ${check.check}: ${check.details ?? check.reason ?? "unproven"}`)
+    .join("\n");
+  return [
+    "Environment preflight advisory (controller-owned verification boundary):",
+    details,
+    "Do not claim these checks passed. Continue safe implementation that does not depend on them; route blocked completion checks to the controller without repeated retries.",
+    "",
+    prompt
+  ].join("\n");
+}
+
 function imageSkillCandidates(response) {
   const groups = Array.isArray(response?.data) ? response.data : [];
   return groups.flatMap((group) => Array.isArray(group?.skills) ? group.skills : []);
@@ -600,10 +626,10 @@ export class FleetRuntime {
         "if(r.error){console.error(r.error.code||r.error.message);process.exit(91)}",
         "process.exit(r.status??92);"
       ].join("");
-      checks.push(await this.commandPreflight(lane, [process.execPath, "-e", nestedProcessScript], {
-        check: "nested-process"
-      }));
-      if (checks.at(-1)?.ok === false) return Object.freeze({ ok: false, checks: Object.freeze(checks) });
+      const nestedProcess = await this.commandPreflight(lane, [process.execPath, "-e", nestedProcessScript], {
+      check: "nested-process"
+    });
+    checks.push(nestedProcess.ok === false ? preflightAdvisory(nestedProcess) : nestedProcess);
     }
     const python = await this.inspectPythonEnvironment(lane);
     if (python) {
@@ -1045,10 +1071,13 @@ export class FleetRuntime {
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
-        input: this.turnInput(lane, buildExecutionPrompt(prompt, {
+        input: this.turnInput(lane, buildExecutionPrompt(
+        promptWithPreflightAdvisories(prompt, lane.preflight),
+        {
           verificationPlan: lane.verificationPlan,
           includePosture: false
-        })),
+        }
+      )),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -1155,10 +1184,13 @@ export class FleetRuntime {
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
-        input: this.turnInput(lane, buildExecutionPrompt(prompt, {
+        input: this.turnInput(lane, buildExecutionPrompt(
+        promptWithPreflightAdvisories(prompt, lane.preflight),
+        {
           verificationPlan: lane.verificationPlan,
           includePosture: false
-        })),
+        }
+      )),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA
@@ -1237,10 +1269,13 @@ export class FleetRuntime {
         cwd: lane.workspacePath,
         approvalPolicy: lane.interactive === true ? "on-request" : "never",
         sandboxPolicy: sandboxPolicyForLane(lane),
-        input: this.turnInput(lane, buildExecutionPrompt(prompt, {
+        input: this.turnInput(lane, buildExecutionPrompt(
+        promptWithPreflightAdvisories(prompt, lane.preflight),
+        {
           verificationPlan: lane.verificationPlan,
           includePosture: false
-        })),
+        }
+      )),
         model: lane.model,
         effort: lane.effort,
         outputSchema: LANE_OUTCOME_SCHEMA

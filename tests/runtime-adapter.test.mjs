@@ -122,7 +122,7 @@ test("workspace-write live authority reaches thread and turn sandbox policies", 
   assert.deepEqual(fixture.readState().lastTurnStart.sandboxPolicy, expected);
 });
 
-test("writer preflight blocks nested-process EPERM before any model turn", async (t) => {
+test("writer preflight makes nested-process EPERM explicit without blocking safe implementation", async (t) => {
   const fixture = startFakeCodex(t, "command-exec-eperm");
   const runtime = await createRuntime({
     codexCommand: fixture.command,
@@ -138,13 +138,19 @@ test("writer preflight blocks nested-process EPERM before any model turn", async
       process: { start: true, stopOwned: true }
     }
   }));
+  const complete = await waitFor(
+    () => runtime.inspectLane(lane.id)?.status === "complete" ? runtime.inspectLane(lane.id) : null,
+    "advisory-preflight lane completion"
+  );
 
-  assert.equal(lane.status, "blocked");
-  assert.equal(lane.phase, "preflight");
-  assert.equal(lane.preflight.ok, false);
-  assert.equal(lane.preflight.checks[0].modelTurnStarted, false);
-  assert.match(lane.controllerRequest.question, /preflight failed/iu);
-  assert.equal(fixture.readState().threads.length, 0);
+  assert.equal(complete.preflight.ok, true);
+  assert.equal(complete.preflight.checks[0].status, "warning");
+  assert.equal(complete.preflight.checks[0].blocking, false);
+  assert.equal(complete.preflight.checks[0].modelTurnStarted, false);
+  const dispatchedPrompt = fixture.readState().lastTurnStart.prompt;
+  assert.match(dispatchedPrompt, /controller-owned verification/i);
+  assert.match(dispatchedPrompt, /nested-process.*EPERM/is);
+  assert.equal(fixture.readState().threads.length, 1);
   assert.equal(fixture.readState().commandExecCalls, 1);
 });
 

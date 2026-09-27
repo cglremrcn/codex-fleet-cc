@@ -2,7 +2,7 @@
 
 import process from "node:process";
 
-import { runCli } from "./lib/cli.mjs";
+import { runFleetEntrypoint } from "./lib/fleet-entrypoint.mjs";
 
 async function readStdin(limit) {
   const chunks = [];
@@ -18,4 +18,4 @@ async function readStdin(limit) {
   return Buffer.concat(chunks);
 }
 
-process.exitCode = await runCli(process.argv.slice(2), { readStdin });
+process.exitCode = await runFleetEntrypoint(process.argv.slice(2), { readStdin });
