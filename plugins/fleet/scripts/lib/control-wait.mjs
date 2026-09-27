@@ -43,6 +43,13 @@ export function createControlWait({ snapshot, feed, intervalMs = 250, maxWaiters
     wait(params) {
       if (disposed) return Promise.reject(new ControlError("CONTROL_CLOSED", "The observer is closed."));
       if (waiters.size >= maxWaiters) return Promise.reject(new ControlError("CONTROL_WAIT_LIMIT", "Too many concurrent waits; share one observer."));
+      try {
+        if (params.cursor !== undefined && params.cursor !== null) {
+          feed.validateCursor(params.cursor, params.includeUsage === true);
+        }
+      } catch (error) {
+        return Promise.reject(error);
+      }
       return new Promise((resolve, reject) => {
         waiters.add({ resolve, reject, cursor: params.cursor ?? null, includeUsage: params.includeUsage === true,
           deadline: now() + (params.timeoutMs ?? 600_000) });

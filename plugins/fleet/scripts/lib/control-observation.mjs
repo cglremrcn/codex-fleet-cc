@@ -150,6 +150,7 @@ export function createObservationFeed({ workspaceKey, maxSnapshots = 16, maxBatc
         entries, totals: projection.totals, maxBytes: params.maxBytes ?? 8192 }, maxBatches);
       return renderPage(id, 0);
     },
+    validateCursor,
     compare(snapshot, cursor, includeUsage = false) {
       if (cursor && !validateCursor(cursor, includeUsage)) return { changed: true, reason: "supervisor-restarted" };
       const projection = snapshotProjection(snapshot, includeUsage);

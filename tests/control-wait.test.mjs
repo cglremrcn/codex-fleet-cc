@@ -56,3 +56,21 @@ test("idle, invalid cursor, changed usage projection and restart have explicit o
   assert.equal((await waiter.wait({ cursor: otherEpoch.observe(idle).cursor, timeoutMs: 20 })).reason, "supervisor-restarted");
   await assert.rejects(waiter.wait({ cursor: feed.observe(idle, { includeUsage: true }).cursor, timeoutMs: 20 }), { code: "OBSERVATION_CURSOR_INVALID" });
 });
+
+test("invalid cursors are rejected before an overdue deadline or snapshot read", async t => {
+  const feed = createObservationFeed({ workspaceKey: KEY });
+  let ticks = 0, reads = 0;
+  const waiter = createControlWait({
+    feed,
+    snapshot: () => { reads++; return idle; },
+    now: () => ++ticks,
+  });
+  t.after(() => { waiter.dispose(); feed.dispose(); });
+  for (const cursor of ["invalid", feed.observe(idle, { includeUsage: true }).cursor]) {
+    await assert.rejects(waiter.wait({ cursor, timeoutMs: 1 }), {
+      code: "OBSERVATION_CURSOR_INVALID",
+    });
+  }
+  assert.equal(reads, 0);
+  assert.equal(waiter.stats().waiters, 0);
+});

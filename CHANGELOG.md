@@ -11,6 +11,7 @@
   reconciliation results that could release a newer reservation.
 - Stop a report-only repair from admitting an additional writable continuation.
 - Clip console status by terminal display width so wide Unicode cannot overflow the footer.
+- Reject invalid or projection-mismatched wait cursors before a deadline can mask their errors.
 - Align both CodeQL actions on the same verified release and refresh source-rendered README visuals.
 - Advance package, plugin, broker and owned-runtime upgrade surfaces together to 0.4.0.
 
