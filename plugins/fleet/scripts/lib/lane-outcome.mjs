@@ -453,6 +453,12 @@ export function decideLaneOutcome(source, attempts = 0, options = {}) {
   const redundantApproval = result.outcome === "needs_controller"
     && requestKind === "redundant_approval";
   if (result.outcome === "continue_within_authority" || redundantApproval) {
+    if ((options.reportRepairAttempts ?? 0) > 0) {
+      return unknownOutcome(
+        "Report-only recovery requested more work; reconcile the original effects before continuing.",
+        result
+      );
+    }
     const activityWasReported = result.workPerformed.length > 0
       || result.evidenceRefs.length > 0
       || result.artifactRefs.length > 0;

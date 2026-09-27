@@ -41,6 +41,53 @@ async function complete(f, id, sandbox) {
   await f.scheduler.reconcile();
 }
 
+test("reconciliation never probes or releases an in-flight continuation", async () => {
+  let release;
+  const f = fixture({ beforeContinue: () => new Promise(resolve => { release = resolve; }) });
+  await complete(f, "a");
+  let probes = 0;
+  f.runtime.probeContinuation = async () => { probes += 1; return { state: "not-started" }; };
+  const continuation = f.scheduler.continue("a", "Continue");
+  await new Promise(resolve => setImmediate(resolve));
+  try {
+    await f.scheduler.reconcile();
+    await assert.rejects(f.scheduler.reconcileContinuation("a"), /in flight/);
+    assert.equal(probes, 0);
+    assert.equal(f.scheduler.snapshot().continuationReservations[0].state, "starting");
+  } finally { release(); await continuation; }
+});
+
+for (const mode of ["automatic", "manual"]) {
+  test(`${mode} stale probe cannot release a newer continuation reservation`, async () => {
+    let fail = true;
+    let releaseDispatch;
+    const f = fixture({ beforeContinue: () => {
+      if (fail) throw Object.assign(new Error("lost reply"), { requestAcceptance: "unknown" });
+      return new Promise(resolve => { releaseDispatch = resolve; });
+    } });
+    await complete(f, "a");
+    await assert.rejects(f.scheduler.continue("a", "First attempt"), /lost reply/);
+    let releaseProbe;
+    f.runtime.probeContinuation = () => new Promise(resolve => { releaseProbe = resolve; });
+    const pending = mode === "automatic"
+      ? f.scheduler.reconcile()
+      : f.scheduler.reconcileContinuation("a").catch(error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    f.runtime.probeContinuation = async () => ({ state: "not-started" });
+    await f.scheduler.reconcileContinuation("a");
+    fail = false;
+    const next = f.scheduler.continue("a", "Second attempt");
+    await new Promise(resolve => setImmediate(resolve));
+    releaseProbe({ state: "terminal-started", latestTurnId: "stale-turn" });
+    const result = await pending;
+    try {
+      if (mode === "manual") assert.equal(result.code, "CONTROL_TARGET_CHANGED");
+      assert.equal(f.scheduler.snapshot().continuationReservations[0]?.state, "starting");
+      assert.equal(f.scheduler.snapshot().history[0].status, "complete");
+    } finally { releaseDispatch(); await next; }
+  });
+}
+
 test("concurrent continuations reserve the physical workspace writer before dispatch", async () => {
   const f = fixture({ beforeContinue: () => new Promise(resolve => setImmediate(resolve)) });
   await complete(f, "a"); await complete(f, "b");

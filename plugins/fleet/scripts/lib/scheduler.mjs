@@ -985,9 +985,15 @@ class FleetScheduler {
       throw new Error(`Lane ${id} has no unresolved continuation reservation.`);
     }
     const pending = item.pendingContinuation;
+    if (pending.state !== "outcome_unknown") {
+      throw new Error(`Lane ${id} continuation is still in flight; reconciliation cannot release it.`);
+    }
     const probe = typeof this.runtime.probeContinuation === "function"
       ? await this.runtime.probeContinuation(publicRecord(item))
       : Object.freeze({ state: "unknown" });
+    if (this.continuationReservations.get(id) !== item || item.pendingContinuation !== pending) {
+      throw new ControlError("CONTROL_TARGET_CHANGED", "The continuation reservation changed during inspection.");
+    }
     const releaseAsNotStarted = async (reason, evidenceRef = null) => {
       item.pendingContinuation = null;
       this.continuationReservations.delete(id);
@@ -1369,9 +1375,15 @@ class FleetScheduler {
   async reconcile() {
     if (typeof this.runtime.probeContinuation === "function") {
       for (const [id, item] of [...this.continuationReservations.entries()]) {
-        const lastProbe = Date.parse(item.pendingContinuation?.lastProbeAt ?? "");
+        const pending = item.pendingContinuation;
+        if (pending?.state !== "outcome_unknown") continue;
+        const lastProbe = Date.parse(pending.lastProbeAt ?? "");
         if (Number.isFinite(lastProbe) && this.clock.now() - lastProbe < 5_000) continue;
         const probe = await this.runtime.probeContinuation(publicRecord(item));
+        // A manual reconciliation or newer dispatch may have replaced this exact attempt.
+        if (this.continuationReservations.get(id) !== item || item.pendingContinuation !== pending) {
+          continue;
+        }
         item.pendingContinuation = Object.freeze({
           ...item.pendingContinuation,
           lastProbeAt: new Date(this.clock.now()).toISOString(),

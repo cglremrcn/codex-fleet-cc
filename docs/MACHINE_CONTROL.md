@@ -111,6 +111,11 @@ assembles them in code; only send relevant conclusions to the orchestrating mode
 Never mix pages after `CONTROL_RESULT_CHANGED`. `section:"full"` preserves the original
 sanitized result shape but may exceed the response cap; use sections in that case.
 
+The `events` section is retained for protocol compatibility. The current scheduler
+does not persist an event history, so ordinary lane results return an empty list
+for that section. This is not evidence that no events occurred; use observations,
+wait transitions and the retained result evidence for current operational state.
+
 ## Source-bound reported verification
 
 After completed implementation/integration, call:
