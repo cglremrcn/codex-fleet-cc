@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 — 2026-09-27
+
+- Add a versioned machine-control plane, lazy operation schemas, bounded result sections,
+  delta observations, source-bound reported verification and replay-safe prepared waves.
+- Add environment preflight, runtime recovery commands, bounded wait/watch, model catalog refresh,
+  runtime-aware entrypoint routing and clearer controller outcomes.
+- Improve console navigation, KITE status presentation and native read-only session handling.
+- Preserve the writer reservation while a continuation is still starting and reject stale
+  reconciliation results that could release a newer reservation.
+- Stop a report-only repair from admitting an additional writable continuation.
+- Clip console status by terminal display width so wide Unicode cannot overflow the footer.
+- Align both CodeQL actions on the same verified release and refresh source-rendered README visuals.
+- Advance package, plugin, broker and owned-runtime upgrade surfaces together to 0.4.0.
+
+Migration: update the marketplace and installed plugin, accept its versioned owned-runtime upgrade,
+then restart Claude Code and confirm `v0.4.0` in the Fleet masthead. Existing lane authority and state
+are preserved. Source tests and platform CI do not replace an authenticated live-workload canary;
+web, browser and image capabilities still require their lane-local smoke. The optional control
+result `events` section is currently empty because the scheduler does not retain an event log.
+
 ## 0.3.0 — 2026-09-07
 
 - Add logical task folders, literal field filters, large-fleet navigation, connected-runtime model
