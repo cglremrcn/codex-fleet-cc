@@ -28,6 +28,17 @@ Read only the references required for the current task, but read each selected f
 - Read [browser-and-external-effects.md](references/browser-and-external-effects.md) before browser, account, message, payment, deploy, delete, or database-write work.
 - Read [recovery.md](references/recovery.md) after interruption, timeout, broker failure, partial completion, capability denial, corrupt state, unknown outcome, or a queued lane that cannot start.
 
+## Machine-control integration
+
+For multi-step coordination, use the [control skill](../control/SKILL.md): discover
+one operation schema, observe deltas, wait on the returned cursor, fetch a targeted
+result section, and prepare/apply a source-checked bounded wave. The dependency-free
+Node client batches page assembly outside model context. Existing CLI operations
+below remain supported; do not bypass authority through a lower-level runtime call.
+After implementation/integration, checkpoint the completed source, admit a fresh
+bound read-only verifier, attest its actual reported evidence, and recheck the receipt
+before accepting the current checkout. A legacy verified label alone is insufficient.
+
 ## Orchestration loop
 
 ### 1. Bound the outcome

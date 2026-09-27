@@ -1,4 +1,6 @@
 import path from "node:path";
+import { START_CONTRACT_SCHEMA, ADMISSION_LANE_SCHEMA, ADMISSION_AUTHORITY_SCHEMA } from "./admission-schema.mjs";
+import { assertBoundVerifier, isMutableLane } from "./execution-evidence.mjs";
 import { validateGroupPath } from "./lane-navigation.mjs";
 
 import {
@@ -9,51 +11,16 @@ import { LANE_ID_PATTERN, LANE_ROLES } from "./domain.mjs";
 
 const MAX_CONTRACT_BYTES = 128 * 1024;
 const PRIORITIES = new Set(["high", "normal", "low"]);
-const ROOT_PROPERTIES = new Set([
-  "schemaVersion",
-  "workspacePath",
-  "lanes",
-  "limits",
-  "confirmationRef",
-  "modelPolicy",
-  "sharedContext"
-]);
-const LANE_PROPERTIES = new Set([
-  "id",
-  "role",
-  "label",
-  "model",
-  "effort",
-  "prompt",
-  "ephemeral",
-  "interactive",
-  "authority",
-  "checkoutKey",
-  "groupPath",
-  "priority",
-  "retryOf",
-  "reconciliationRef",
-  "verificationPlan"
-]);
-const VERIFICATION_PLAN_PROPERTIES = new Set(["start", "completion", "controller"]);
-const AUTHORITY_PROPERTIES = new Set([
-  "sandbox",
-  "network",
-  "browser",
-  "process",
-  "database",
-  "image",
-  "externalEffects",
-  "retry"
-]);
-const AUTHORITY_NESTED_PROPERTIES = Object.freeze({
-  browser: new Set(["inspect", "mutate"]),
-  process: new Set(["start", "stopOwned"]),
-  database: new Set(["read", "write"]),
-  image: new Set(["generate", "edit"]),
-  externalEffects: new Set(["send", "payment", "deploy", "delete"])
-});
-const LIMIT_PROPERTIES = new Set(["maxActive", "maxWritersPerCheckout", "staggerMs"]);
+// Discoverable schema and admission allowlists share one property vocabulary.
+const ROOT_PROPERTIES = new Set(Object.keys(START_CONTRACT_SCHEMA.properties));
+const LANE_PROPERTIES = new Set(Object.keys(ADMISSION_LANE_SCHEMA.properties));
+const VERIFICATION_PLAN_PROPERTIES = new Set(Object.keys(ADMISSION_LANE_SCHEMA.properties.verificationPlan.properties));
+const AUTHORITY_PROPERTIES = new Set(Object.keys(ADMISSION_AUTHORITY_SCHEMA.properties));
+const AUTHORITY_NESTED_PROPERTIES = Object.freeze(Object.fromEntries(
+  Object.entries(ADMISSION_AUTHORITY_SCHEMA.properties).filter(([, schema]) => schema.properties)
+    .map(([name, schema]) => [name, new Set(Object.keys(schema.properties))])
+));
+const LIMIT_PROPERTIES = new Set(Object.keys(START_CONTRACT_SCHEMA.properties.limits.properties));
 const UNSUPPORTED_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const ANY_CONTROL = /[\u0000-\u001f\u007f]/u;
 const ROLE_VALUES = new Set(LANE_ROLES);
@@ -208,6 +175,9 @@ function collectLimits(value, issues) {
       );
     }
   }
+  if (value.maxWritersPerCheckout !== undefined && value.maxWritersPerCheckout !== 1) {
+    addIssue(issues, "input", "limits.maxWritersPerCheckout", "must be 1; display checkout labels are not physical writer isolation.");
+  }
   return value;
 }
 
@@ -318,6 +288,8 @@ function collectLane(value, index, confirmationRef, issues, options = {}) {
       "must be granted before a lane can be admitted."
     );
   }
+  try { assertBoundVerifier({ ...value, authority }); }
+  catch (error) { addIssue(issues, "input", `${propertyPath}.verificationCheckpoint`, error.message); }
   const actions = requiredAdmissionConfirmationActions(authority);
   if (actions.length > 0 && !confirmationRef) {
     addIssue(
@@ -394,6 +366,9 @@ export function validateStartContract(value, options = {}) {
     }
   }
   const limits = collectLimits(value.limits, issues);
+  if (lanes.some((lane) => lane.verificationCheckpoint) && lanes.some(isMutableLane)) {
+    addIssue(issues, "input", "lanes", "must not mix checkpoint verifiers and mutable work in one admission; use separate source-consistent waves.");
+  }
 
   if (issues.length > 0) throw new StartContractValidationError(issues);
   return Object.freeze({

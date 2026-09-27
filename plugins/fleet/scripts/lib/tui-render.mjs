@@ -20,7 +20,7 @@ const STATUS_EXPLANATIONS = Object.freeze({
   queued: "Waiting for a scheduler slot.",
   running: "Work is in progress.",
   complete: "Worker claim; independent verification has not passed.",
-  verified: "Independent evidence has passed verification.",
+  verified: "Recorded verification; recheck a source-bound receipt before relying on the current checkout.",
   blocked: "Progress needs an input or capability that is not available.",
   failed: "The lane stopped without a usable result.",
   cancelled: "The owned lane turn was cancelled.",

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "kind": "disposable-platform-diagnostic",
+  "platform": "windows",
+  "node": "24.18.0",
+  "git": "2.55.0.windows.5",
+  "workflowRun": 35012689806,
+  "baselineHead": "cf4c396267b8975db1391667af6aee9398a6c06c",
+  "results": [
+    { "globalConfig": "node:os.devNull", "ok": false, "exitCode": 128, "reason": "Git rejects the Windows device-namespace configuration path as Invalid argument" },
+    { "globalConfig": "/dev/null", "ok": true },
+    { "globalConfig": "NUL", "ok": true },
+    { "globalConfig": "", "ok": true }
+  ],
+  "fix": "Use Git's documented /dev/null configuration spelling on all platforms and strip inherited GIT_ variables case-insensitively.",
+  "scope": "Git metadata configuration isolation only; this diagnostic is not a full CI or authenticated model result.",
+  "source": "https://github.com/cglremrcn/codex-fleet-cc/actions/runs/35012689806"
+}

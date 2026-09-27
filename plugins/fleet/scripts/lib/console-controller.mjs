@@ -18,6 +18,7 @@ const MAX_COMPOSER_LENGTH = 4_096;
 export const CONSOLE_TICK_MS = 250;
 export const SNAPSHOT_REFRESH_TIMEOUT_MS = 750;
 const ESCAPE_FLUSH_MS = 35;
+const statusSegmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
 
 function defaultSnapshot(cwd) {
   const pieces = String(cwd ?? "local-workspace").split(/[\\/]/).filter(Boolean);
@@ -52,8 +53,15 @@ function safeTerminal(value = {}) {
 
 function boundedStatus(value, width) {
   const normalized = String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ");
-  if (normalized.length <= width) return normalized;
-  return width <= 1 ? normalized.slice(0, width) : `${normalized.slice(0, width - 1)}…`;
+  if (displayWidth(normalized) <= width) return normalized;
+  if (width <= 0) return "";
+  let clipped = "", used = 0;
+  for (const { segment } of statusSegmenter.segment(normalized)) {
+    const size = displayWidth(segment);
+    if (used + size > width - 1) break;
+    clipped += segment; used += size;
+  }
+  return `${clipped}…`;
 }
 
 function decorateFooter(screen, state, columns) {

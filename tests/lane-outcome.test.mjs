@@ -264,6 +264,16 @@ test("artifact references are bounded workspace-relative paths", () => {
   assert.throws(() => parseLaneOutcome(payload({ artifactRefs: ["C:\\secret.txt"] })), /artifact/iu);
 });
 
+test("report-only repair never authorizes automatic implementation continuation", () => {
+  for (const outcome of ["continue_within_authority", "needs_controller"]) {
+    const decision = decideLaneOutcome(payload({ outcome, workPerformed: [], evidenceRefs: [],
+      verification: [], artifactRefs: [], controllerRequest: outcome === "needs_controller"
+        ? { kind: "redundant_approval", question: "Continue editing." } : null
+    }), 0, { authority: { sandbox: "workspace-write" }, reportRepairAttempts: 1 });
+    assert.equal(decision.action, "outcome-unknown");
+  }
+});
+
 test("detailed work evidence survives the old 512-character truncation boundary", () => {
   const detail = "x".repeat(2048);
   const result = parseLaneOutcome(JSON.stringify({
