@@ -19,3 +19,7 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 5
     labels: [dependencies, ci]
+    groups:
+      codeql:
+        patterns:
+          - "github/codeql-action/*"
